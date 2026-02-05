@@ -9,10 +9,11 @@ $DefaultInstallDir = "$env:LOCALAPPDATA\keygate"
 $BinDir = "$env:USERPROFILE\keygate-bin"
 
 function Write-ColorOutput($Text, $Color) {
-    $fc = $host.UI.RawUI.ForegroundColor
-    $host.UI.RawUI.ForegroundColor = $Color
-    Write-Host $Text
-    $host.UI.RawUI.ForegroundColor = $fc
+    try {
+        Write-Host $Text -ForegroundColor $Color
+    } catch {
+        Write-Host $Text
+    }
 }
 
 function Show-Spinner {
@@ -166,14 +167,19 @@ Write-ColorOutput "Step 4: AI Model Configuration" "Cyan"
 Write-Host "Select your LLM provider:"
 Write-Host "  1) OpenAI (gpt-4o, gpt-4-turbo, etc.)"
 Write-Host "  2) Google Gemini (gemini-1.5-pro, gemini-1.5-flash, etc.)"
+Write-Host "  3) local Ollama (llama3, mistral, deepseek-r1, etc.)"
 Write-Host ""
 
-$ProviderChoice = Read-Host "Enter choice [1/2]"
+$ProviderChoice = Read-Host "Enter choice [1/2/3]"
 
 switch ($ProviderChoice) {
     "2" {
         $LLMProvider = "gemini"
         $DefaultModel = "gemini-1.5-pro"
+    }
+    "3" {
+        $LLMProvider = "ollama"
+        $DefaultModel = "llama3"
     }
     default {
         $LLMProvider = "openai"
@@ -181,19 +187,29 @@ switch ($ProviderChoice) {
     }
 }
 
-Write-Host ""
-Write-ColorOutput "Selected: $LLMProvider" "Green"
+Write-Host "Selected: $LLMProvider" -ForegroundColor Green
 $LLMModel = Read-Host "Enter model name (default: $DefaultModel)"
 if ([string]::IsNullOrEmpty($LLMModel)) { $LLMModel = $DefaultModel }
 
-Write-Host ""
-$ApiKeySecure = Read-Host "Enter your API key" -AsSecureString
-$ApiKey = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($ApiKeySecure))
+$OLLAMA_HOST = ""
+$ApiKey = ""
+$ApiKeyPlain = ""
 
-while ([string]::IsNullOrEmpty($ApiKey)) {
-    Write-ColorOutput "API key is required." "Red"
+if ($LLMProvider -eq "ollama") {
+    $OLLAMA_HOST = Read-Host "Enter Ollama Host (default: http://127.0.0.1:11434)"
+    if ([string]::IsNullOrEmpty($OLLAMA_HOST)) { $OLLAMA_HOST = "http://127.0.0.1:11434" }
+} else {
+    Write-Host ""
     $ApiKeySecure = Read-Host "Enter your API key" -AsSecureString
-    $ApiKey = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($ApiKeySecure))
+    $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($ApiKeySecure)
+    $ApiKeyPlain = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+
+    while ([string]::IsNullOrEmpty($ApiKeyPlain)) {
+        Write-ColorOutput "API key is required." "Red"
+        $ApiKeySecure = Read-Host "Enter your API key" -AsSecureString
+        $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($ApiKeySecure)
+        $ApiKeyPlain = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+    }
 }
 
 # =============================================
@@ -203,11 +219,12 @@ while ([string]::IsNullOrEmpty($ApiKey)) {
 Write-Host ""
 Write-ColorOutput "Step 5: Integrations (Optional)" "Cyan"
 $SetupDiscord = Read-Host "Set up Discord bot? [y/N]"
-$DiscordToken = ""
+$DiscordTokenPlain = ""
 
-if ($SetupDiscord -match "^[Yy]$") {
+if ($SetupDiscord -match "^[Yy]") {
     $DiscordTokenSecure = Read-Host "Enter Discord bot token" -AsSecureString
-    $DiscordToken = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($DiscordTokenSecure))
+    $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($DiscordTokenSecure)
+    $DiscordTokenPlain = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
 }
 
 # =============================================
@@ -217,15 +234,14 @@ if ($SetupDiscord -match "^[Yy]$") {
 Write-Host ""
 Write-ColorOutput "Step 6: Installing Keygate..." "Cyan"
 
-New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
-New-Item -ItemType Directory -Force -Path $WorkspaceDir | Out-Null
+if (!(Test-Path $ConfigDir)) { New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null }
+if (!(Test-Path $WorkspaceDir)) { New-Item -ItemType Directory -Force -Path $WorkspaceDir | Out-Null }
 
-$CurrentPath = Get-Location
-if ($InstallDir -ne $CurrentPath.Path) {
+if ($InstallDir -ne (Get-Location).Path) {
     if (Test-Path $InstallDir) {
         Write-Host "Directory $InstallDir already exists." -ForegroundColor Yellow
         $Overwrite = Read-Host "Overwrite? [y/N]"
-        if ($Overwrite -match "^[Yy]$") {
+        if ($Overwrite -match "^[Yy]") {
             Remove-Item -Recurse -Force $InstallDir
         }
     }
@@ -238,33 +254,29 @@ if ($InstallDir -ne $CurrentPath.Path) {
 
 Set-Location $InstallDir
 
-Write-Host ""
-Write-ColorOutput "Installing dependencies (this may take a moment)..." "Green"
-$InstallProcess = Start-Process -FilePath "pnpm" -ArgumentList "install" -PassThru -NoNewWindow
-$InstallProcess.WaitForExit()
-Write-ColorOutput "✓ Dependencies installed" "Green"
+Write-Host "Installing dependencies..." -ForegroundColor Green
+Start-Process -FilePath "pnpm" -ArgumentList "install" -Wait
+Write-Host "Dependencies installed" -ForegroundColor Green
 
-Write-Host ""
-Write-ColorOutput "Building project..." "Green"
-$BuildProcess = Start-Process -FilePath "pnpm" -ArgumentList "build" -PassThru -NoNewWindow
-$BuildProcess.WaitForExit()
-Write-ColorOutput "✓ Build complete" "Green"
+Write-Host "Building project..." -ForegroundColor Green
+Start-Process -FilePath "pnpm" -ArgumentList "build" -Wait
+Write-Host "Build complete" -ForegroundColor Green
 
 # =============================================
 # WRITE CONFIG
 # =============================================
 
-Write-Host ""
-Write-ColorOutput "Step 7: Finalizing Configuration..." "Cyan"
+Write-Host "Step 7: Finalizing Configuration..." -ForegroundColor Cyan
 
 $EnvContent = @"
 # Keygate Environment Variables
 LLM_PROVIDER=$LLMProvider
 LLM_MODEL=$LLMModel
-LLM_API_KEY=$ApiKey
+LLM_API_KEY=$ApiKeyPlain
+LLM_OLLAMA_HOST=$OLLAMA_HOST
 SPICY_MODE_ENABLED=$SpicyEnabled
 WORKSPACE_PATH=$WorkspaceDir
-DISCORD_TOKEN=$DiscordToken
+DISCORD_TOKEN=$DiscordTokenPlain
 "@
 
 Set-Content -Path "$ConfigDir\.env" -Value $EnvContent
@@ -295,7 +307,7 @@ Set-Content -Path "$ConfigDir\config.json" -Value $ConfigContent
 # LAUNCHER ALIAS
 # =============================================
 
-New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
+if (!(Test-Path $BinDir)) { New-Item -ItemType Directory -Force -Path $BinDir | Out-Null }
 $LauncherPath = "$BinDir\keygate.cmd"
 $LauncherContent = @"
 @echo off
