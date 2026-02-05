@@ -29,6 +29,11 @@ export interface PendingConfirmation {
   prompt: string;
 }
 
+function getWebSocketUrl(): string {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.host}/ws`;
+}
+
 function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [toolEvents, setToolEvents] = useState<ToolEvent[]>([]);
@@ -75,7 +80,12 @@ function App() {
           if (last?.id === 'streaming') {
             return [...prev.slice(0, -1), { ...last, id: crypto.randomUUID() }];
           }
-          return prev;
+          return [...prev, {
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: '(No response)',
+            timestamp: new Date(),
+          }];
         });
         break;
 
@@ -124,10 +134,36 @@ function App() {
         setMessages([]);
         setToolEvents([]);
         break;
+
+      case 'error':
+        setIsStreaming(false);
+        setMessages(prev => {
+          const error = data['error'];
+          const content = typeof error === 'string' && error.trim()
+            ? `Error: ${error}`
+            : 'Error: Request failed';
+
+          const last = prev[prev.length - 1];
+          if (last?.id === 'streaming') {
+            return [...prev.slice(0, -1), {
+              ...last,
+              id: crypto.randomUUID(),
+              content,
+            }];
+          }
+
+          return [...prev, {
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content,
+            timestamp: new Date(),
+          }];
+        });
+        break;
     }
   }, []);
 
-  const { send, connected, connecting } = useWebSocket('ws://localhost:18790', handleMessage);
+  const { send, connected, connecting } = useWebSocket(getWebSocketUrl(), handleMessage);
 
   const handleSendMessage = useCallback((content: string) => {
     if (!content.trim() || !connected) return;

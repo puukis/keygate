@@ -13,10 +13,11 @@ export function ChatView({ messages, onSendMessage, isStreaming, disabled }: Cha
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const hasStreamingMessage = messages.some((msg) => msg.id === 'streaming');
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, isStreaming]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -49,32 +50,54 @@ export function ChatView({ messages, onSendMessage, isStreaming, disabled }: Cha
             </ul>
           </div>
         ) : (
-          messages.map((msg) => (
-            <div
-              key={msg.id}
-              className={`message ${msg.role} animate-slide-in`}
-            >
-              <div className="message-avatar">
-                {msg.role === 'user' ? '👤' : '🤖'}
-              </div>
-              <div className="message-content">
-                <div className="message-header">
-                  <span className="message-role">
-                    {msg.role === 'user' ? 'You' : 'Keygate'}
-                  </span>
-                  <span className="message-time">
-                    {msg.timestamp.toLocaleTimeString()}
-                  </span>
+          <>
+            {messages.map((msg) => (
+              <div
+                key={msg.id}
+                className={`message ${msg.role} animate-slide-in`}
+              >
+                <div className="message-avatar">
+                  {msg.role === 'user' ? '👤' : '🤖'}
                 </div>
-                <div className="message-text">
-                  {msg.content}
-                  {msg.id === 'streaming' && (
-                    <span className="cursor-blink">▋</span>
-                  )}
+                <div className="message-content">
+                  <div className="message-header">
+                    <span className="message-role">
+                      {msg.role === 'user' ? 'You' : 'Keygate'}
+                    </span>
+                    <span className="message-time">
+                      {msg.timestamp.toLocaleTimeString()}
+                    </span>
+                  </div>
+                  <div className="message-text">
+                    {msg.content}
+                    {msg.id === 'streaming' && (
+                      <span className="cursor-blink">▋</span>
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
-          ))
+            ))}
+
+            {isStreaming && !hasStreamingMessage && (
+              <div className="message assistant animate-slide-in thinking-message">
+                <div className="message-avatar">🤖</div>
+                <div className="message-content">
+                  <div className="message-header">
+                    <span className="message-role">Keygate</span>
+                    <span className="thinking-badge">Thinking</span>
+                  </div>
+                  <div className="message-text thinking-text">
+                    Working on it
+                    <span className="thinking-dots" aria-hidden="true">
+                      <span>.</span>
+                      <span>.</span>
+                      <span>.</span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </>
         )}
         <div ref={messagesEndRef} />
       </div>

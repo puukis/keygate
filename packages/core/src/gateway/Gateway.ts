@@ -96,27 +96,53 @@ export class Gateway extends EventEmitter<KeygateEvents> {
       });
 
       try {
-        // Run the brain (agent loop)
-        const response = await this.brain.run(session, message.channel);
+        // Stream response back to the channel while accumulating final text.
+        let response = '';
+        const stream = this.brain.runStream(session, message.channel);
+        const gateway = this;
+
+        const captureStream = async function* (): AsyncIterable<string> {
+          for await (const chunk of stream) {
+            response += chunk;
+            gateway.emit('message:chunk', {
+              sessionId: message.sessionId,
+              content: chunk,
+            });
+            yield chunk;
+          }
+        };
+
+        await message.channel.sendStream(captureStream());
+        const finalResponse = response || '(No response)';
 
         // Add assistant response to history
         session.messages.push({
           role: 'assistant',
-          content: response,
+          content: finalResponse,
         });
+        session.updatedAt = new Date();
 
         // Emit end event
         this.emit('message:end', {
           sessionId: message.sessionId,
-          content: response,
+          content: finalResponse,
         });
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        const errorResponse = `Error: ${errorMessage}`;
+
+        await message.channel.send(errorResponse);
+
+        session.messages.push({
+          role: 'assistant',
+          content: errorResponse,
+        });
+        session.updatedAt = new Date();
+
         this.emit('message:end', {
           sessionId: message.sessionId,
-          content: `Error: ${errorMessage}`,
+          content: errorResponse,
         });
-        throw error;
       }
     });
   }

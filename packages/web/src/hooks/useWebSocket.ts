@@ -14,18 +14,28 @@ export function useWebSocket(
   const [connecting, setConnecting] = useState(true);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | undefined>(undefined);
+  const connectTimeoutRef = useRef<number | undefined>(undefined);
+  const mountedRef = useRef(false);
   const onMessageRef = useRef(onMessage);
 
   // Keep onMessage ref updated
   onMessageRef.current = onMessage;
 
   const connect = useCallback(() => {
+    if (!mountedRef.current) {
+      return;
+    }
+
     setConnecting(true);
 
     const ws = new WebSocket(url);
     wsRef.current = ws;
 
     ws.onopen = () => {
+      if (!mountedRef.current) {
+        ws.close();
+        return;
+      }
       console.log('WebSocket connected');
       setConnected(true);
       setConnecting(false);
@@ -41,34 +51,74 @@ export function useWebSocket(
     };
 
     ws.onclose = () => {
+      if (wsRef.current === ws) {
+        wsRef.current = null;
+      }
+
+      if (!mountedRef.current) {
+        return;
+      }
+
       console.log('WebSocket disconnected');
       setConnected(false);
       setConnecting(false);
-      wsRef.current = null;
 
       // Reconnect after 3 seconds
       reconnectTimeoutRef.current = window.setTimeout(() => {
+        if (!mountedRef.current) {
+          return;
+        }
         console.log('Attempting to reconnect...');
         connect();
       }, 3000);
     };
 
     ws.onerror = (error) => {
+      if (!mountedRef.current) {
+        return;
+      }
       console.error('WebSocket error:', error);
     };
   }, [url]);
 
   useEffect(() => {
-    connect();
+    mountedRef.current = true;
+    connectTimeoutRef.current = window.setTimeout(connect, 0);
 
     return () => {
-      if (reconnectTimeoutRef.current) {
+      mountedRef.current = false;
+
+      if (connectTimeoutRef.current !== undefined) {
+        clearTimeout(connectTimeoutRef.current);
+      }
+
+      if (reconnectTimeoutRef.current !== undefined) {
         clearTimeout(reconnectTimeoutRef.current);
       }
+
       if (wsRef.current) {
-        // Prevent reconnect logic from firing when we intentionally close/unmount
-        wsRef.current.onclose = null; 
-        wsRef.current.close();
+        const ws = wsRef.current;
+        wsRef.current = null;
+
+        if (ws.readyState === WebSocket.CONNECTING) {
+          // Avoid closing during CONNECTING (which logs a browser-level error).
+          // Instead, close immediately after the handshake completes.
+          ws.onopen = () => ws.close();
+          ws.onmessage = null;
+          ws.onerror = null;
+          ws.onclose = null;
+          return;
+        }
+
+        // Prevent reconnect logic from firing when we intentionally close/unmount.
+        ws.onopen = null;
+        ws.onmessage = null;
+        ws.onerror = null;
+        ws.onclose = null;
+
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.close();
+        }
       }
     };
   }, [connect]);
