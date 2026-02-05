@@ -108,9 +108,12 @@ export interface Session {
 
 export interface KeygateConfig {
   llm: {
-    provider: 'openai' | 'gemini';
+    provider: 'openai' | 'gemini' | 'ollama';
     model: string;
     apiKey: string;
+    ollama?: {
+        host: string;
+    }
   };
   security: {
     mode: SecurityMode;

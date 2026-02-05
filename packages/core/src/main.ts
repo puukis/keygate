@@ -18,9 +18,12 @@ dotenv.config();
 
 const config: KeygateConfig = {
   llm: {
-    provider: (process.env['LLM_PROVIDER'] as 'openai' | 'gemini') ?? 'openai',
+    provider: (process.env['LLM_PROVIDER'] as 'openai' | 'gemini' | 'ollama') ?? 'openai',
     model: process.env['LLM_MODEL'] ?? 'gpt-4o',
     apiKey: process.env['LLM_API_KEY'] ?? '',
+    ollama: {
+        host: process.env['LLM_OLLAMA_HOST'] ?? 'http://127.0.0.1:11434',
+    }
   },
   security: {
     mode: 'safe',

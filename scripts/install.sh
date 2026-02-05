@@ -159,13 +159,18 @@ echo -e "${BLUE}Step 4: AI Model Configuration${NC}"
 echo "Select your LLM provider:"
 echo "  1) OpenAI (gpt-4o, gpt-4-turbo, etc.)"
 echo "  2) Google Gemini (gemini-1.5-pro, gemini-1.5-flash, etc.)"
+echo "  3) local Ollama (llama3, mistral, deepseek-r1, etc.)"
 echo ""
-read -r -p "Enter choice [1/2]: " PROVIDER_CHOICE < /dev/tty
+read -r -p "Enter choice [1/2/3]: " PROVIDER_CHOICE < /dev/tty
 
 case $PROVIDER_CHOICE in
     2)
         LLM_PROVIDER="gemini"
         DEFAULT_MODEL="gemini-1.5-pro"
+        ;;
+    3)
+        LLM_PROVIDER="ollama"
+        DEFAULT_MODEL="llama3"
         ;;
     *)
         LLM_PROVIDER="openai"
@@ -177,15 +182,24 @@ echo -e "\nSelected: ${GREEN}$LLM_PROVIDER${NC}"
 read -r -p "Enter model name (default: $DEFAULT_MODEL): " LLM_MODEL < /dev/tty
 LLM_MODEL=${LLM_MODEL:-$DEFAULT_MODEL}
 
-echo ""
-read -r -s -p "Enter your API key: " API_KEY < /dev/tty
-echo ""
+API_KEY=""
+OLLAMA_HOST=""
 
-while [ -z "$API_KEY" ]; do
-    echo -e "${RED}API key is required.${NC}"
+if [ "$LLM_PROVIDER" = "ollama" ]; then
+    echo ""
+    read -r -p "Enter Ollama Host (default: http://127.0.0.1:11434): " OLLAMA_HOST < /dev/tty
+    OLLAMA_HOST=${OLLAMA_HOST:-http://127.0.0.1:11434}
+else
+    echo ""
     read -r -s -p "Enter your API key: " API_KEY < /dev/tty
     echo ""
-done
+
+    while [ -z "$API_KEY" ]; do
+        echo -e "${RED}API key is required for $LLM_PROVIDER.${NC}"
+        read -r -s -p "Enter your API key: " API_KEY < /dev/tty
+        echo ""
+    done
+fi
 
 # =============================================
 # DISCORD (OPTIONAL)
@@ -251,6 +265,7 @@ cat > "$CONFIG_DIR/.env" << EOF
 LLM_PROVIDER=$LLM_PROVIDER
 LLM_MODEL=$LLM_MODEL
 LLM_API_KEY=$API_KEY
+LLM_OLLAMA_HOST=$OLLAMA_HOST
 SPICY_MODE_ENABLED=$SPICY_ENABLED
 WORKSPACE_PATH=$WORKSPACE_DIR
 DISCORD_TOKEN=$DISCORD_TOKEN

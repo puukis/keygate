@@ -29,63 +29,69 @@ export class GeminiProvider implements LLMProvider {
   }
 
   async chat(messages: Message[], options?: ChatOptions): Promise<LLMResponse> {
-    const { systemInstruction, contents } = this.convertMessages(messages);
-    
-    const geminiTools = options?.tools 
-      ? [{ functionDeclarations: this.convertTools(options.tools) }] 
-      : undefined;
+    return this.withRetry(async () => {
+      const { systemInstruction, contents } = this.convertMessages(messages);
+      
+      const geminiTools = options?.tools 
+        ? [{ functionDeclarations: this.convertTools(options.tools) }] 
+        : undefined;
 
-    const model = this.client.getGenerativeModel({
-      model: this.model,
-      systemInstruction,
-      tools: geminiTools as Parameters<typeof this.client.getGenerativeModel>[0]['tools'],
+      const model = this.client.getGenerativeModel({
+        model: this.model,
+        systemInstruction,
+        tools: geminiTools as Parameters<typeof this.client.getGenerativeModel>[0]['tools'],
+      });
+
+      const result = await model.generateContent({
+        contents,
+        generationConfig: {
+          temperature: options?.temperature ?? 0.7,
+          maxOutputTokens: options?.maxTokens,
+        },
+      });
+
+      const response = result.response;
+      const text = response.text();
+      
+      // Extract function calls
+      const functionCalls = response.functionCalls();
+      const toolCalls: ToolCall[] | undefined = functionCalls?.map((fc, index) => ({
+        id: `call_${index}`,
+        name: fc.name,
+        arguments: fc.args as Record<string, unknown>,
+      }));
+
+      return {
+        content: text,
+        toolCalls: toolCalls && toolCalls.length > 0 ? toolCalls : undefined,
+        finishReason: toolCalls && toolCalls.length > 0 ? 'tool_calls' : 'stop',
+      };
     });
-
-    const result = await model.generateContent({
-      contents,
-      generationConfig: {
-        temperature: options?.temperature ?? 0.7,
-        maxOutputTokens: options?.maxTokens,
-      },
-    });
-
-    const response = result.response;
-    const text = response.text();
-    
-    // Extract function calls
-    const functionCalls = response.functionCalls();
-    const toolCalls: ToolCall[] | undefined = functionCalls?.map((fc, index) => ({
-      id: `call_${index}`,
-      name: fc.name,
-      arguments: fc.args as Record<string, unknown>,
-    }));
-
-    return {
-      content: text,
-      toolCalls: toolCalls && toolCalls.length > 0 ? toolCalls : undefined,
-      finishReason: toolCalls && toolCalls.length > 0 ? 'tool_calls' : 'stop',
-    };
   }
 
   async *stream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
-    const { systemInstruction, contents } = this.convertMessages(messages);
-    
-    const geminiTools = options?.tools 
-      ? [{ functionDeclarations: this.convertTools(options.tools) }] 
-      : undefined;
+    // Note: Streaming retries are harder because we can't easily restart the generator 
+    // from the middle. For now, we only retry the initial connection.
+    const result = await this.withRetry(async () => {
+        const { systemInstruction, contents } = this.convertMessages(messages);
+        
+        const geminiTools = options?.tools 
+          ? [{ functionDeclarations: this.convertTools(options.tools) }] 
+          : undefined;
 
-    const model = this.client.getGenerativeModel({
-      model: this.model,
-      systemInstruction,
-      tools: geminiTools as Parameters<typeof this.client.getGenerativeModel>[0]['tools'],
-    });
+        const model = this.client.getGenerativeModel({
+          model: this.model,
+          systemInstruction,
+          tools: geminiTools as Parameters<typeof this.client.getGenerativeModel>[0]['tools'],
+        });
 
-    const result = await model.generateContentStream({
-      contents,
-      generationConfig: {
-        temperature: options?.temperature ?? 0.7,
-        maxOutputTokens: options?.maxTokens,
-      },
+        return await model.generateContentStream({
+          contents,
+          generationConfig: {
+            temperature: options?.temperature ?? 0.7,
+            maxOutputTokens: options?.maxTokens,
+          },
+        });
     });
 
     let accumulatedToolCalls: ToolCall[] = [];
@@ -112,6 +118,28 @@ export class GeminiProvider implements LLMProvider {
       toolCalls: accumulatedToolCalls.length > 0 ? accumulatedToolCalls : undefined,
       done: true,
     };
+  }
+
+  private async withRetry<T>(operation: () => Promise<T>, retries = 3): Promise<T> {
+    try {
+      return await operation();
+    } catch (error: any) {
+      if (retries > 0 && (error.status === 429 || error.status === 503)) {
+        // Parse retry delay from error message or default to backoff
+        // Error format: "Please retry in 56.402447052s"
+        const delayMatch = error.message?.match(/retry in ([\d.]+)s/);
+        let delay = 2000 * (4 - retries); // Default: 2s, 4s, 6s
+        
+        if (delayMatch) {
+            delay = Math.ceil(parseFloat(delayMatch[1]) * 1000) + 1000; // Parse + buffer
+        }
+
+        console.warn(`⚠️ Gemini Rate Limit. Retrying in ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        return this.withRetry(operation, retries - 1);
+      }
+      throw error;
+    }
   }
 
   private convertMessages(messages: Message[]): { systemInstruction: string; contents: Content[] } {
