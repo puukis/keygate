@@ -1,0 +1,52 @@
+import type { Channel, ChannelType, NormalizedMessage } from '../types.js';
+
+/**
+ * Create a normalized message from Discord
+ */
+export function normalizeDiscordMessage(
+  messageId: string,
+  channelId: string,
+  userId: string,
+  content: string,
+  channel: Channel
+): NormalizedMessage {
+  return {
+    id: messageId,
+    sessionId: `discord:${channelId}`,
+    channelType: 'discord',
+    channel,
+    userId,
+    content,
+    timestamp: new Date(),
+  };
+}
+
+/**
+ * Create a normalized message from Web
+ */
+export function normalizeWebMessage(
+  sessionId: string,
+  userId: string,
+  content: string,
+  channel: Channel
+): NormalizedMessage {
+  return {
+    id: crypto.randomUUID(),
+    sessionId: `web:${sessionId}`,
+    channelType: 'web',
+    channel,
+    userId,
+    content,
+    timestamp: new Date(),
+  };
+}
+
+/**
+ * Abstract channel implementation helper
+ */
+export abstract class BaseChannel implements Channel {
+  abstract type: ChannelType;
+  abstract send(content: string): Promise<void>;
+  abstract sendStream(stream: AsyncIterable<string>): Promise<void>;
+  abstract requestConfirmation(prompt: string): Promise<boolean>;
+}
