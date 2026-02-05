@@ -36,7 +36,7 @@ echo "╔═══════════════════════�
 echo "║                                                               ║"
 echo "║   ⚡ KEYGATE INSTALLER                                        ║"
 echo "║   Personal AI Agent Gateway                                   ║"
-22: echo "║                                                               ║"
+echo "║                                                               ║"
 echo "╚═══════════════════════════════════════════════════════════════╝"
 echo -e "${NC}"
 
