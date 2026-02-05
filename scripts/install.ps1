@@ -5,56 +5,142 @@ $ErrorActionPreference = "Stop"
 
 # Config paths
 $ConfigDir = "$env:USERPROFILE\.config\keygate"
-$WorkspaceDir = "$env:USERPROFILE\keygate-workspace"
-$InstallDir = "$env:LOCALAPPDATA\keygate"
+$DefaultInstallDir = "$env:LOCALAPPDATA\keygate"
+$BinDir = "$env:USERPROFILE\keygate-bin"
 
-function Write-ColorOutput($ForegroundColor) {
+function Write-ColorOutput($Text, $Color) {
     $fc = $host.UI.RawUI.ForegroundColor
-    $host.UI.RawUI.ForegroundColor = $ForegroundColor
-    if ($args) {
-        Write-Output $args
-    }
+    $host.UI.RawUI.ForegroundColor = $Color
+    Write-Host $Text
     $host.UI.RawUI.ForegroundColor = $fc
 }
 
-# Banner
+function Show-Spinner {
+    param([int]$ProcessingId)
+    $spinChars = @('|', '/', '-', '\')
+    while (Get-Process -Id $ProcessingId -ErrorAction SilentlyContinue) {
+        foreach ($char in $spinChars) {
+            Write-Host -NoNewline "`r [$char]  "
+            Start-Sleep -Milliseconds 100
+        }
+    }
+    Write-Host "`r      "
+}
+
+Clear-Host
+
+Write-ColorOutput "╔═══════════════════════════════════════════════════════════════╗" "Magenta"
+Write-ColorOutput "║                                                               ║" "Magenta"
+Write-ColorOutput "║   ⚡ KEYGATE INSTALLER                                        ║" "Magenta"
+Write-ColorOutput "║   Personal AI Agent Gateway                                   ║" "Magenta"
+Write-ColorOutput "║                                                               ║" "Magenta"
+Write-ColorOutput "╚═══════════════════════════════════════════════════════════════╝" "Magenta"
 Write-Host ""
-Write-Host "╔═══════════════════════════════════════════════════════════════╗" -ForegroundColor Magenta
-Write-Host "║                                                               ║" -ForegroundColor Magenta
-Write-Host "║   ⚡ KEYGATE INSTALLER                                        ║" -ForegroundColor Magenta
-Write-Host "║   Personal AI Agent Gateway                                   ║" -ForegroundColor Magenta
-Write-Host "║                                                               ║" -ForegroundColor Magenta
-Write-Host "╚═══════════════════════════════════════════════════════════════╝" -ForegroundColor Magenta
+
+Write-ColorOutput "Welcome to the Keygate setup wizard!" "Cyan"
+Write-Host "This script will install Keygate and configure your environment."
+Write-Host ""
+Read-Host "Press Enter to continue..."
 Write-Host ""
 
 # =============================================
-# LEGAL DISCLAIMER & SPICY MODE OPT-IN
+# PREREQUISITE CHECK
 # =============================================
 
-Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Yellow
-Write-Host "⚠️  IMPORTANT SAFETY DISCLAIMER" -ForegroundColor Red
-Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Yellow
+Write-ColorOutput "Step 1: Checking Prerequisites..." "Cyan"
+
+if (Get-Command git -ErrorAction SilentlyContinue) {
+    Write-ColorOutput "✓ git found" "Green"
+} else {
+    Write-ColorOutput "❌ git is not installed. Please install git first." "Red"
+    exit 1
+}
+
+if (Get-Command node -ErrorAction SilentlyContinue) {
+    $NodeVersion = (node -v) -replace 'v', ''
+    $MajorVersion = [int]($NodeVersion.Split('.')[0])
+    
+    if ($MajorVersion -ge 22) {
+        Write-ColorOutput "✓ Node.js v$NodeVersion found" "Green"
+    } else {
+        Write-ColorOutput "⚠️  Warning: Node.js version $NodeVersion detected. Keygate requires Node.js 22+" "Yellow"
+        $ContinueNode = Read-Host "Continue anyway? [y/N]"
+        if ($ContinueNode -notmatch "^[Yy]$") { exit 1 }
+    }
+} else {
+    Write-ColorOutput "❌ Node.js is not installed. Please install Node.js 22+ first." "Red"
+    exit 1
+}
+
+if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
+    Write-ColorOutput "⚠️  pnpm not found. Installing pnpm via corepack..." "Yellow"
+    cmd /c "corepack enable"
+    cmd /c "corepack prepare pnpm@latest --activate"
+    if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
+        Write-ColorOutput "❌ Failed to install pnpm automatically. Please run: npm install -g pnpm" "Red"
+        exit 1
+    }
+}
+Write-ColorOutput "✓ pnpm $((pnpm -v)) found" "Green"
+
+# =============================================
+# INSTALL LOCATION
+# =============================================
+
+Write-Host ""
+Write-ColorOutput "Step 2: Installation Location" "Cyan"
+
+if (Test-Path "package.json") {
+    $CurrentDir = Get-Location
+    if (Select-String -Path "package.json" -Pattern "keygate" -Quiet) {
+        Write-Host "Detected running inside Keygate repository at: $CurrentDir" -ForegroundColor Yellow
+        $InstallHere = Read-Host "Install here? [Y/n]"
+        if ($InstallHere -eq "" -or $InstallHere -match "^[Yy]$") {
+            $InstallDir = $CurrentDir
+        } else {
+            $InstallDir = Read-Host "Enter installation path [$DefaultInstallDir]"
+            if ([string]::IsNullOrEmpty($InstallDir)) { $InstallDir = $DefaultInstallDir }
+        }
+    } else {
+        $InstallDir = Read-Host "Enter installation path [$DefaultInstallDir]"
+        if ([string]::IsNullOrEmpty($InstallDir)) { $InstallDir = $DefaultInstallDir }
+    }
+} else {
+    $InstallDir = Read-Host "Enter installation path [$DefaultInstallDir]"
+    if ([string]::IsNullOrEmpty($InstallDir)) { $InstallDir = $DefaultInstallDir }
+}
+
+$WorkspaceDir = "$env:USERPROFILE\keygate-workspace"
+Write-Host "Keygate Workspace will be created at: $WorkspaceDir" -ForegroundColor Yellow
+
+# =============================================
+# SAFETY DISCLAIMER
+# =============================================
+
+Write-Host ""
+Write-ColorOutput "Step 3: Security Configuration" "Cyan"
+Write-ColorOutput "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" "Yellow"
+Write-ColorOutput "⚠️  IMPORTANT SAFETY DISCLAIMER" "Red"
+Write-ColorOutput "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" "Yellow"
 Write-Host ""
 Write-Host "Keygate is an AI agent that can execute commands on your computer."
 Write-Host ""
-Write-Host "SAFE MODE (Default):" -ForegroundColor Green
-Write-Host "  • File operations restricted to ~/keygate-workspace"
+Write-ColorOutput "SAFE MODE (Default):" "Green"
+Write-Host "  • File operations restricted to $WorkspaceDir"
 Write-Host "  • Only allowed commands: git, ls, npm, cat, node, python3"
 Write-Host "  • All write/execute actions require your confirmation"
 Write-Host ""
-Write-Host "SPICY MODE (Dangerous):" -ForegroundColor Red
+Write-ColorOutput "SPICY MODE (Dangerous):" "Red"
 Write-Host "  • FULL access to your entire filesystem"
 Write-Host "  • Can run ANY command without restrictions"
 Write-Host "  • NO confirmation prompts - autonomous execution"
 Write-Host ""
-Write-Host "Spicy Mode should ONLY be used in sandboxed/VM environments." -ForegroundColor Red
-Write-Host ""
-Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Yellow
+Write-ColorOutput "Spicy Mode should ONLY be used in sandboxed/VM environments." "Red"
 Write-Host ""
 Write-Host "To " -NoNewline
-Write-Host "enable Spicy Mode" -ForegroundColor Red -NoNewline
+Write-ColorOutput "enable Spicy Mode" "Red" -NoNewline
 Write-Host ", type exactly: " -NoNewline
-Write-Host "I ACCEPT THE RISK" -ForegroundColor Yellow
+Write-ColorOutput "I ACCEPT THE RISK" "Yellow"
 Write-Host "To continue with Safe Mode only, press Enter."
 Write-Host ""
 
@@ -64,22 +150,19 @@ $SpicyEnabled = "false"
 if ($RiskInput -eq "I ACCEPT THE RISK") {
     $SpicyEnabled = "true"
     Write-Host ""
-    Write-Host "⚠️  SPICY MODE ENABLED - You have been warned!" -ForegroundColor Red
-    Write-Host ""
+    Write-ColorOutput "⚠️  SPICY MODE ENABLED - You have been warned!" "Red"
 } else {
     Write-Host ""
-    Write-Host "✓ Safe Mode only - Good choice!" -ForegroundColor Green
-    Write-Host ""
+    Write-ColorOutput "✓ Safe Mode only - Good choice!" "Green"
 }
 
 # =============================================
 # LLM CONFIGURATION
 # =============================================
 
-Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Blue
-Write-Host "🤖 LLM Configuration" -ForegroundColor Blue
-Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Blue
 Write-Host ""
+Write-ColorOutput "Step 4: AI Model Configuration" "Cyan"
+
 Write-Host "Select your LLM provider:"
 Write-Host "  1) OpenAI (gpt-4o, gpt-4-turbo, etc.)"
 Write-Host "  2) Google Gemini (gemini-1.5-pro, gemini-1.5-flash, etc.)"
@@ -99,63 +182,80 @@ switch ($ProviderChoice) {
 }
 
 Write-Host ""
-Write-Host "Selected: $LLMProvider" -ForegroundColor Green
-Write-Host ""
-
+Write-ColorOutput "Selected: $LLMProvider" "Green"
 $LLMModel = Read-Host "Enter model name (default: $DefaultModel)"
-if ([string]::IsNullOrEmpty($LLMModel)) {
-    $LLMModel = $DefaultModel
-}
+if ([string]::IsNullOrEmpty($LLMModel)) { $LLMModel = $DefaultModel }
 
 Write-Host ""
 $ApiKeySecure = Read-Host "Enter your API key" -AsSecureString
-$ApiKey = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
-    [Runtime.InteropServices.Marshal]::SecureStringToBSTR($ApiKeySecure)
-)
+$ApiKey = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($ApiKeySecure))
 
-if ([string]::IsNullOrEmpty($ApiKey)) {
-    Write-Host "Error: API key is required" -ForegroundColor Red
-    exit 1
+while ([string]::IsNullOrEmpty($ApiKey)) {
+    Write-ColorOutput "API key is required." "Red"
+    $ApiKeySecure = Read-Host "Enter your API key" -AsSecureString
+    $ApiKey = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($ApiKeySecure))
 }
 
 # =============================================
-# DISCORD (OPTIONAL)
+# DISCORD CONFIG
 # =============================================
 
 Write-Host ""
-Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Blue
-Write-Host "🤖 Discord Bot (Optional)" -ForegroundColor Blue
-Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Blue
-Write-Host ""
-
+Write-ColorOutput "Step 5: Integrations (Optional)" "Cyan"
 $SetupDiscord = Read-Host "Set up Discord bot? [y/N]"
 $DiscordToken = ""
 
 if ($SetupDiscord -match "^[Yy]$") {
     $DiscordTokenSecure = Read-Host "Enter Discord bot token" -AsSecureString
-    $DiscordToken = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
-        [Runtime.InteropServices.Marshal]::SecureStringToBSTR($DiscordTokenSecure)
-    )
+    $DiscordToken = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($DiscordTokenSecure))
 }
 
 # =============================================
-# CREATE DIRECTORIES AND CONFIG
+# INSTALLATION
 # =============================================
 
 Write-Host ""
-Write-Host "Creating directories..." -ForegroundColor Green
+Write-ColorOutput "Step 6: Installing Keygate..." "Cyan"
 
 New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
 New-Item -ItemType Directory -Force -Path $WorkspaceDir | Out-Null
-New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
-Write-Host "  ✓ Config dir: $ConfigDir"
-Write-Host "  ✓ Workspace: $WorkspaceDir"
-Write-Host "  ✓ Install dir: $InstallDir"
+$CurrentPath = Get-Location
+if ($InstallDir -ne $CurrentPath.Path) {
+    if (Test-Path $InstallDir) {
+        Write-Host "Directory $InstallDir already exists." -ForegroundColor Yellow
+        $Overwrite = Read-Host "Overwrite? [y/N]"
+        if ($Overwrite -match "^[Yy]$") {
+            Remove-Item -Recurse -Force $InstallDir
+        }
+    }
+    
+    if (-not (Test-Path $InstallDir)) {
+        Write-Host "Cloning repository to $InstallDir..."
+        git clone https://github.com/puukis/keygate.git $InstallDir
+    }
+}
 
-# Create .env file
+Set-Location $InstallDir
+
 Write-Host ""
-Write-Host "Writing configuration..." -ForegroundColor Green
+Write-ColorOutput "Installing dependencies (this may take a moment)..." "Green"
+$InstallProcess = Start-Process -FilePath "pnpm" -ArgumentList "install" -PassThru -NoNewWindow
+$InstallProcess.WaitForExit()
+Write-ColorOutput "✓ Dependencies installed" "Green"
+
+Write-Host ""
+Write-ColorOutput "Building project..." "Green"
+$BuildProcess = Start-Process -FilePath "pnpm" -ArgumentList "build" -PassThru -NoNewWindow
+$BuildProcess.WaitForExit()
+Write-ColorOutput "✓ Build complete" "Green"
+
+# =============================================
+# WRITE CONFIG
+# =============================================
+
+Write-Host ""
+Write-ColorOutput "Step 7: Finalizing Configuration..." "Cyan"
 
 $EnvContent = @"
 # Keygate Environment Variables
@@ -168,9 +268,7 @@ DISCORD_TOKEN=$DiscordToken
 "@
 
 Set-Content -Path "$ConfigDir\.env" -Value $EnvContent
-Write-Host "  ✓ Created $ConfigDir\.env"
 
-# Create config.json
 $ConfigContent = @"
 {
   "llm": {
@@ -192,27 +290,38 @@ $ConfigContent = @"
 "@
 
 Set-Content -Path "$ConfigDir\config.json" -Value $ConfigContent
-Write-Host "  ✓ Created $ConfigDir\config.json"
 
 # =============================================
-# CHECK NODE.JS
+# LAUNCHER ALIAS
 # =============================================
 
-Write-Host ""
-Write-Host "Checking Node.js..." -ForegroundColor Green
+New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
+$LauncherPath = "$BinDir\keygate.cmd"
+$LauncherContent = @"
+@echo off
+cd /d "$InstallDir"
+pnpm dev
+"@
 
-try {
-    $NodeVersion = (node -v) -replace 'v', ''
-    $MajorVersion = [int]($NodeVersion.Split('.')[0])
-    
-    if ($MajorVersion -lt 22) {
-        Write-Host "Warning: Node.js version $NodeVersion detected. Keygate requires Node.js 22+" -ForegroundColor Yellow
+Set-Content -Path $LauncherPath -Value $LauncherContent
+Write-ColorOutput "Created 'keygate.cmd' in $BinDir" "Green"
+
+if ($env:Path -notlike "*$BinDir*") {
+    Write-ColorOutput "Note: $BinDir is not in your PATH." "Yellow"
+    Write-Host "Add it to your User Environment Variables to run 'keygate' from anywhere."
+    # Optional: Offer to add to PATH (requires registry access / persistence)
+    $AddToPath = Read-Host "Add to User PATH environment variable? (Recommended) [Y/n]"
+    if ($AddToPath -eq "" -or $AddToPath -match "^[Yy]$") {
+        try {
+            $CurrentPath = [Environment]::GetEnvironmentVariable("Path", "User")
+            if ($CurrentPath -notlike "*$BinDir*") {
+                [Environment]::SetEnvironmentVariable("Path", "$CurrentPath;$BinDir", "User")
+                Write-ColorOutput "✓ Added to User PATH (restart terminal to take effect)" "Green"
+            }
+        } catch {
+            Write-ColorOutput "Failed to update PATH automatically. Please add it manually." "Red"
+        }
     }
-    Write-Host "  ✓ Node.js v$NodeVersion detected"
-} catch {
-    Write-Host "Node.js not found. Please install Node.js 22+ first." -ForegroundColor Red
-    Write-Host "Visit: https://nodejs.org/"
-    exit 1
 }
 
 # =============================================
@@ -220,22 +329,17 @@ try {
 # =============================================
 
 Write-Host ""
-Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Green
-Write-Host "✅ Installation Complete!" -ForegroundColor Green
-Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Green
+Write-ColorOutput "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" "Green"
+Write-ColorOutput "✅ Installation Successfully Completed!" "Green"
+Write-ColorOutput "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" "Green"
 Write-Host ""
-Write-Host "To start Keygate:"
+Write-Host "You can now start Keygate by running:"
+Write-ColorOutput "  keygate" "Cyan"
 Write-Host ""
-Write-Host "  cd \path\to\keygate" -ForegroundColor Blue
-Write-Host "  pnpm install" -ForegroundColor Blue
-Write-Host "  pnpm dev" -ForegroundColor Blue
-Write-Host ""
-Write-Host "Then open: http://localhost:18789"
+Write-Host "(Or by running 'pnpm dev' in the installation directory)"
 Write-Host ""
 
-if ($SpicyEnabled -eq "true") {
-    Write-Host "⚠️  REMINDER: Spicy Mode is ENABLED. Be extremely careful!" -ForegroundColor Red
-    Write-Host ""
+$StartNow = Read-Host "Start Keygate now? [Y/n]"
+if ($StartNow -eq "" -or $StartNow -match "^[Yy]$") {
+    pnpm dev
 }
-
-Write-Host "Enjoy using Keygate! ⚡"
