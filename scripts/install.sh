@@ -43,7 +43,7 @@ echo -e "${NC}"
 echo -e "${BLUE}Welcome to the Keygate setup wizard!${NC}"
 echo "This script will install Keygate and configure your environment."
 echo ""
-read -r -p "Press Enter to continue..."
+read -r -p "Press Enter to continue..." < /dev/tty
 
 # =============================================
 # PREREQUISITE CHECK
@@ -65,7 +65,7 @@ fi
 NODE_VERSION=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
 if [ "$NODE_VERSION" -lt 22 ]; then
     echo -e "${YELLOW}⚠️  Warning: Node.js version $NODE_VERSION detected. Keygate requires Node.js 22+${NC}"
-    read -r -p "Continue anyway? [y/N]: " CONTINUE_NODE
+    read -r -p "Continue anyway? [y/N]: " CONTINUE_NODE < /dev/tty
     if [[ ! "$CONTINUE_NODE" =~ ^[Yy]$ ]]; then
         exit 1
     fi
@@ -97,17 +97,17 @@ if [ -f "package.json" ] && grep -q "keygate" "package.json"; then
     CURRENT_DIR=$(pwd)
     echo -e "Detected running inside Keygate repository at: ${YELLOW}$CURRENT_DIR${NC}"
     echo "Do you want to configure this existing installation?"
-    read -r -p "Install here? [Y/n]: " INSTALL_HERE
+    read -r -p "Install here? [Y/n]: " INSTALL_HERE < /dev/tty
     INSTALL_HERE=${INSTALL_HERE:-Y}
 
     if [[ "$INSTALL_HERE" =~ ^[Yy]$ ]]; then
         INSTALL_DIR="$CURRENT_DIR"
     else
-        read -r -p "Enter installation path [$DEFAULT_INSTALL_DIR]: " INSTALL_DIR
+        read -r -p "Enter installation path [$DEFAULT_INSTALL_DIR]: " INSTALL_DIR < /dev/tty
         INSTALL_DIR=${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}
     fi
 else
-    read -r -p "Enter installation path [$DEFAULT_INSTALL_DIR]: " INSTALL_DIR
+    read -r -p "Enter installation path [$DEFAULT_INSTALL_DIR]: " INSTALL_DIR < /dev/tty
     INSTALL_DIR=${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}
 fi
 
@@ -140,7 +140,7 @@ echo ""
 echo -e "To ${RED}enable Spicy Mode${NC}, type exactly: ${YELLOW}I ACCEPT THE RISK${NC}"
 echo -e "To continue with ${GREEN}Safe Mode only${NC}, press Enter."
 echo ""
-read -r -p "> " RISK_INPUT
+read -r -p "> " RISK_INPUT < /dev/tty
 
 SPICY_ENABLED="false"
 if [ "$RISK_INPUT" = "I ACCEPT THE RISK" ]; then
@@ -160,7 +160,7 @@ echo "Select your LLM provider:"
 echo "  1) OpenAI (gpt-4o, gpt-4-turbo, etc.)"
 echo "  2) Google Gemini (gemini-1.5-pro, gemini-1.5-flash, etc.)"
 echo ""
-read -r -p "Enter choice [1/2]: " PROVIDER_CHOICE
+read -r -p "Enter choice [1/2]: " PROVIDER_CHOICE < /dev/tty
 
 case $PROVIDER_CHOICE in
     2)
@@ -174,16 +174,16 @@ case $PROVIDER_CHOICE in
 esac
 
 echo -e "\nSelected: ${GREEN}$LLM_PROVIDER${NC}"
-read -r -p "Enter model name (default: $DEFAULT_MODEL): " LLM_MODEL
+read -r -p "Enter model name (default: $DEFAULT_MODEL): " LLM_MODEL < /dev/tty
 LLM_MODEL=${LLM_MODEL:-$DEFAULT_MODEL}
 
 echo ""
-read -r -s -p "Enter your API key: " API_KEY
+read -r -s -p "Enter your API key: " API_KEY < /dev/tty
 echo ""
 
 while [ -z "$API_KEY" ]; do
     echo -e "${RED}API key is required.${NC}"
-    read -r -s -p "Enter your API key: " API_KEY
+    read -r -s -p "Enter your API key: " API_KEY < /dev/tty
     echo ""
 done
 
@@ -192,11 +192,11 @@ done
 # =============================================
 
 echo -e "\n${BLUE}Step 5: Integrations (Optional)${NC}"
-read -r -p "Set up Discord bot? [y/N]: " SETUP_DISCORD
+read -r -p "Set up Discord bot? [y/N]: " SETUP_DISCORD < /dev/tty
 
 DISCORD_TOKEN=""
 if [[ "$SETUP_DISCORD" =~ ^[Yy]$ ]]; then
-    read -r -s -p "Enter Discord bot token: " DISCORD_TOKEN
+    read -r -s -p "Enter Discord bot token: " DISCORD_TOKEN < /dev/tty
     echo ""
 fi
 
@@ -212,12 +212,12 @@ mkdir -p "$WORKSPACE_DIR"
 if [ "$INSTALL_DIR" != "$(pwd)" ]; then
     if [ -d "$INSTALL_DIR" ]; then
         echo -e "${YELLOW}Directory $INSTALL_DIR already exists.${NC}"
-        read -r -p "Overwrite? This will delete existing files [y/N]: " OVERWRITE
+        read -r -p "Overwrite? This will delete existing files [y/N]: " OVERWRITE < /dev/tty
         if [[ "$OVERWRITE" =~ ^[Yy]$ ]]; then
             rm -rf "$INSTALL_DIR"
         else
             echo "Update existing installation? [Y/n]"
-            read -r UPDATE_EXISTING
+            read -r UPDATE_EXISTING < /dev/tty
              # Logic to pull latest changes could go here
         fi
     fi
@@ -312,7 +312,7 @@ echo ""
 echo "(Or by running 'pnpm dev' in the installation directory)"
 echo ""
 
-read -r -p "Start Keygate now? [Y/n]: " START_NOW
+read -r -p "Start Keygate now? [Y/n]: " START_NOW < /dev/tty
 START_NOW=${START_NOW:-Y}
 
 if [[ "$START_NOW" =~ ^[Yy]$ ]]; then
