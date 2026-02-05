@@ -103,6 +103,34 @@ log_tree_end() {
     echo -e "${S_TREE_END}"
 }
 
+# Read one navigation key from /dev/tty in a way that's safe with `set -e`.
+# Supports plain keys, Enter, and arrow sequences from different terminals.
+read_menu_key() {
+    local first=""
+    local second=""
+    local third=""
+
+    if ! read -rsn1 first < /dev/tty; then
+        MENU_KEY=""
+        return 1
+    fi
+
+    if [[ "$first" == "$ESC_SEQ" ]]; then
+        # Arrow keys are typically ESC [ A/B or ESC O A/B depending on terminal mode.
+        read -rsn1 -t 1 second < /dev/tty || second=""
+        if [[ "$second" == "[" || "$second" == "O" ]]; then
+            read -rsn1 -t 1 third < /dev/tty || third=""
+            MENU_KEY="${second}${third}"
+            return 0
+        fi
+        MENU_KEY="$second"
+        return 0
+    fi
+
+    MENU_KEY="$first"
+    return 0
+}
+
 # $1: Variable to store result
 # $2: Prompt question
 prompt_yes_no() {
@@ -122,7 +150,10 @@ prompt_yes_no() {
         echo -e "${S_TREE_END}"
 
         # Input
-        read -rsn1 input < /dev/tty
+        if ! read_menu_key; then
+            echo -e "${S_TREE_V}  ${S_CROSS} Failed to read keyboard input from terminal."
+            return 1
+        fi
         
         # Mapping: 
         # ESC -> Arrow Key Sequence?
@@ -130,20 +161,15 @@ prompt_yes_no() {
         # s/j -> Down
         # Enter -> Confirm
 
-        if [[ "$input" == "$ESC_SEQ" ]]; then
-            # Bash 3.2 friendly: Try to read 2 more chars with a 1s timeout
-            # (If it's a real arrow key, they are already in buffer so it's instant)
-            read -rsn2 -t 1 input_rest < /dev/tty || input_rest=""
-            if [[ "$input_rest" == "[A" ]]; then # Up
+        if [[ "$MENU_KEY" == "[A" || "$MENU_KEY" == "OA" ]]; then # Up
                 selected=0
-            elif [[ "$input_rest" == "[B" ]]; then # Down
+        elif [[ "$MENU_KEY" == "[B" || "$MENU_KEY" == "OB" ]]; then # Down
                 selected=1
-            fi
-        elif [[ "$input" == "w" || "$input" == "k" || "$input" == "W" || "$input" == "K" ]]; then # Up
+        elif [[ "$MENU_KEY" == "w" || "$MENU_KEY" == "k" || "$MENU_KEY" == "W" || "$MENU_KEY" == "K" ]]; then # Up
             selected=0
-        elif [[ "$input" == "s" || "$input" == "j" || "$input" == "S" || "$input" == "J" ]]; then # Down
+        elif [[ "$MENU_KEY" == "s" || "$MENU_KEY" == "j" || "$MENU_KEY" == "S" || "$MENU_KEY" == "J" ]]; then # Down
             selected=1
-        elif [[ "$input" == "" ]]; then # Enter
+        elif [[ -z "$MENU_KEY" ]]; then # Enter
             break
         fi
 
@@ -184,25 +210,24 @@ prompt_list() {
         done
         echo -e "${S_TREE_END}"
 
-        read -rsn1 input < /dev/tty
+        if ! read_menu_key; then
+            echo -e "${S_TREE_V}  ${S_CROSS} Failed to read keyboard input from terminal."
+            return 1
+        fi
         
-        if [[ "$input" == "$ESC_SEQ" ]]; then
-            # Bash 3.2 friendly check without -t 0
-            read -rsn2 -t 1 input_rest < /dev/tty || input_rest=""
-            if [[ "$input_rest" == "[A" ]]; then # Up
-                selected=$((selected - 1))
-                if [ $selected -lt 0 ]; then selected=$((num_options-1)); fi
-            elif [[ "$input_rest" == "[B" ]]; then # Down
-                selected=$((selected + 1))
-                if [ $selected -ge $num_options ]; then selected=0; fi
-            fi
-        elif [[ "$input" == "w" || "$input" == "k" || "$input" == "W" || "$input" == "K" ]]; then # Up
+        if [[ "$MENU_KEY" == "[A" || "$MENU_KEY" == "OA" ]]; then # Up
             selected=$((selected - 1))
             if [ $selected -lt 0 ]; then selected=$((num_options-1)); fi
-        elif [[ "$input" == "s" || "$input" == "j" || "$input" == "S" || "$input" == "J" ]]; then # Down
+        elif [[ "$MENU_KEY" == "[B" || "$MENU_KEY" == "OB" ]]; then # Down
+            selected=$((selected + 1))
+            if [ $selected -ge $num_options ]; then selected=0; fi
+        elif [[ "$MENU_KEY" == "w" || "$MENU_KEY" == "k" || "$MENU_KEY" == "W" || "$MENU_KEY" == "K" ]]; then # Up
+            selected=$((selected - 1))
+            if [ $selected -lt 0 ]; then selected=$((num_options-1)); fi
+        elif [[ "$MENU_KEY" == "s" || "$MENU_KEY" == "j" || "$MENU_KEY" == "S" || "$MENU_KEY" == "J" ]]; then # Down
              selected=$((selected + 1))
              if [ $selected -ge $num_options ]; then selected=0; fi
-        elif [[ "$input" == "" ]]; then # Enter
+        elif [[ -z "$MENU_KEY" ]]; then # Enter
             break
         fi
 
