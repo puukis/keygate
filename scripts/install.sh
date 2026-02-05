@@ -43,8 +43,7 @@ echo -e "${NC}"
 echo -e "${BLUE}Welcome to the Keygate setup wizard!${NC}"
 echo "This script will install Keygate and configure your environment."
 echo ""
-read -n 1 -s -r -p "Press any key to continue..."
-echo ""
+read -r -p "Press Enter to continue..."
 
 # =============================================
 # PREREQUISITE CHECK
