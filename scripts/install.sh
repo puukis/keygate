@@ -133,7 +133,7 @@ prompt_yes_no() {
         if [[ "$input" == "$ESC_SEQ" ]]; then
             # Bash 3.2 friendly: Try to read 2 more chars with a 1s timeout
             # (If it's a real arrow key, they are already in buffer so it's instant)
-            read -rsn2 -t 1 input_rest < /dev/tty
+            read -rsn2 -t 1 input_rest < /dev/tty || input_rest=""
             if [[ "$input_rest" == "[A" ]]; then # Up
                 selected=0
             elif [[ "$input_rest" == "[B" ]]; then # Down
@@ -188,19 +188,19 @@ prompt_list() {
         
         if [[ "$input" == "$ESC_SEQ" ]]; then
             # Bash 3.2 friendly check without -t 0
-            read -rsn2 -t 1 input_rest < /dev/tty
+            read -rsn2 -t 1 input_rest < /dev/tty || input_rest=""
             if [[ "$input_rest" == "[A" ]]; then # Up
-                ((selected--))
+                selected=$((selected - 1))
                 if [ $selected -lt 0 ]; then selected=$((num_options-1)); fi
             elif [[ "$input_rest" == "[B" ]]; then # Down
-                ((selected++))
+                selected=$((selected + 1))
                 if [ $selected -ge $num_options ]; then selected=0; fi
             fi
         elif [[ "$input" == "w" || "$input" == "k" || "$input" == "W" || "$input" == "K" ]]; then # Up
-            ((selected--))
+            selected=$((selected - 1))
             if [ $selected -lt 0 ]; then selected=$((num_options-1)); fi
         elif [[ "$input" == "s" || "$input" == "j" || "$input" == "S" || "$input" == "J" ]]; then # Down
-             ((selected++))
+             selected=$((selected + 1))
              if [ $selected -ge $num_options ]; then selected=0; fi
         elif [[ "$input" == "" ]]; then # Enter
             break
