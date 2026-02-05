@@ -13,7 +13,7 @@ export function useWebSocket(
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(true);
   const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimeoutRef = useRef<number>();
+  const reconnectTimeoutRef = useRef<number | undefined>(undefined);
   const onMessageRef = useRef(onMessage);
 
   // Keep onMessage ref updated
@@ -65,7 +65,11 @@ export function useWebSocket(
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
       }
-      wsRef.current?.close();
+      if (wsRef.current) {
+        // Prevent reconnect logic from firing when we intentionally close/unmount
+        wsRef.current.onclose = null; 
+        wsRef.current.close();
+      }
     };
   }, [connect]);
 

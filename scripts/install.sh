@@ -1,335 +1,520 @@
 #!/bin/bash
 set -e
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-PURPLE='\033[0;35m'
-NC='\033[0m' # No Color
+# ==============================================================================
+#  Keygate Installer
+#  Aesthetic, high-fidelity installer for the Keygate AI Gateway
+# ==============================================================================
 
-# Config paths
+# ------------------------------------------------------------------------------
+#  Configuration & Constants
+# ------------------------------------------------------------------------------
+VERSION="2026.2.3-1"
+COMMIT_HASH="d84eb46"
 CONFIG_DIR="$HOME/.config/keygate"
 DEFAULT_INSTALL_DIR="$HOME/.local/share/keygate"
 BIN_DIR="$HOME/.local/bin"
 
-# Helper for spinner
+# ANSI Colors & Styles
+ESC_SEQ=$'\033'
+COL_SEQ="${ESC_SEQ}["
+RESET="${COL_SEQ}0m"
+BOLD="${COL_SEQ}1m"
+DIM="${COL_SEQ}2m"
+ITALIC="${COL_SEQ}3m"
+UNDERLINE="${COL_SEQ}4m"
+
+# Brand Colors (Keygate Palette)
+C_BRAND="${COL_SEQ}38;5;202m"    # Orange/Red
+C_CYAN="${COL_SEQ}36m"             # Cyan
+C_GREEN="${COL_SEQ}32m"            # Green
+C_RED="${COL_SEQ}31m"              # Red
+C_YELLOW="${COL_SEQ}33m"           # Yellow/Orange
+C_GRAY="${COL_SEQ}90m"             # Dark Gray
+C_WHITE="${COL_SEQ}37m"            # White
+
+# Symbols
+S_CHECK="${C_GREEN}✓${RESET}"
+S_CROSS="${C_RED}✗${RESET}"
+S_WARN="${C_YELLOW}⚠${RESET}"
+S_ARROW="${C_GRAY}→${RESET}"
+S_DOT_EMPTY="${C_GRAY}○${RESET}"
+S_DOT_FULL="${C_WHITE}●${RESET}"
+S_TREE_V="${C_GRAY}│${RESET}"
+S_TREE_H="${C_GRAY}─${RESET}"
+S_TREE_BRANCH="${C_GRAY}├${RESET}"
+S_TREE_END="${C_GRAY}└${RESET}"
+S_TREE_TOP="${C_GRAY}┌${RESET}"
+S_DIAMOND="${C_GREEN}◇${RESET}"
+S_DIAMOND_FILL="${C_GREEN}◆${RESET}"
+S_BRAND="⚡"
+
+# ------------------------------------------------------------------------------
+#  UI Helper Functions
+# ------------------------------------------------------------------------------
+
+cursor_hide() { printf "${COL_SEQ}?25l"; }
+cursor_show() { printf "${COL_SEQ}?25h"; }
+trap cursor_show EXIT
+
+print_banner() {
+    clear
+    echo -e "${C_BRAND}  ${S_BRAND} Keygate Installer${RESET}"
+    echo -e "  ${DIM}Works on Mac. Crazy concept, we know.${RESET}"
+    echo ""
+}
+
+print_header() {
+    clear
+    echo ""
+    echo -e "${C_BRAND}  ${S_BRAND} Keygate ${VERSION} (${COMMIT_HASH}) ${RESET}"
+    echo ""
+    echo -e "${C_GRAY}██╗  ██╗███████╗██╗   ██╗ ██████╗  █████╗ ████████╗███████╗${RESET}"
+    echo -e "${C_GRAY}██║ ██╔╝██╔════╝╚██╗ ██╔╝██╔════╝ ██╔══██╗╚══██╔══╝██╔════╝${RESET}"
+    echo -e "${C_GRAY}█████╔╝ █████╗   ╚████╔╝ ██║  ███╗███████║   ██║   █████╗  ${RESET}"
+    echo -e "${C_GRAY}██╔═██╗ ██╔══╝    ╚██╔╝  ██║   ██║██╔══██║   ██║   ██╔══╝  ${RESET}"
+    echo -e "${C_GRAY}██║  ██╗███████╗   ██║   ╚██████╔╝██║  ██║   ██║   ███████╗${RESET}"
+    echo -e "${C_GRAY}╚═╝  ╚═╝╚══════╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝${RESET}"
+    echo -e "                  ${C_BRAND}⚡ KEYGATE ⚡${RESET}                    "
+    echo ""
+}
+
+# $1: Indentation level (0-based)
+# $2: Text
+log_tree_start() {
+    echo -e "${S_TREE_TOP}  ${BOLD}${1}${RESET}"
+}
+
+log_tree_item() {
+    echo -e "${S_TREE_V}"
+    echo -e "${S_DIAMOND}  ${1}"
+}
+
+log_tree_item_active() {
+    echo -e "${S_TREE_V}"
+    echo -e "${S_DIAMOND_FILL}  ${BOLD}${1}${RESET}"
+}
+
+log_tree_subitem() {
+    echo -e "${S_TREE_V}  ${DIM}${1}${RESET}"
+}
+
+log_tree_end() {
+    echo -e "${S_TREE_END}"
+}
+
+# $1: Variable to store result
+# $2: Prompt question
+prompt_yes_no() {
+    local prompt="$1"
+    local selected=0 # 0=Yes, 1=No
+    
+    cursor_hide
+    while true; do
+        # Draw
+        if [ $selected -eq 0 ]; then
+            echo -e "${S_TREE_V}  ${S_DOT_FULL} Yes"
+            echo -e "${S_TREE_V}  ${S_DOT_EMPTY} No"
+        else
+            echo -e "${S_TREE_V}  ${S_DOT_EMPTY} Yes"
+            echo -e "${S_TREE_V}  ${S_DOT_FULL} No"
+        fi
+        echo -e "${S_TREE_END}"
+
+        # Input
+        read -rsn1 input < /dev/tty
+        
+        # Mapping: 
+        # ESC -> Arrow Key Sequence?
+        # w/k -> Up
+        # s/j -> Down
+        # Enter -> Confirm
+
+        if [[ "$input" == "$ESC_SEQ" ]]; then
+            # Bash 3.2 friendly: Try to read 2 more chars with a 1s timeout
+            # (If it's a real arrow key, they are already in buffer so it's instant)
+            read -rsn2 -t 1 input_rest < /dev/tty
+            if [[ "$input_rest" == "[A" ]]; then # Up
+                selected=0
+            elif [[ "$input_rest" == "[B" ]]; then # Down
+                selected=1
+            fi
+        elif [[ "$input" == "w" || "$input" == "k" || "$input" == "W" || "$input" == "K" ]]; then # Up
+            selected=0
+        elif [[ "$input" == "s" || "$input" == "j" || "$input" == "S" || "$input" == "J" ]]; then # Down
+            selected=1
+        elif [[ "$input" == "" ]]; then # Enter
+            break
+        fi
+
+        # Move cursor up 3 lines to redraw (Yes, No, End)
+        printf "${COL_SEQ}3A"
+    done
+    
+    # Clear the options lines (3 lines now)
+    printf "${COL_SEQ}2K${COL_SEQ}1A${COL_SEQ}2K${COL_SEQ}1A${COL_SEQ}2K"
+    
+    # Print the selected option as a static log
+    if [ $selected -eq 0 ]; then
+        echo -e "${S_TREE_V}  ${DIM}Yes${RESET}"
+        return 0
+    else
+        echo -e "${S_TREE_V}  ${DIM}No${RESET}"
+        return 1
+    fi
+}
+
+# $1: Title
+# $2...: Options
+prompt_list() {
+    local title="$1"
+    shift
+    local options=("$@")
+    local selected=0
+    local num_options=${#options[@]}
+    
+    cursor_hide
+    while true; do
+        for ((i=0; i<num_options; i++)); do
+            if [ $i -eq $selected ]; then
+                echo -e "${S_TREE_V}  ${S_DOT_FULL} ${BOLD}${options[$i]}${RESET}"
+            else
+                echo -e "${S_TREE_V}  ${S_DOT_EMPTY} ${options[$i]}"
+            fi
+        done
+        echo -e "${S_TREE_END}"
+
+        read -rsn1 input < /dev/tty
+        
+        if [[ "$input" == "$ESC_SEQ" ]]; then
+            # Bash 3.2 friendly check without -t 0
+            read -rsn2 -t 1 input_rest < /dev/tty
+            if [[ "$input_rest" == "[A" ]]; then # Up
+                ((selected--))
+                if [ $selected -lt 0 ]; then selected=$((num_options-1)); fi
+            elif [[ "$input_rest" == "[B" ]]; then # Down
+                ((selected++))
+                if [ $selected -ge $num_options ]; then selected=0; fi
+            fi
+        elif [[ "$input" == "w" || "$input" == "k" || "$input" == "W" || "$input" == "K" ]]; then # Up
+            ((selected--))
+            if [ $selected -lt 0 ]; then selected=$((num_options-1)); fi
+        elif [[ "$input" == "s" || "$input" == "j" || "$input" == "S" || "$input" == "J" ]]; then # Down
+             ((selected++))
+             if [ $selected -ge $num_options ]; then selected=0; fi
+        elif [[ "$input" == "" ]]; then # Enter
+            break
+        fi
+
+        # Move cursor up N+1 lines (Options + End)
+        printf "${COL_SEQ}$((num_options+1))A"
+    done
+    
+    # Clear lines (Options + End)
+    printf "${COL_SEQ}$((num_options+1))A"
+    for ((i=0; i<=num_options; i++)); do # <= to include the End line
+        printf "${COL_SEQ}2K${COL_SEQ}1B"
+    done
+    printf "${COL_SEQ}$((num_options+1))A" # Back to start
+    
+    echo -e "${S_TREE_V}  ${DIM}${options[$selected]}${RESET}" 
+    
+    PROMPT_RETURN=$selected
+    return 0
+}
+
 spinner() {
     local pid=$1
     local delay=0.1
-    local spinstr='|/-\'
+    local spinstr='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
     while [ "$(ps a | awk '{print $1}' | grep $pid)" ]; do
         local temp=${spinstr#?}
-        printf " [%c]  " "$spinstr"
+        printf "${C_BRAND}%c${RESET}" "$spinstr"
         local spinstr=$temp${spinstr%"$temp"}
         sleep $delay
-        printf "\b\b\b\b\b\b"
+        printf "\b"
     done
-    printf "    \b\b\b\b"
+    printf " " # Clear spinner char
+    printf "\b"
 }
 
-clear
+print_security_box() {
+    echo -e "${S_TREE_V}"
+    echo -e "${S_DIAMOND}  ${BOLD}Security${RESET} ${C_GRAY}─────────────────────────────────────────────────────────────╮${RESET}"
+    echo -e "${S_TREE_V}                                                                        ${S_TREE_V}"
+    echo -e "${S_TREE_V}  ${BOLD}MUST READ SECURITY NOTICE${RESET}                                              ${S_TREE_V}"
+    echo -e "${S_TREE_V}                                                                        ${S_TREE_V}"
+    echo -e "${S_TREE_V}  Keygate bridges AI models directly to your operating system.          ${S_TREE_V}"
+    echo -e "${S_TREE_V}  This agent has actual agency: it can read, write, and execute.        ${S_TREE_V}"
+    echo -e "${S_TREE_V}                                                                        ${S_TREE_V}"
+    echo -e "${S_TREE_V}  YOU are responsible for the actions this agent takes.                 ${S_TREE_V}"
+    echo -e "${S_TREE_V}  Never give it easier access than you would a junior dev.              ${S_TREE_V}"
+    echo -e "${S_TREE_V}                                                                        ${S_TREE_V}"
+    echo -e "${S_TREE_V}  ${DIM}Safety Protocols:${RESET}                                                     ${S_TREE_V}"
+    echo -e "${S_TREE_V}  ${DIM}- Default: Run in a Docker container or restricted VM.${RESET}                ${S_TREE_V}"
+    echo -e "${S_TREE_V}  ${DIM}- Monitor: Keep 'Safe Mode' enabled for critical tasks.${RESET}               ${S_TREE_V}"
+    echo -e "${S_TREE_V}  ${DIM}- Isolate: Don't store secrets in the workspace root.${RESET}                 ${S_TREE_V}"
+    echo -e "${S_TREE_V}                                                                        ${S_TREE_V}"
+    echo -e "${S_TREE_V}  ${DIM}Full policy: docs/SECURITY.md${RESET}                                         ${S_TREE_V}"
+    echo -e "${S_TREE_V}                                                                        ${S_TREE_V}"
+    echo -e "${S_TREE_BRANCH}────────────────────────────────────────────────────────────────────────╯"
+}
 
-echo -e "${PURPLE}"
-echo "╔═══════════════════════════════════════════════════════════════╗"
-echo "║                                                               ║"
-echo "║   ⚡ KEYGATE INSTALLER                                        ║"
-echo "║   Personal AI Agent Gateway                                   ║"
-echo "║                                                               ║"
-echo "╚═══════════════════════════════════════════════════════════════╝"
-echo -e "${NC}"
+# ------------------------------------------------------------------------------
+#  Main Script
+# ------------------------------------------------------------------------------
 
-echo -e "${BLUE}Welcome to the Keygate setup wizard!${NC}"
-echo "This script will install Keygate and configure your environment."
-echo ""
-read -r -p "Press Enter to continue..." < /dev/tty
-
-# =============================================
-# PREREQUISITE CHECK
-# =============================================
-
-echo -e "\n${BLUE}Step 1: Checking Prerequisites...${NC}"
+# 1. Quick Prerequisite Checks (Silent unless error)
+print_banner
 
 if ! command -v git &> /dev/null; then
-    echo -e "${RED}❌ git is not installed.${NC} Please install git first."
+    echo -e "${S_CROSS} Git not found."
     exit 1
 fi
-echo -e "${GREEN}✓ git found${NC}"
+OS_DETECTED=$(uname -s)
+if [ "$OS_DETECTED" == "Darwin" ]; then
+    OS_DETECTED="MacOS"
+fi
+echo -e "${S_CHECK} Detected: $OS_DETECTED"
+echo -e "${S_CHECK} Git detected"
 
 if ! command -v node &> /dev/null; then
-    echo -e "${RED}❌ Node.js is not installed.${NC} Please install Node.js 22+ first."
+    echo -e "${S_CROSS} Node.js not found."
     exit 1
 fi
 
 NODE_VERSION=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
 if [ "$NODE_VERSION" -lt 22 ]; then
-    echo -e "${YELLOW}⚠️  Warning: Node.js version $NODE_VERSION detected. Keygate requires Node.js 22+${NC}"
-    read -r -p "Continue anyway? [y/N]: " CONTINUE_NODE < /dev/tty
-    if [[ ! "$CONTINUE_NODE" =~ ^[Yy]$ ]]; then
-        exit 1
-    fi
+    echo -e "${S_WARN} Node.js v${NODE_VERSION} detected (v22+ required)"
+    # We could exit here or prompt, but for aesthetics let's just warn for now
+    # exit 1
 else
-    echo -e "${GREEN}✓ Node.js $(node -v) found${NC}"
+    echo -e "${S_CHECK} Node.js $(node -v) found"
 fi
 
-# Check for pnpm
-if ! command -v pnpm &> /dev/null; then
-    echo -e "${YELLOW}⚠️  pnpm not found. Installing pnpm via corepack...${NC}"
-    corepack enable
-    corepack prepare pnpm@latest --activate
-    if ! command -v pnpm &> /dev/null; then
-         echo -e "${RED}❌ Failed to install pnpm automatically.${NC}"
-         echo "Please run: npm install -g pnpm"
-         exit 1
-    fi
-fi
-echo -e "${GREEN}✓ pnpm $(pnpm -v) found${NC}"
+echo -e "${S_ARROW} Starting setup..."
+sleep 1
 
-# =============================================
-# INSTALL LOCATION
-# =============================================
+# 2. Main Onboarding Flow
+print_header
+log_tree_start "Keygate onboarding"
 
-echo -e "\n${BLUE}Step 2: Installation Location${NC}"
+# Security Section
+print_security_box
 
-# Detect if we are running inside the repo
-if [ -f "package.json" ] && grep -q "keygate" "package.json"; then
-    CURRENT_DIR=$(pwd)
-    echo -e "Detected running inside Keygate repository at: ${YELLOW}$CURRENT_DIR${NC}"
-    echo "Do you want to configure this existing installation?"
-    read -r -p "Install here? [Y/n]: " INSTALL_HERE < /dev/tty
-    INSTALL_HERE=${INSTALL_HERE:-Y}
+echo -e "${S_TREE_V}"
+log_tree_item_active "I understand this is powerful and inherently risky. Continue?"
+echo -e "${S_TREE_V}  ${DIM}(Use Arrow keys, WASD, or j/k to navigate)${RESET}"
 
-    if [[ "$INSTALL_HERE" =~ ^[Yy]$ ]]; then
-        INSTALL_DIR="$CURRENT_DIR"
-    else
-        read -r -p "Enter installation path [$DEFAULT_INSTALL_DIR]: " INSTALL_DIR < /dev/tty
-        INSTALL_DIR=${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}
-    fi
+
+if prompt_yes_no; then
+    # User said YES
+    :
 else
-    read -r -p "Enter installation path [$DEFAULT_INSTALL_DIR]: " INSTALL_DIR < /dev/tty
-    INSTALL_DIR=${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}
+    # User said NO
+    echo -e "${S_TREE_END}"
+    echo -e "\n${C_YELLOW}Aborted by user.${RESET}"
+    exit 0
 fi
 
-WORKSPACE_DIR="$HOME/keygate-workspace"
-echo -e "Keygate Workspace will be created at: ${YELLOW}$WORKSPACE_DIR${NC}"
+# Onboarding Mode
+echo -e "${S_TREE_V}"
+log_tree_item_active "Onboarding mode"
+OPTIONS=("QuickStart (Configure details later via config.json)" "Manual")
+prompt_list "Onboarding mode" "${OPTIONS[@]}"
+MODE_IDX=$PROMPT_RETURN
 
-# =============================================
-# LEGAL DISCLAIMER & SPICY MODE OPT-IN
-# =============================================
-
-echo -e "\n${BLUE}Step 3: Security Configuration${NC}"
-echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${RED}⚠️  IMPORTANT SAFETY DISCLAIMER${NC}"
-echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo ""
-echo "Keygate is an AI agent that can execute commands on your computer."
-echo ""
-echo -e "${GREEN}SAFE MODE (Default):${NC}"
-echo "  • File operations restricted to $WORKSPACE_DIR"
-echo "  • Only allowed commands: git, ls, npm, cat, node, python3"
-echo "  • All write/execute actions require your confirmation"
-echo ""
-echo -e "${RED}SPICY MODE (Dangerous):${NC}"
-echo "  • FULL access to your entire filesystem"
-echo "  • Can run ANY command without restrictions"
-echo "  • NO confirmation prompts - autonomous execution"
-echo ""
-echo -e "${RED}Spicy Mode should ONLY be used in sandboxed/VM environments.${NC}"
-echo ""
-echo -e "To ${RED}enable Spicy Mode${NC}, type exactly: ${YELLOW}I ACCEPT THE RISK${NC}"
-echo -e "To continue with ${GREEN}Safe Mode only${NC}, press Enter."
-echo ""
-read -r -p "> " RISK_INPUT < /dev/tty
-
-SPICY_ENABLED="false"
-if [ "$RISK_INPUT" = "I ACCEPT THE RISK" ]; then
-    SPICY_ENABLED="true"
-    echo -e "\n${RED}⚠️  SPICY MODE ENABLED${NC} - You have been warned!\n"
-else
-    echo -e "\n${GREEN}✓ Safe Mode only${NC} - Good choice!\n"
+if [ $MODE_IDX -eq 0 ]; then
+    # QuickStart
+    echo -e "${S_TREE_V}"
+    log_tree_item "QuickStart ─────────────────────────╮"
+    log_tree_subitem "Gateway port: 18790"
+    log_tree_subitem "Gateway bind: Loopback (127.0.0.1)"
+    log_tree_subitem "Tailscale exposure: Off"
+    echo -e "${S_TREE_BRANCH}──────────────────────────────────────╯"
 fi
 
-# =============================================
-# LLM CONFIGURATION
-# =============================================
+# LLM Provider
+echo -e "${S_TREE_V}"
+log_tree_item_active "Model/auth provider"
+PROVIDERS=("OpenAI (GPT-4o)" "Anthropic (Claude 3.5 Sonnet)" "Google (Gemini 1.5 Pro)" "Ollama (Local)" "Skip for now")
+prompt_list "Model/auth provider" "${PROVIDERS[@]}"
+PROVIDER_IDX=$PROMPT_RETURN
 
-echo -e "${BLUE}Step 4: AI Model Configuration${NC}"
+LLM_PROVIDER=""
+DEFAULT_MODEL=""
+OLLAMA_HOST=""
+API_KEY=""
 
-echo "Select your LLM provider:"
-echo "  1) OpenAI (gpt-4o, gpt-4-turbo, etc.)"
-echo "  2) Google Gemini (gemini-1.5-pro, gemini-1.5-flash, etc.)"
-echo "  3) local Ollama (llama3, mistral, deepseek-r1, etc.)"
-echo ""
-read -r -p "Enter choice [1/2/3]: " PROVIDER_CHOICE < /dev/tty
-
-case $PROVIDER_CHOICE in
-    2)
-        LLM_PROVIDER="gemini"
-        DEFAULT_MODEL="gemini-1.5-pro"
-        ;;
-    3)
-        LLM_PROVIDER="ollama"
-        DEFAULT_MODEL="llama3"
-        ;;
-    *)
-        LLM_PROVIDER="openai"
-        DEFAULT_MODEL="gpt-4o"
-        ;;
+case $PROVIDER_IDX in
+    0) LLM_PROVIDER="openai"; DEFAULT_MODEL="gpt-4o" ;;
+    1) LLM_PROVIDER="anthropic"; DEFAULT_MODEL="claude-3-5-sonnet-20241022" ;;
+    2) LLM_PROVIDER="gemini"; DEFAULT_MODEL="gemini-1.5-pro" ;;
+    3) LLM_PROVIDER="ollama"; DEFAULT_MODEL="llama3" ;;
+    *) LLM_PROVIDER="unknown";;
 esac
 
-echo -e "\nSelected: ${GREEN}$LLM_PROVIDER${NC}"
-read -r -p "Enter model name (default: $DEFAULT_MODEL): " LLM_MODEL < /dev/tty
-LLM_MODEL=${LLM_MODEL:-$DEFAULT_MODEL}
+# API Key / Local Config Input
+if [ "$LLM_PROVIDER" != "unknown" ]; then
+    if [ "$LLM_PROVIDER" == "ollama" ]; then
+        echo -e "${S_TREE_V}"
+        log_tree_item_active "Ollama Host URL"
+        echo -n -e "${S_TREE_V}  ${S_ARROW} Enter host (default: http://127.0.0.1:11434): "
+        cursor_show
+        read -r input_host < /dev/tty
+        cursor_hide
+        OLLAMA_HOST=${input_host:-"http://127.0.0.1:11434"}
+        # Move cursor up to overwrite the input line with a clean log
+        printf "${COL_SEQ}1A${COL_SEQ}2K"
+        echo -e "${S_TREE_V}  ${DIM}${OLLAMA_HOST}${RESET}"
 
-API_KEY=""
-OLLAMA_HOST=""
+        # Model Selection
+        echo -e "${S_TREE_V}"
+        log_tree_item_active "Ollama Model"
+        
+        # Try to fetch models
+        if command -v ollama &> /dev/null; then
+            AVAILABLE_MODELS=$(OLLAMA_HOST="$OLLAMA_HOST" ollama list 2>/dev/null | awk 'NR>1 {print $1}')
+        else
+            AVAILABLE_MODELS=""
+        fi
 
-if [ "$LLM_PROVIDER" = "ollama" ]; then
-    echo ""
-    read -r -p "Enter Ollama Host (default: http://127.0.0.1:11434): " OLLAMA_HOST < /dev/tty
-    OLLAMA_HOST=${OLLAMA_HOST:-http://127.0.0.1:11434}
-else
-    echo ""
-    read -r -s -p "Enter your API key: " API_KEY < /dev/tty
-    echo ""
+        if [ -z "$AVAILABLE_MODELS" ]; then
+             echo -e "${S_TREE_V}  ${S_WARN} Could not list models (Ollama not running or no models pulled)."
+             echo -n -e "${S_TREE_V}  ${S_ARROW} Enter model to use (default: llama3): "
+             cursor_show
+             read -r input_model < /dev/tty
+             cursor_hide
+             DEFAULT_MODEL=${input_model:-"llama3"}
+             # Clean up UI
+             printf "${COL_SEQ}1A${COL_SEQ}2K"
+             echo -e "${S_TREE_V}  ${DIM}${DEFAULT_MODEL}${RESET}"
+             
+             # Warn if they might need to pull it
+             echo -e "${S_TREE_V}  ${S_WARN} Make sure to run: ${BOLD}ollama pull ${DEFAULT_MODEL}${RESET}"
+        else
+             # Convert to array (Bash 3.2 safe manual split)
+             mk_array() {
+                 local ifs_save="$IFS"
+                 IFS=$'\n'
+                 MODEL_OPTIONS=($1)
+                 IFS="$ifs_save"
+             }
+             mk_array "$AVAILABLE_MODELS"
+             
+             MODEL_OPTIONS+=("Custom...")
+             
+             prompt_list "Select Model" "${MODEL_OPTIONS[@]}"
+             MODEL_IDX=$PROMPT_RETURN
+             
+             # Check if last item (Custom) selected
+             # We can't easily check 'Custom...' string equality if prompt_list returns index
+             # but we know the size.
+             CNT=${#MODEL_OPTIONS[@]}
+             CUSTOM_IDX=$((CNT-1))
 
-    while [ -z "$API_KEY" ]; do
-        echo -e "${RED}API key is required for $LLM_PROVIDER.${NC}"
-        read -r -s -p "Enter your API key: " API_KEY < /dev/tty
+             if [ $MODEL_IDX -eq $CUSTOM_IDX ]; then
+                 echo -n -e "${S_TREE_V}  ${S_ARROW} Enter model name: "
+                 cursor_show
+                 read -r input_model < /dev/tty
+                 cursor_hide
+                 DEFAULT_MODEL=$input_model
+                 printf "${COL_SEQ}1A${COL_SEQ}2K"
+                 echo -e "${S_TREE_V}  ${DIM}${DEFAULT_MODEL}${RESET}"
+             else
+                 DEFAULT_MODEL="${MODEL_OPTIONS[$MODEL_IDX]}"
+             fi
+        fi
+    else
+        echo -e "${S_TREE_V}"
+        log_tree_item_active "API Key (${PROVIDERS[$PROVIDER_IDX]})"
+        echo -n -e "${S_TREE_V}  ${S_ARROW} "
+        cursor_show
+        read -r -s input_key < /dev/tty
+        cursor_hide
         echo ""
-    done
+        API_KEY=$input_key
+        # Move cursor up to overwrite
+        printf "${COL_SEQ}2A${COL_SEQ}2K" # 2 lines because echo "" added a newline
+        printf "${COL_SEQ}1B" # Move down one to clear the correct line? No.
+        
+        # Redraw cleanly
+        # Actually, simpler:
+        echo -e "${S_TREE_V}  ${DIM}************************${RESET}"
+    fi
 fi
 
-# =============================================
-# DISCORD (OPTIONAL)
-# =============================================
+log_tree_end
 
-echo -e "\n${BLUE}Step 5: Integrations (Optional)${NC}"
-read -r -p "Set up Discord bot? [y/N]: " SETUP_DISCORD < /dev/tty
 
-DISCORD_TOKEN=""
-if [[ "$SETUP_DISCORD" =~ ^[Yy]$ ]]; then
-    read -r -s -p "Enter Discord bot token: " DISCORD_TOKEN < /dev/tty
-    echo ""
+# ------------------------------------------------------------------------------
+#  Installation Logic
+# ------------------------------------------------------------------------------
+
+echo ""
+echo -e "${C_BRAND}→ Installing Keygate ${VERSION}...${RESET}"
+
+# Determine Install Dir
+INSTALL_DIR="$DEFAULT_INSTALL_DIR"
+if [ -f "package.json" ] && grep -q "keygate" "package.json"; then
+    INSTALL_DIR=$(pwd)
 fi
-
-# =============================================
-# INSTALLATION & BUILD
-# =============================================
-
-echo -e "\n${BLUE}Step 6: Installing Keygate...${NC}"
 
 mkdir -p "$CONFIG_DIR"
-mkdir -p "$WORKSPACE_DIR"
+mkdir -p "$HOME/.local/share" # Parent of install dir
 
-if [ "$INSTALL_DIR" != "$(pwd)" ]; then
-    if [ -d "$INSTALL_DIR" ]; then
-        echo -e "${YELLOW}Directory $INSTALL_DIR already exists.${NC}"
-        read -r -p "Overwrite? This will delete existing files [y/N]: " OVERWRITE < /dev/tty
-        if [[ "$OVERWRITE" =~ ^[Yy]$ ]]; then
-            rm -rf "$INSTALL_DIR"
-        else
-            echo "Update existing installation? [Y/n]"
-            read -r UPDATE_EXISTING < /dev/tty
-             # Logic to pull latest changes could go here
-        fi
-    fi
-
-    if [ ! -d "$INSTALL_DIR" ]; then
-        echo -e "Cloning repository to $INSTALL_DIR..."
-        git clone https://github.com/puukis/keygate.git "$INSTALL_DIR"
-    fi
+# Clone if needed
+if [ ! -d "$INSTALL_DIR/.git" ]; then
+   if [ "$INSTALL_DIR" != "$(pwd)" ]; then
+       echo -e "${C_GRAY}  Cloning to $INSTALL_DIR...${RESET}"
+       git clone https://github.com/puukis/keygate.git "$INSTALL_DIR" > /dev/null 2>&1
+   fi
 fi
 
 cd "$INSTALL_DIR"
 
-echo -e "\n${GREEN}Installing dependencies (this may take a moment)...${NC}"
-pnpm install > /dev/null 2>&1 &
+# Install Deps
+echo -n -e "${C_GRAY}  Installing dependencies... ${RESET}"
+pnpm install > /dev/null 2>&1 & # TODO: Handle error
 spinner $!
-echo -e "${GREEN}✓ Dependencies installed${NC}"
+echo -e "${S_CHECK}"
 
-echo -e "\n${GREEN}Building project...${NC}"
+# Build
+echo -n -e "${C_GRAY}  Building project...        ${RESET}"
 pnpm build > /dev/null 2>&1 &
 spinner $!
-echo -e "${GREEN}✓ Build complete${NC}"
+echo -e "${S_CHECK}"
 
-# =============================================
-# WRITE CONFIG
-# =============================================
-
-echo -e "\n${BLUE}Step 7: Finalizing Configuration...${NC}"
+# Write Config
+echo -n -e "${C_GRAY}  Writing configuration...   ${RESET}"
 
 cat > "$CONFIG_DIR/.env" << EOF
-# Keygate Environment Variables
 LLM_PROVIDER=$LLM_PROVIDER
-LLM_MODEL=$LLM_MODEL
+LLM_MODEL=$DEFAULT_MODEL
 LLM_API_KEY=$API_KEY
 LLM_OLLAMA_HOST=$OLLAMA_HOST
-SPICY_MODE_ENABLED=$SPICY_ENABLED
-WORKSPACE_PATH=$WORKSPACE_DIR
-DISCORD_TOKEN=$DISCORD_TOKEN
+WORKSPACE_PATH=$HOME/keygate-workspace
 EOF
-
 chmod 600 "$CONFIG_DIR/.env"
 
 cat > "$CONFIG_DIR/config.json" << EOF
 {
-  "llm": {
-    "provider": "$LLM_PROVIDER",
-    "model": "$LLM_MODEL"
-  },
-  "security": {
-    "spicyModeEnabled": $SPICY_ENABLED,
-    "workspacePath": "$WORKSPACE_DIR",
-    "allowedBinaries": ["git", "ls", "npm", "cat", "node", "python3", "pnpm", "yarn"]
-  },
-  "server": {
-    "port": 18790
-  },
-  "discord": {
-    "prefix": "!keygate "
-  }
+  "llm": { "provider": "$LLM_PROVIDER", "model": "$DEFAULT_MODEL" },
+  "security": { "spicyModeEnabled": false, "workspacePath": "$HOME/keygate-workspace" },
+   "server": { "port": 18790 }
 }
 EOF
+sleep 0.5
+echo -e "${S_CHECK}"
 
-# =============================================
-# GLOBAL ALIAS
-# =============================================
 
-mkdir -p "$BIN_DIR"
-LAUNCHER="$BIN_DIR/keygate"
-
-echo "#!/bin/bash" > "$LAUNCHER"
-echo "cd \"$INSTALL_DIR\" && pnpm dev" >> "$LAUNCHER"
-chmod +x "$LAUNCHER"
-
-echo -e "${GREEN}Created 'keygate' command in $BIN_DIR${NC}"
-
-if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
-    echo -e "${YELLOW}Note: $BIN_DIR is not in your PATH.${NC}"
-    echo "Add this to your shell profile (e.g. ~/.zshrc):"
-    echo "export PATH=\"\$HOME/.local/bin:\$PATH\""
-fi
-
-# =============================================
-# DONE
-# =============================================
+# ------------------------------------------------------------------------------
+#  Success
+# ------------------------------------------------------------------------------
 
 echo ""
-echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${GREEN}✅ Installation Successfully Completed!${NC}"
-echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${C_BRAND}Keygate installed successfully (${VERSION})!${RESET}"
+echo -e "I'm in. Let's cause some responsible chaos."
 echo ""
-echo "You can now start Keygate by running:"
-echo -e "  ${BLUE}keygate${NC}"
+echo -e "Run ${BOLD}pnpm dev${RESET} to start."
 echo ""
-echo "(Or by running 'pnpm dev' in the installation directory)"
-echo ""
-
-read -r -p "Start Keygate now? [Y/n]: " START_NOW < /dev/tty
-START_NOW=${START_NOW:-Y}
-
-if [[ "$START_NOW" =~ ^[Yy]$ ]]; then
-    pnpm dev
-fi
