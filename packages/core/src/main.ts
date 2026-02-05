@@ -6,7 +6,15 @@
 
 import { startWebServer } from './server/index.js';
 import type { KeygateConfig } from './types.js';
-import 'dotenv/config';
+import path from 'node:path';
+import os from 'node:os';
+import dotenv from 'dotenv';
+
+// Try to load from ~/.config/keygate/.env first
+const configDir = path.join(os.homedir(), '.config', 'keygate');
+dotenv.config({ path: path.join(configDir, '.env') });
+// Fallback to default behavior (CWD)
+dotenv.config();
 
 const config: KeygateConfig = {
   llm: {
