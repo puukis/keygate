@@ -11,8 +11,12 @@ import type {
 import type { ToolExecutor } from '../tools/ToolExecutor.js';
 import type { Gateway } from '../gateway/Gateway.js';
 import { createLLMProvider } from '../llm/index.js';
+import {
+  loadAgentWorkspaceState,
+  type WorkspaceContextFile,
+} from '../workspace/agentWorkspace.js';
 
-const SYSTEM_PROMPT = `You are Keygate, a helpful AI assistant that can control the user's computer and online services.
+const BASE_SYSTEM_PROMPT = `You are Keygate, a capable AI assistant that can control the user's computer and online services.
 
 You have access to various tools to help accomplish tasks:
 - Filesystem operations (read, write, list files)
@@ -22,12 +26,16 @@ You have access to various tools to help accomplish tasks:
 - Browser automation (navigate, click, screenshot)
 
 When helping the user:
-1. Think step by step about what needs to be done
-2. Use tools when necessary to gather information or take actions
-3. Be clear about what actions you're taking
-4. Report results and any errors encountered
+1. Think step by step about what needs to be done.
+2. Use tools when needed to gather information or take actions.
+3. Be explicit about actions you are taking.
+4. Report results and errors plainly.
+5. Be genuinely helpful without filler intros.
 
-Current security mode will affect what operations are allowed.`;
+Trust and safety:
+- Be careful with external/public actions and ask when in doubt.
+- Keep private information private.
+- Never claim you completed an action unless a tool result confirms it.`;
 
 /**
  * Brain - The ReAct agent loop
@@ -53,9 +61,11 @@ export class Brain {
    * Run the agent loop for a session
    */
   async run(session: Session, channel: Channel): Promise<string> {
+    const systemPrompt = await this.getSystemPrompt(session);
+
     // Build messages with system prompt
     const messages: Message[] = [
-      { role: 'system', content: this.getSystemPrompt() },
+      { role: 'system', content: systemPrompt },
       ...session.messages,
     ];
 
@@ -107,8 +117,10 @@ export class Brain {
    * Run the agent loop with streaming response
    */
   async *runStream(session: Session, channel: Channel): AsyncIterable<string> {
+    const systemPrompt = await this.getSystemPrompt(session);
+
     const messages: Message[] = [
-      { role: 'system', content: this.getSystemPrompt() },
+      { role: 'system', content: systemPrompt },
       ...session.messages,
     ];
 
@@ -232,10 +244,14 @@ export class Brain {
   /**
    * Get the system prompt with current context
    */
-  private getSystemPrompt(): string {
+  private async getSystemPrompt(session: Session): Promise<string> {
     const mode = this.gateway.getSecurityMode();
     const workspace = this.toolExecutor.getWorkspacePath();
-    
+    const workspaceState = await loadAgentWorkspaceState(workspace);
+    const userTurns = session.messages.filter((message) => message.role === 'user').length;
+    const isFirstUserTurn = userTurns === 1;
+    const shouldRunBootstrap = isFirstUserTurn && workspaceState.onboardingRequired;
+
     let modeInfo = '';
     if (mode === 'safe') {
       modeInfo = `\n\nSECURITY: Safe Mode is active.
@@ -246,8 +262,75 @@ export class Brain {
       modeInfo = `\n\n⚠️ SECURITY: SPICY MODE IS ACTIVE - Full system access enabled.`;
     }
 
-    return SYSTEM_PROMPT + modeInfo;
+    const workspaceFiles = `\n\nWORKSPACE CONTINUITY FILES
+- SOUL.md: ${formatContextStatus(workspaceState.soul)}
+- BOOTSTRAP.md: ${formatContextStatus(workspaceState.bootstrap)}
+- IDENTITY.md: ${formatContextStatus(workspaceState.identity)}
+- USER.md: ${formatContextStatus(workspaceState.user)}
+- MEMORY.md: ${formatContextStatus(workspaceState.memoryIndex)}
+- memory/today: ${formatContextStatus(workspaceState.todayMemory)}
+- memory/yesterday: ${formatContextStatus(workspaceState.yesterdayMemory)}
+
+Use relative workspace paths when calling filesystem tools (for example: IDENTITY.md, USER.md, memory/2026-02-06.md).`;
+
+    const bootstrapRules = shouldRunBootstrap
+      ? `\n\nFIRST CHAT BOOTSTRAP (REQUIRED NOW)
+1. Start with this exact sentence once: "Hey. I just came online. Who am I? Who are you?"
+2. Ask for identity fields:
+   - assistant name
+   - what kind of creature/assistant it is
+   - preferred vibe
+   - signature emoji
+3. After user answers, write or update IDENTITY.md.
+4. Ask what to call the user and their timezone, then update USER.md.
+5. Ask whether to tune SOUL.md together.
+6. Missing memory files are normal; do not treat ENOENT as a failure.
+7. If SOUL.md changes, explicitly tell the user.`
+      : `\n\nCONTINUITY RULES
+- Treat SOUL.md, IDENTITY.md, USER.md, MEMORY.md, and memory/*.md as persistent memory.
+- Be resourceful before asking questions that could be answered from those files.
+- Keep responses concise by default, thorough when needed.
+- If you change SOUL.md, explicitly tell the user.`;
+
+    const contextBlocks = [
+      formatContextBlock('SOUL.md', workspaceState.soul),
+      formatContextBlock('BOOTSTRAP.md', workspaceState.bootstrap),
+      formatContextBlock('IDENTITY.md', workspaceState.identity),
+      formatContextBlock('USER.md', workspaceState.user),
+      formatContextBlock('MEMORY.md', workspaceState.memoryIndex),
+      formatContextBlock('memory/today', workspaceState.todayMemory),
+      formatContextBlock('memory/yesterday', workspaceState.yesterdayMemory),
+    ]
+      .filter((value): value is string => value !== null)
+      .join('\n\n');
+
+    const contextSection = contextBlocks
+      ? `\n\nWORKSPACE SNAPSHOT (READ-ONLY CONTEXT FOR THIS TURN)\n${contextBlocks}`
+      : '';
+
+    return BASE_SYSTEM_PROMPT + modeInfo + workspaceFiles + bootstrapRules + contextSection;
   }
+}
+
+function formatContextStatus(file: WorkspaceContextFile): string {
+  if (!file.exists) {
+    return `missing (${file.path})`;
+  }
+
+  if (file.truncated) {
+    return `loaded and truncated (${file.path})`;
+  }
+
+  return `loaded (${file.path})`;
+}
+
+function formatContextBlock(label: string, file: WorkspaceContextFile): string | null {
+  if (!file.exists || !file.content) {
+    return null;
+  }
+
+  return `### ${label}
+${file.content}`;
 }
 
 function getFallbackModels(

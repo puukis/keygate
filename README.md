@@ -7,6 +7,7 @@ Personal AI agent gateway - control your computer and online services via a sing
 - **Multi-Channel**: Connect via Web UI (`localhost:18789`) or Discord bot
 - **ReAct Agent Loop**: Iterative reasoning with tool calling
 - **OpenAI Codex OAuth**: Sign in with ChatGPT through Codex CLI/app-server (no API key paste)
+- **File-Based Agent Identity**: First-chat bootstrap with persistent `SOUL.md`, `USER.md`, `BOOTSTRAP.md`, and `IDENTITY.md`
 - **Security Modes**:
   - 🟢 **Safe Mode** (default): Sandboxed workspace, command allowlist, human approval required
   - 🔴 **Spicy Mode**: Full host access, unrestricted execution (requires explicit opt-in)
@@ -79,7 +80,18 @@ After installation, config is stored at `~/.config/keygate/`:
 - `config.json` - LLM provider, model, security settings
 - `.env` - API keys
 
+Startup behavior:
+- `KEYGATE_OPEN_CHAT_ON_START=true` opens chat UI automatically when `keygate` starts
+- `KEYGATE_CHAT_URL=http://localhost:18789` controls which chat page is opened
+
 `openai-codex` uses `provider/model` format in config and UI, for example `openai-codex/gpt-5.2`.
+
+On first start, Keygate also initializes workspace context files in `WORKSPACE_PATH`:
+- `SOUL.md` - behavior contract/personality
+- `USER.md` - user profile/preferences
+- `BOOTSTRAP.md` - first-chat setup guidance
+- `IDENTITY.md` - created during first chat when identity is established
+- `memory/` - daily memory files (optional)
 
 ## Development
 

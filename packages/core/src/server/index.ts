@@ -18,6 +18,10 @@ interface WSMessage {
   reasoningEffort?: CodexReasoningEffort;
 }
 
+interface StartWebServerOptions {
+  onListening?: () => void | Promise<void>;
+}
+
 /**
  * WebSocket Channel adapter
  */
@@ -85,7 +89,7 @@ class WebSocketChannel extends BaseChannel {
 /**
  * Start the WebSocket server
  */
-export function startWebServer(config: KeygateConfig): void {
+export function startWebServer(config: KeygateConfig, options: StartWebServerOptions = {}): void {
   const gateway = Gateway.getInstance(config);
   
   // Register all built-in tools
@@ -283,6 +287,12 @@ export function startWebServer(config: KeygateConfig): void {
 
   server.listen(config.server.port, () => {
     console.log(`🌐 Keygate Web Server running on http://localhost:${config.server.port}`);
+
+    if (options.onListening) {
+      void Promise.resolve(options.onListening()).catch((error) => {
+        console.error('Startup hook failed:', error);
+      });
+    }
   });
 }
 
