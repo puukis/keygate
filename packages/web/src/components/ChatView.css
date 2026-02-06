@@ -2,6 +2,7 @@
   flex: 1;
   display: flex;
   flex-direction: column;
+  min-height: 0;
   max-width: 800px;
   margin: 0 auto;
   width: 100%;
@@ -11,6 +12,7 @@
 /* Messages Container */
 .messages-container {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 24px 0;
 }
@@ -117,9 +119,43 @@
 }
 
 .thinking-text {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.thinking-status {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+}
+
+.thinking-detail {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.thinking-activity-list {
+  border-top: 1px dashed var(--border);
+  margin-top: 2px;
+  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.thinking-activity-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+}
+
+.thinking-activity-time {
+  font-variant-numeric: tabular-nums;
+  min-width: 60px;
 }
 
 .thinking-dots {

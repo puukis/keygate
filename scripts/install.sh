@@ -362,7 +362,7 @@ fi
 # LLM Provider
 echo -e "${S_TREE_V}"
 log_tree_item_active "Model/auth provider"
-PROVIDERS=("OpenAI (GPT-4o)" "Anthropic (Claude 3.5 Sonnet)" "Google (Gemini 1.5 Pro)" "Ollama (Local)" "Skip for now")
+PROVIDERS=("OpenAI (GPT-4o)" "OpenAI Codex (ChatGPT OAuth)" "Google (Gemini 1.5 Pro)" "Ollama (Local)" "Skip for now")
 prompt_list "Model/auth provider" "${PROVIDERS[@]}"
 PROVIDER_IDX=$PROMPT_RETURN
 
@@ -373,7 +373,7 @@ API_KEY=""
 
 case $PROVIDER_IDX in
     0) LLM_PROVIDER="openai"; DEFAULT_MODEL="gpt-4o" ;;
-    1) LLM_PROVIDER="anthropic"; DEFAULT_MODEL="claude-3-5-sonnet-20241022" ;;
+    1) LLM_PROVIDER="openai-codex"; DEFAULT_MODEL="openai-codex/gpt-5.2" ;;
     2) LLM_PROVIDER="gemini"; DEFAULT_MODEL="gemini-1.5-pro" ;;
     3) LLM_PROVIDER="ollama"; DEFAULT_MODEL="llama3" ;;
     *) LLM_PROVIDER="unknown";;
@@ -450,6 +450,16 @@ if [ "$LLM_PROVIDER" != "unknown" ]; then
                  DEFAULT_MODEL="${MODEL_OPTIONS[$MODEL_IDX]}"
              fi
         fi
+    elif [ "$LLM_PROVIDER" == "openai-codex" ]; then
+        echo -e "${S_TREE_V}"
+        log_tree_item_active "OpenAI Codex OAuth (ChatGPT)"
+        if command -v codex &> /dev/null; then
+            echo -e "${S_TREE_V}  ${S_CHECK} codex detected in PATH."
+        else
+            echo -e "${S_TREE_V}  ${S_WARN} codex not found. Installer will continue; run:"
+            echo -e "${S_TREE_V}  ${DIM}npm i -g @openai/codex${RESET}"
+        fi
+        echo -e "${S_TREE_V}  ${S_ARROW} After install: ${BOLD}keygate auth login --provider openai-codex${RESET}"
     else
         echo -e "${S_TREE_V}"
         log_tree_item_active "API Key (${PROVIDERS[$PROVIDER_IDX]})"

@@ -8,6 +8,9 @@
     "dev": "pnpm -r --parallel dev",
     "build": "pnpm -r build",
     "test": "pnpm -r test",
+    "keygate": "pnpm --filter @keygate/core exec tsx src/main.ts",
+    "onboard": "pnpm --filter @keygate/core exec tsx src/main.ts onboard --auth-choice openai-codex",
+    "auth:login": "pnpm --filter @keygate/core exec tsx src/main.ts auth login --provider openai-codex",
     "lint": "eslint packages/*/src --ext .ts,.tsx",
     "format": "prettier --write \"packages/*/src/**/*.{ts,tsx,json}\""
   },

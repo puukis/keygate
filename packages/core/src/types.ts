@@ -2,6 +2,7 @@
 
 export type SecurityMode = 'safe' | 'spicy';
 export type ChannelType = 'web' | 'discord';
+export type CodexReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 
 // ==================== Messages ====================
 
@@ -86,12 +87,40 @@ export interface ChatOptions {
   tools?: ToolDefinition[];
   temperature?: number;
   maxTokens?: number;
+  sessionId?: string;
+  cwd?: string;
+  securityMode?: SecurityMode;
+  approvalPolicy?: string;
+  sandboxPolicy?: Record<string, unknown>;
+  onProviderEvent?: (event: ProviderEvent) => void;
+}
+
+export interface ProviderEvent {
+  provider: string;
+  method: string;
+  params?: Record<string, unknown>;
+}
+
+export interface ProviderModelOption {
+  id: string;
+  provider: string;
+  displayName: string;
+  isDefault?: boolean;
+  supportsPersonality?: boolean;
+  reasoningEffort?: unknown;
+  defaultReasoningEffort?: CodexReasoningEffort;
+  metadata?: Record<string, unknown>;
 }
 
 export interface LLMProvider {
   name: string;
   chat(messages: Message[], options?: ChatOptions): Promise<LLMResponse>;
   stream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk>;
+  listModels?(): Promise<ProviderModelOption[]>;
+  setModel?(model: string): void | Promise<void>;
+  getModel?(): string;
+  login?(options?: Record<string, unknown>): Promise<void>;
+  dispose?(): void | Promise<void>;
 }
 
 // ==================== Sessions ====================
@@ -108,8 +137,9 @@ export interface Session {
 
 export interface KeygateConfig {
   llm: {
-    provider: 'openai' | 'gemini' | 'ollama';
+    provider: 'openai' | 'gemini' | 'ollama' | 'openai-codex';
     model: string;
+    reasoningEffort?: CodexReasoningEffort;
     apiKey: string;
     ollama?: {
         host: string;
@@ -138,6 +168,7 @@ export interface KeygateEvents {
   'message:end': { sessionId: string; content: string };
   'tool:start': { sessionId: string; tool: string; args: Record<string, unknown> };
   'tool:end': { sessionId: string; tool: string; result: ToolResult };
+  'provider:event': { sessionId: string; event: ProviderEvent };
   'mode:changed': { mode: SecurityMode };
   'confirm:request': { sessionId: string; prompt: string; resolve: (confirmed: boolean) => void };
 }

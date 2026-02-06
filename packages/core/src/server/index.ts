@@ -1,19 +1,21 @@
 import { createServer } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
+import { spawnSync } from 'node:child_process';
 import { Gateway } from '../gateway/index.js';
 import { normalizeWebMessage, BaseChannel } from '../pipeline/index.js';
 import { allBuiltinTools } from '../tools/index.js';
-import type { KeygateConfig, SecurityMode } from '../types.js';
+import type { CodexReasoningEffort, KeygateConfig, SecurityMode } from '../types.js';
 import 'dotenv/config';
 
-const PORT = 18790;
-
 interface WSMessage {
-  type: 'message' | 'confirm_response' | 'set_mode' | 'clear_session';
+  type: 'message' | 'confirm_response' | 'set_mode' | 'clear_session' | 'get_models' | 'set_model';
   sessionId?: string;
   content?: string;
   confirmed?: boolean;
   mode?: SecurityMode;
+  provider?: KeygateConfig['llm']['provider'];
+  model?: string;
+  reasoningEffort?: CodexReasoningEffort;
 }
 
 /**
@@ -110,6 +112,7 @@ export function startWebServer(config: KeygateConfig): void {
         status: 'ok',
         mode: gateway.getSecurityMode(),
         spicyEnabled: config.security.spicyModeEnabled,
+        llm: gateway.getLLMState(),
       }));
       return;
     }
@@ -125,6 +128,7 @@ export function startWebServer(config: KeygateConfig): void {
     const sessionId = crypto.randomUUID();
     const channel = new WebSocketChannel(ws, sessionId);
     channels.set(sessionId, channel);
+    const llmState = gateway.getLLMState();
 
     console.log(`Client connected: ${sessionId}`);
 
@@ -134,7 +138,10 @@ export function startWebServer(config: KeygateConfig): void {
       sessionId,
       mode: gateway.getSecurityMode(),
       spicyEnabled: config.security.spicyModeEnabled,
+      llm: llmState,
     }));
+
+    void sendModels(ws, gateway, llmState.provider);
 
     ws.on('message', async (data) => {
       try {
@@ -187,6 +194,60 @@ export function startWebServer(config: KeygateConfig): void {
             ws.send(JSON.stringify({ type: 'session_cleared', sessionId }));
             break;
           }
+
+          case 'get_models': {
+            await sendModels(ws, gateway, msg.provider ?? gateway.getLLMState().provider);
+            break;
+          }
+
+          case 'set_model': {
+            const provider = msg.provider ?? gateway.getLLMState().provider;
+            const model = msg.model?.trim();
+            const reasoningEffort = provider === 'openai-codex'
+              ? normalizeCodexReasoningEffort(msg.reasoningEffort)
+              : undefined;
+
+            if (!model) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: 'Model is required',
+              }));
+              break;
+            }
+
+            if (provider === 'openai-codex' && typeof msg.reasoningEffort === 'string' && !reasoningEffort) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: 'Invalid reasoning effort. Expected low, medium, high, or xhigh.',
+              }));
+              break;
+            }
+
+            if (provider === 'openai-codex' && !isCodexInstalled()) {
+              ws.send(JSON.stringify({
+                type: 'codex_install_required',
+                provider,
+                message: 'Codex CLI is not installed. Run `keygate onboard --auth-choice openai-codex`.',
+              }));
+              break;
+            }
+
+            try {
+              await gateway.setLLMSelection(provider, model, reasoningEffort);
+              const state = gateway.getLLMState();
+              ws.send(JSON.stringify({
+                type: 'model_changed',
+                llm: state,
+              }));
+              await sendModels(ws, gateway, state.provider);
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Failed to switch model',
+              }));
+            }
+            break;
+          }
         }
       } catch (error) {
         console.error('WebSocket message error:', error);
@@ -216,6 +277,10 @@ export function startWebServer(config: KeygateConfig): void {
     broadcast(wss, { type: 'mode_changed', ...event });
   });
 
+  gateway.on('provider:event', (event) => {
+    broadcast(wss, { type: 'provider_event', ...event });
+  });
+
   server.listen(config.server.port, () => {
     console.log(`🌐 Keygate Web Server running on http://localhost:${config.server.port}`);
   });
@@ -231,3 +296,55 @@ function broadcast(wss: WebSocketServer, data: object): void {
 }
 
 export { WebSocketChannel };
+
+async function sendModels(
+  ws: WebSocket,
+  gateway: Gateway,
+  provider: KeygateConfig['llm']['provider']
+): Promise<void> {
+  try {
+    const models = await gateway.listAvailableModels(provider);
+    ws.send(JSON.stringify({
+      type: 'models',
+      provider,
+      models,
+    }));
+  } catch (error) {
+    ws.send(JSON.stringify({
+      type: 'models',
+      provider,
+      models: [],
+      error: error instanceof Error ? error.message : 'Failed to fetch models',
+    }));
+  }
+}
+
+function isCodexInstalled(): boolean {
+  const result = spawnSync('codex', ['--version'], {
+    stdio: 'pipe',
+  });
+
+  return result.status === 0;
+}
+
+function normalizeCodexReasoningEffort(value: unknown): CodexReasoningEffort | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const normalized = value.trim().toLowerCase();
+
+  switch (normalized) {
+    case 'low':
+    case 'medium':
+    case 'high':
+      return normalized;
+    case 'xhigh':
+    case 'extra-high':
+    case 'extra_high':
+    case 'extra high':
+      return 'xhigh';
+    default:
+      return undefined;
+  }
+}

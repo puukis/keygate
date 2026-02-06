@@ -1,8 +1,10 @@
 import type {
   Channel,
+  CodexReasoningEffort,
   KeygateConfig,
   LLMProvider,
   Message,
+  ProviderModelOption,
   Session,
   ToolCall,
 } from '../types.js';
@@ -35,11 +37,13 @@ Current security mode will affect what operations are allowed.`;
  */
 export class Brain {
   private llm: LLMProvider;
+  private config: KeygateConfig;
   private toolExecutor: ToolExecutor;
   private gateway: Gateway;
   private maxIterations = 10;
 
   constructor(config: KeygateConfig, toolExecutor: ToolExecutor, gateway: Gateway) {
+    this.config = config;
     this.llm = createLLMProvider(config);
     this.toolExecutor = toolExecutor;
     this.gateway = gateway;
@@ -64,7 +68,10 @@ export class Brain {
       iterations++;
 
       // Call LLM with tools
-      const response = await this.llm.chat(messages, { tools });
+      const response = await this.llm.chat(messages, {
+        tools,
+        ...this.buildProviderOptions(session.id),
+      });
 
       // If no tool calls, return the response content
       if (!response.toolCalls || response.toolCalls.length === 0) {
@@ -115,7 +122,10 @@ export class Brain {
       // Stream LLM response
       let fullContent = '';
       
-      for await (const chunk of this.llm.stream(messages, { tools })) {
+      for await (const chunk of this.llm.stream(messages, {
+        tools,
+        ...this.buildProviderOptions(session.id),
+      })) {
         if (chunk.content) {
           fullContent += chunk.content;
           yield chunk.content;
@@ -169,6 +179,56 @@ export class Brain {
     return this.toolExecutor.execute(toolCall, channel);
   }
 
+  getLLMProviderName(): string {
+    return this.llm.name;
+  }
+
+  getLLMModel(): string {
+    if (typeof this.llm.getModel === 'function') {
+      return this.llm.getModel();
+    }
+    return this.config.llm.model;
+  }
+
+  async setLLMSelection(
+    provider: KeygateConfig['llm']['provider'],
+    model: string,
+    reasoningEffort?: CodexReasoningEffort
+  ): Promise<void> {
+    const previousProvider = this.llm;
+
+    this.config.llm.provider = provider;
+    this.config.llm.model = model;
+    if (provider === 'openai-codex') {
+      this.config.llm.reasoningEffort = reasoningEffort ?? this.config.llm.reasoningEffort ?? 'medium';
+    }
+
+    this.llm = createLLMProvider(this.config);
+
+    if (typeof previousProvider.dispose === 'function') {
+      await previousProvider.dispose();
+    }
+  }
+
+  async listModels(): Promise<ProviderModelOption[]> {
+    if (typeof this.llm.listModels === 'function') {
+      return this.llm.listModels();
+    }
+
+    return getFallbackModels(this.config.llm.provider, this.config.llm.model);
+  }
+
+  private buildProviderOptions(sessionId: string) {
+    return {
+      sessionId,
+      cwd: this.toolExecutor.getWorkspacePath(),
+      securityMode: this.gateway.getSecurityMode(),
+      onProviderEvent: (event: { provider: string; method: string; params?: Record<string, unknown> }) => {
+        this.gateway.emit('provider:event', { sessionId, event });
+      },
+    };
+  }
+
   /**
    * Get the system prompt with current context
    */
@@ -188,4 +248,28 @@ export class Brain {
 
     return SYSTEM_PROMPT + modeInfo;
   }
+}
+
+function getFallbackModels(
+  provider: KeygateConfig['llm']['provider'],
+  currentModel: string
+): ProviderModelOption[] {
+  const defaults: Record<KeygateConfig['llm']['provider'], string[]> = {
+    openai: ['gpt-4o', 'gpt-4.1', 'o3-mini'],
+    gemini: ['gemini-1.5-pro', 'gemini-1.5-flash'],
+    ollama: ['llama3', 'qwen2.5-coder'],
+    'openai-codex': ['openai-codex/gpt-5.3', 'openai-codex/gpt-5.2'],
+  };
+
+  const candidates = defaults[provider] ?? [currentModel];
+  const unique = provider === 'openai-codex'
+    ? Array.from(new Set(candidates))
+    : Array.from(new Set([currentModel, ...candidates]));
+
+  return unique.map((model, index) => ({
+    id: model,
+    provider,
+    displayName: model,
+    isDefault: index === 0,
+  }));
 }

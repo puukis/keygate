@@ -5,6 +5,7 @@
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
+  min-height: 0;
 }
 
 .activity-header {
@@ -25,6 +26,34 @@
   padding: 2px 8px;
   border-radius: 12px;
   font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.activity-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.activity-toggle {
+  width: fit-content;
+  font-size: 0.75rem;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+
+.activity-toggle.active {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+
+.provider-summary {
+  font-size: 0.72rem;
   color: var(--text-secondary);
 }
 
@@ -50,6 +79,10 @@
   margin-bottom: 8px;
 }
 
+.event-item.provider {
+  border-left: 2px solid var(--accent);
+}
+
 .event-icon {
   font-size: 1.25rem;
   flex-shrink: 0;
@@ -71,6 +104,12 @@
   font-size: 0.7rem;
   color: var(--text-secondary);
   margin-top: 2px;
+}
+
+.event-detail {
+  margin-top: 6px;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
 }
 
 .event-args {
@@ -99,6 +138,22 @@
 .event-result.error {
   background: rgba(239, 68, 68, 0.1);
   color: var(--danger);
+}
+
+.activity-more-btn {
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
+.activity-more-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--accent);
 }
 
 @media (max-width: 768px) {

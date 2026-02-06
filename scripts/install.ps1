@@ -166,18 +166,23 @@ Write-ColorOutput "Step 4: AI Model Configuration" "Cyan"
 
 Write-Host "Select your LLM provider:"
 Write-Host "  1) OpenAI (gpt-4o, gpt-4-turbo, etc.)"
-Write-Host "  2) Google Gemini (gemini-1.5-pro, gemini-1.5-flash, etc.)"
-Write-Host "  3) local Ollama (llama3, mistral, deepseek-r1, etc.)"
+Write-Host "  2) OpenAI Codex (ChatGPT OAuth, no API key)"
+Write-Host "  3) Google Gemini (gemini-1.5-pro, gemini-1.5-flash, etc.)"
+Write-Host "  4) local Ollama (llama3, mistral, deepseek-r1, etc.)"
 Write-Host ""
 
-$ProviderChoice = Read-Host "Enter choice [1/2/3]"
+$ProviderChoice = Read-Host "Enter choice [1/2/3/4]"
 
 switch ($ProviderChoice) {
     "2" {
+        $LLMProvider = "openai-codex"
+        $DefaultModel = "openai-codex/gpt-5.2"
+    }
+    "3" {
         $LLMProvider = "gemini"
         $DefaultModel = "gemini-1.5-pro"
     }
-    "3" {
+    "4" {
         $LLMProvider = "ollama"
         $DefaultModel = "llama3"
     }
@@ -198,6 +203,13 @@ $ApiKeyPlain = ""
 if ($LLMProvider -eq "ollama") {
     $OLLAMA_HOST = Read-Host "Enter Ollama Host (default: http://127.0.0.1:11434)"
     if ([string]::IsNullOrEmpty($OLLAMA_HOST)) { $OLLAMA_HOST = "http://127.0.0.1:11434" }
+} elseif ($LLMProvider -eq "openai-codex") {
+    if (Get-Command codex -ErrorAction SilentlyContinue) {
+        Write-ColorOutput "✓ codex CLI detected in PATH" "Green"
+    } else {
+        Write-ColorOutput "⚠️  codex CLI not found. Install later with: npm i -g @openai/codex" "Yellow"
+    }
+    Write-Host "After install, run: keygate auth login --provider openai-codex" -ForegroundColor Yellow
 } else {
     Write-Host ""
     $ApiKeySecure = Read-Host "Enter your API key" -AsSecureString

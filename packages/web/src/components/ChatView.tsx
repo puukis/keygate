@@ -1,19 +1,22 @@
 import { useState, useRef, useEffect } from 'react';
-import type { Message } from '../App';
+import type { Message, StreamActivity } from '../App';
 import './ChatView.css';
 
 interface ChatViewProps {
   messages: Message[];
   onSendMessage: (content: string) => void;
   isStreaming: boolean;
+  streamActivities: StreamActivity[];
   disabled: boolean;
 }
 
-export function ChatView({ messages, onSendMessage, isStreaming, disabled }: ChatViewProps) {
+export function ChatView({ messages, onSendMessage, isStreaming, streamActivities, disabled }: ChatViewProps) {
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const hasStreamingMessage = messages.some((msg) => msg.id === 'streaming');
+  const visibleActivities = streamActivities.slice(-4).reverse();
+  const currentActivity = visibleActivities[0];
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -84,15 +87,36 @@ export function ChatView({ messages, onSendMessage, isStreaming, disabled }: Cha
                 <div className="message-content">
                   <div className="message-header">
                     <span className="message-role">Keygate</span>
-                    <span className="thinking-badge">Thinking</span>
+                    <span className="thinking-badge">
+                      {currentActivity ? 'Live' : 'Thinking'}
+                    </span>
                   </div>
                   <div className="message-text thinking-text">
-                    Working on it
-                    <span className="thinking-dots" aria-hidden="true">
-                      <span>.</span>
-                      <span>.</span>
-                      <span>.</span>
-                    </span>
+                    <div className="thinking-status">
+                      {currentActivity?.status ?? 'Working on it'}
+                      {!currentActivity && (
+                        <span className="thinking-dots" aria-hidden="true">
+                          <span>.</span>
+                          <span>.</span>
+                          <span>.</span>
+                        </span>
+                      )}
+                    </div>
+                    {currentActivity?.detail && (
+                      <div className="thinking-detail">{currentActivity.detail}</div>
+                    )}
+                    {visibleActivities.length > 1 && (
+                      <div className="thinking-activity-list">
+                        {visibleActivities.slice(1).map((activity) => (
+                          <div key={activity.id} className="thinking-activity-item">
+                            <span className="thinking-activity-time">
+                              {activity.timestamp.toLocaleTimeString()}
+                            </span>
+                            <span>{activity.status}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>

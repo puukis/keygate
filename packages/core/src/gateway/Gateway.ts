@@ -1,8 +1,10 @@
 import { EventEmitter } from 'eventemitter3';
 import type {
+  CodexReasoningEffort,
   KeygateConfig,
   KeygateEvents,
   NormalizedMessage,
+  ProviderModelOption,
   SecurityMode,
   Session,
 } from '../types.js';
@@ -10,6 +12,7 @@ import { LaneQueue } from './LaneQueue.js';
 import { Brain } from '../brain/Brain.js';
 import { ToolExecutor } from '../tools/ToolExecutor.js';
 import { Database } from '../db/index.js';
+import { createLLMProvider } from '../llm/index.js';
 
 /**
  * Gateway - The central hub of Keygate
@@ -191,6 +194,68 @@ export class Gateway extends EventEmitter<KeygateEvents> {
     return this.securityMode;
   }
 
+  getLLMState(): {
+    provider: KeygateConfig['llm']['provider'];
+    model: string;
+    reasoningEffort?: CodexReasoningEffort;
+  } {
+    return {
+      provider: this.config.llm.provider,
+      model: this.brain.getLLMModel(),
+      reasoningEffort: this.config.llm.reasoningEffort,
+    };
+  }
+
+  async listAvailableModels(
+    provider: KeygateConfig['llm']['provider'] = this.config.llm.provider
+  ): Promise<ProviderModelOption[]> {
+    if (provider === this.config.llm.provider) {
+      return this.brain.listModels();
+    }
+
+    const tempConfig: KeygateConfig = {
+      ...this.config,
+      llm: {
+        ...this.config.llm,
+        provider,
+        model: getDefaultModelForProvider(provider),
+      },
+    };
+
+    const providerInstance = createLLMProvider(tempConfig);
+
+    try {
+      if (typeof providerInstance.listModels === 'function') {
+        return await providerInstance.listModels();
+      }
+
+      return [{
+        id: tempConfig.llm.model,
+        provider,
+        displayName: tempConfig.llm.model,
+        isDefault: true,
+      }];
+    } finally {
+      if (typeof providerInstance.dispose === 'function') {
+        await providerInstance.dispose();
+      }
+    }
+  }
+
+  async setLLMSelection(
+    provider: KeygateConfig['llm']['provider'],
+    model: string,
+    reasoningEffort?: CodexReasoningEffort
+  ): Promise<void> {
+    this.config.llm.provider = provider;
+    this.config.llm.model = model;
+    if (provider === 'openai-codex') {
+      this.config.llm.reasoningEffort = reasoningEffort ?? this.config.llm.reasoningEffort ?? 'medium';
+    }
+
+    await this.brain.setLLMSelection(provider, model, this.config.llm.reasoningEffort);
+  }
+
   /**
    * Set security mode (requires spicy mode to be enabled in config)
    */
@@ -212,5 +277,20 @@ export class Gateway extends EventEmitter<KeygateEvents> {
       session.messages = [];
       session.updatedAt = new Date();
     }
+  }
+}
+
+function getDefaultModelForProvider(provider: KeygateConfig['llm']['provider']): string {
+  switch (provider) {
+    case 'openai':
+      return 'gpt-4o';
+    case 'gemini':
+      return 'gemini-1.5-pro';
+    case 'ollama':
+      return 'llama3';
+    case 'openai-codex':
+      return 'openai-codex/gpt-5.3';
+    default:
+      return 'gpt-4o';
   }
 }

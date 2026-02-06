@@ -6,6 +6,7 @@ Personal AI agent gateway - control your computer and online services via a sing
 
 - **Multi-Channel**: Connect via Web UI (`localhost:18789`) or Discord bot
 - **ReAct Agent Loop**: Iterative reasoning with tool calling
+- **OpenAI Codex OAuth**: Sign in with ChatGPT through Codex CLI/app-server (no API key paste)
 - **Security Modes**:
   - 🟢 **Safe Mode** (default): Sandboxed workspace, command allowlist, human approval required
   - 🔴 **Spicy Mode**: Full host access, unrestricted execution (requires explicit opt-in)
@@ -23,6 +24,19 @@ cd keygate
 pnpm install
 pnpm dev
 ```
+
+### Codex OAuth Onboarding
+
+```bash
+# Install Codex CLI if needed + run ChatGPT OAuth login + select default Codex model
+pnpm keygate onboard --auth-choice openai-codex
+
+# Login only
+pnpm keygate auth login --provider openai-codex
+```
+
+The `openai-codex` provider delegates auth/token storage to official Codex tooling. Keygate does not store OpenAI OAuth tokens.
+See smoke test steps in `docs/CODEX_SMOKE_TEST.md`.
 
 ## Architecture
 
@@ -49,7 +63,7 @@ pnpm dev
 │   ┌─────────────────────────────────────────────────────┐  │
 │   │                     Brain                            │  │
 │   │  ReAct Loop: Reason → Tool → Observe → Respond      │  │
-│   │  LLM Providers: OpenAI / Gemini                     │  │
+│   │  LLM Providers: OpenAI / Gemini / Ollama / Codex    │  │
 │   └────────────────────────┬────────────────────────────┘  │
 │                            ▼                                │
 │   ┌─────────────────────────────────────────────────────┐  │
@@ -65,6 +79,8 @@ After installation, config is stored at `~/.config/keygate/`:
 - `config.json` - LLM provider, model, security settings
 - `.env` - API keys
 
+`openai-codex` uses `provider/model` format in config and UI, for example `openai-codex/gpt-5.2`.
+
 ## Development
 
 ```bash
@@ -73,6 +89,9 @@ pnpm install
 
 # Start all services in dev mode
 pnpm dev
+
+# CLI commands (serve/onboard/auth/install)
+pnpm keygate --help
 
 # Run tests
 pnpm test
