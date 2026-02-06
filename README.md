@@ -44,10 +44,10 @@ See smoke test steps in `docs/CODEX_SMOKE_TEST.md`.
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                     Chat Interfaces                         │
-│   ┌─────────────────┐           ┌─────────────────────┐    │
-│   │   Web UI        │           │   Discord Bot       │    │
-│   │ localhost:18789 │           │   !keygate {msg}    │    │
-│   └────────┬────────┘           └──────────┬──────────┘    │
+│   ┌─────────────────┐           ┌─────────────────────┐     │
+│   │   Web UI        │           │   Discord Bot       │     │
+│   │ localhost:18789 │           │   !keygate {msg}    │     │
+│   └────────┬────────┘           └──────────┬──────────┘     │
 │            │                               │                │
 │            └───────────────┬───────────────┘                │
 │                            ▼                                │
@@ -55,22 +55,22 @@ See smoke test steps in `docs/CODEX_SMOKE_TEST.md`.
 │            │     Normalization Pipeline    │                │
 │            └───────────────┬───────────────┘                │
 │                            ▼                                │
-│   ┌─────────────────────────────────────────────────────┐  │
-│   │                    Gateway                           │  │
-│   │  • Session Management    • Lane Queue (per-session) │  │
-│   │  • Security Mode Switch  • SQLite Persistence       │  │
-│   └────────────────────────┬────────────────────────────┘  │
+│   ┌─────────────────────────────────────────────────────┐   │
+│   │                    Gateway                          │   │
+│   │  • Session Management    • Lane Queue (per-session) │   │
+│   │  • Security Mode Switch  • SQLite Persistence       │   │
+│   └────────────────────────┬────────────────────────────┘   │
 │                            ▼                                │
-│   ┌─────────────────────────────────────────────────────┐  │
-│   │                     Brain                            │  │
-│   │  ReAct Loop: Reason → Tool → Observe → Respond      │  │
-│   │  LLM Providers: OpenAI / Gemini / Ollama / Codex    │  │
-│   └────────────────────────┬────────────────────────────┘  │
+│   ┌─────────────────────────────────────────────────────┐   │
+│   │                     Brain                           │   │
+│   │  ReAct Loop: Reason → Tool → Observe → Respond      │   │
+│   │  LLM Providers: OpenAI / Gemini / Ollama / Codex    │   │
+│   └────────────────────────┬────────────────────────────┘   │
 │                            ▼                                │
-│   ┌─────────────────────────────────────────────────────┐  │
-│   │                  Tool Executor                       │  │
-│   │  Safe Mode: Sandbox │ Spicy Mode: Unrestricted      │  │
-│   └─────────────────────────────────────────────────────┘  │
+│   ┌─────────────────────────────────────────────────────┐   │
+│   │                  Tool Executor                      │   │
+│   │  Safe Mode: Sandbox │ Spicy Mode: Unrestricted      │   │
+│   └─────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
