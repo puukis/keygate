@@ -719,66 +719,18 @@ function App() {
     <div className="app">
       <header className="app-header">
         <div className="header-left">
-          <h1 className="logo">⚡ Keygate</h1>
+          <div className="brand-block">
+            <span className="brand-mark" aria-hidden="true" />
+            <div className="brand-copy">
+              <h1 className="logo">Keygate</h1>
+              <p className="brand-subtitle">AI Gateway Workspace</p>
+            </div>
+          </div>
           <SecurityBadge
             mode={mode}
             spicyEnabled={spicyEnabled}
             onModeChange={handleModeChange}
           />
-          <div className="llm-controls">
-            <label className="llm-control">
-              <span>Provider</span>
-              <select
-                value={selectedProvider}
-                onChange={(event) => handleProviderChange(event.target.value as LLMProviderId)}
-                disabled={!connected || isStreaming}
-              >
-                {PROVIDER_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </select>
-            </label>
-            <label className="llm-control">
-              <span>Model</span>
-              <select
-                value={selectedModelValue}
-                onChange={(event) => handleModelChange(event.target.value)}
-                disabled={!connected || isStreaming || selectedModels.length === 0 || modelsLoading}
-              >
-                {selectedModels.length === 0 ? (
-                  <option value={llm.model}>{modelsLoading ? 'Loading models...' : llm.model}</option>
-                ) : (
-                  selectedModels.map((model) => (
-                    <option key={model.id} value={model.id}>{model.displayName}</option>
-                  ))
-                )}
-              </select>
-            </label>
-            {selectedProvider === 'openai-codex' && (
-              <label className="llm-control">
-                <span>Reasoning</span>
-                <select
-                  value={selectedReasoningEffort ?? 'medium'}
-                  onChange={(event) => handleReasoningEffortChange(event.target.value as CodexReasoningEffort)}
-                  disabled={
-                    !connected ||
-                    isStreaming ||
-                    selectedModels.length === 0 ||
-                    modelsLoading ||
-                    visibleReasoningOptions.length === 0
-                  }
-                >
-                  {visibleReasoningOptions.length === 0 ? (
-                    <option value={selectedReasoningEffort ?? 'medium'}>Medium</option>
-                  ) : (
-                    visibleReasoningOptions.map((option) => (
-                      <option key={option.value} value={option.value}>{option.label}</option>
-                    ))
-                  )}
-                </select>
-              </label>
-            )}
-          </div>
         </div>
         <div className="header-right">
           <div className={`connection-status ${connected ? 'connected' : connecting ? 'connecting' : 'disconnected'}`}>
@@ -786,19 +738,82 @@ function App() {
             {connected ? 'Connected' : connecting ? 'Connecting...' : 'Disconnected'}
           </div>
           <button className="btn-secondary" onClick={handleClearSession}>
-            Clear Chat
+            Clear session
           </button>
         </div>
       </header>
 
       <main className="app-main">
-        <ChatView
-          messages={messages}
-          onSendMessage={handleSendMessage}
-          isStreaming={isStreaming}
-          streamActivities={streamActivities}
-          disabled={!connected}
-        />
+        <section className="chat-shell">
+          <div className="chat-toolbar">
+            <div className="llm-controls">
+              <label className="llm-control">
+                <span>Provider</span>
+                <select
+                  value={selectedProvider}
+                  onChange={(event) => handleProviderChange(event.target.value as LLMProviderId)}
+                  disabled={!connected || isStreaming}
+                >
+                  {PROVIDER_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="llm-control">
+                <span>Model</span>
+                <select
+                  value={selectedModelValue}
+                  onChange={(event) => handleModelChange(event.target.value)}
+                  disabled={!connected || isStreaming || selectedModels.length === 0 || modelsLoading}
+                >
+                  {selectedModels.length === 0 ? (
+                    <option value={llm.model}>{modelsLoading ? 'Loading models...' : llm.model}</option>
+                  ) : (
+                    selectedModels.map((model) => (
+                      <option key={model.id} value={model.id}>{model.displayName}</option>
+                    ))
+                  )}
+                </select>
+              </label>
+              {selectedProvider === 'openai-codex' && (
+                <label className="llm-control">
+                  <span>Reasoning</span>
+                  <select
+                    value={selectedReasoningEffort ?? 'medium'}
+                    onChange={(event) => handleReasoningEffortChange(event.target.value as CodexReasoningEffort)}
+                    disabled={
+                      !connected ||
+                      isStreaming ||
+                      selectedModels.length === 0 ||
+                      modelsLoading ||
+                      visibleReasoningOptions.length === 0
+                    }
+                  >
+                    {visibleReasoningOptions.length === 0 ? (
+                      <option value={selectedReasoningEffort ?? 'medium'}>Medium</option>
+                    ) : (
+                      visibleReasoningOptions.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))
+                    )}
+                  </select>
+                </label>
+              )}
+            </div>
+            {modelsLoading && (
+              <span className="models-loading">Refreshing model catalog...</span>
+            )}
+          </div>
+
+          <ChatView
+            messages={messages}
+            onSendMessage={handleSendMessage}
+            isStreaming={isStreaming}
+            streamActivities={streamActivities}
+            disabled={!connected}
+          />
+        </section>
+
         <LiveActivityLog events={toolEvents} />
       </main>
 

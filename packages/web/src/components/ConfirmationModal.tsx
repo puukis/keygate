@@ -11,7 +11,7 @@ export function ConfirmationModal({ prompt, onConfirm, onCancel }: ConfirmationM
     <div className="modal-overlay" onClick={onCancel}>
       <div className="modal-content animate-slide-in" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
-          <span className="modal-icon">🔐</span>
+          <span className="modal-kicker">Approval</span>
           <h2>Confirmation Required</h2>
         </div>
         
@@ -21,10 +21,10 @@ export function ConfirmationModal({ prompt, onConfirm, onCancel }: ConfirmationM
 
         <div className="modal-footer">
           <button className="btn-cancel" onClick={onCancel}>
-            ❌ Cancel
+            Cancel
           </button>
           <button className="btn-confirm" onClick={onConfirm}>
-            ✅ Confirm
+            Confirm
           </button>
         </div>
       </div>

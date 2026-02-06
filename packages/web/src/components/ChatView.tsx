@@ -10,6 +10,13 @@ interface ChatViewProps {
   disabled: boolean;
 }
 
+const STARTER_PROMPTS = [
+  'Summarize the latest project changes and open tasks.',
+  'Check the repo for security risks and suggest quick fixes.',
+  'Write a deployment checklist for today\'s release.',
+  'Draft a concise standup update from current progress.',
+];
+
 export function ChatView({ messages, onSendMessage, isStreaming, streamActivities, disabled }: ChatViewProps) {
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -24,8 +31,12 @@ export function ChatView({ messages, onSendMessage, isStreaming, streamActivitie
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || disabled || isStreaming) return;
-    onSendMessage(input);
+    const content = input.trim();
+    if (!content || disabled || isStreaming) {
+      return;
+    }
+
+    onSendMessage(content);
     setInput('');
   };
 
@@ -36,21 +47,38 @@ export function ChatView({ messages, onSendMessage, isStreaming, streamActivitie
     }
   };
 
+  const handleStarterPrompt = (prompt: string) => {
+    if (disabled || isStreaming) {
+      return;
+    }
+
+    setInput(prompt);
+    inputRef.current?.focus();
+  };
+
   return (
     <div className="chat-view">
       <div className="messages-container">
         {messages.length === 0 ? (
-          <div className="empty-state">
-            <div className="empty-icon">⚡</div>
-            <h2>Welcome to Keygate</h2>
-            <p>Your personal AI agent gateway. Ask me to:</p>
-            <ul>
-              <li>Read and write files</li>
-              <li>Run terminal commands</li>
-              <li>Execute code (JavaScript/Python)</li>
-              <li>Search the web</li>
-              <li>Automate browser tasks</li>
-            </ul>
+          <div className="empty-state animate-slide-in">
+            <p className="empty-kicker">Ready</p>
+            <h2>Talk to your AI workspace</h2>
+            <p className="empty-copy">
+              Use natural language to run tools, inspect files, and coordinate work in one place.
+            </p>
+            <div className="starter-grid">
+              {STARTER_PROMPTS.map((prompt) => (
+                <button
+                  key={prompt}
+                  type="button"
+                  className="starter-chip"
+                  onClick={() => handleStarterPrompt(prompt)}
+                  disabled={disabled || isStreaming}
+                >
+                  {prompt}
+                </button>
+              ))}
+            </div>
           </div>
         ) : (
           <>
@@ -59,8 +87,8 @@ export function ChatView({ messages, onSendMessage, isStreaming, streamActivitie
                 key={msg.id}
                 className={`message ${msg.role} animate-slide-in`}
               >
-                <div className="message-avatar">
-                  {msg.role === 'user' ? '👤' : '🤖'}
+                <div className="message-avatar" aria-hidden="true">
+                  {msg.role === 'user' ? 'U' : 'K'}
                 </div>
                 <div className="message-content">
                   <div className="message-header">
@@ -71,10 +99,10 @@ export function ChatView({ messages, onSendMessage, isStreaming, streamActivitie
                       {msg.timestamp.toLocaleTimeString()}
                     </span>
                   </div>
-                  <div className="message-text">
+                  <div className="message-bubble">
                     {msg.content}
                     {msg.id === 'streaming' && (
-                      <span className="cursor-blink">▋</span>
+                      <span className="cursor-blink">|</span>
                     )}
                   </div>
                 </div>
@@ -83,7 +111,7 @@ export function ChatView({ messages, onSendMessage, isStreaming, streamActivitie
 
             {isStreaming && !hasStreamingMessage && (
               <div className="message assistant animate-slide-in thinking-message">
-                <div className="message-avatar">🤖</div>
+                <div className="message-avatar" aria-hidden="true">K</div>
                 <div className="message-content">
                   <div className="message-header">
                     <span className="message-role">Keygate</span>
@@ -91,9 +119,9 @@ export function ChatView({ messages, onSendMessage, isStreaming, streamActivitie
                       {currentActivity ? 'Live' : 'Thinking'}
                     </span>
                   </div>
-                  <div className="message-text thinking-text">
+                  <div className="message-bubble thinking-bubble">
                     <div className="thinking-status">
-                      {currentActivity?.status ?? 'Working on it'}
+                      {currentActivity?.status ?? 'Working on your request'}
                       {!currentActivity && (
                         <span className="thinking-dots" aria-hidden="true">
                           <span>.</span>
@@ -127,15 +155,18 @@ export function ChatView({ messages, onSendMessage, isStreaming, streamActivitie
       </div>
 
       <form className="input-container" onSubmit={handleSubmit}>
-        <textarea
-          ref={inputRef}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={disabled ? 'Connecting...' : 'Ask Keygate anything...'}
-          disabled={disabled || isStreaming}
-          rows={1}
-        />
+        <div className="composer-field">
+          <textarea
+            ref={inputRef}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder={disabled ? 'Connecting...' : 'Ask Keygate anything...'}
+            disabled={disabled || isStreaming}
+            rows={1}
+          />
+          <p className="composer-tip">Press Enter to send, Shift+Enter for a new line.</p>
+        </div>
         <button
           type="submit"
           disabled={!input.trim() || disabled || isStreaming}

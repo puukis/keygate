@@ -34,7 +34,7 @@ export function LiveActivityLog({ events }: LiveActivityLogProps) {
   return (
     <aside className="live-activity">
       <div className="activity-header">
-        <h3>🔧 Live Activity</h3>
+        <h3>Activity Feed</h3>
         <span className="event-count">{events.length}</span>
       </div>
 
@@ -44,7 +44,7 @@ export function LiveActivityLog({ events }: LiveActivityLogProps) {
           className={`activity-toggle ${showProviderEvents ? 'active' : ''}`}
           onClick={() => setShowProviderEvents((prev) => !prev)}
         >
-          {showProviderEvents ? 'Hide Provider Events' : 'Show Provider Events'}
+          {showProviderEvents ? 'Provider events: on' : 'Provider events: off'}
         </button>
         {!showProviderEvents && providerEventCount > 0 && (
           <span className="provider-summary">
@@ -58,19 +58,19 @@ export function LiveActivityLog({ events }: LiveActivityLogProps) {
           <div className="empty-events">
             <p>
               {events.length === 0
-                ? 'Tool and provider events will appear here'
-                : 'No tool events yet. Enable provider events to inspect low-level notifications.'}
+                ? 'Tool and provider updates appear here in real time.'
+                : 'No tool updates yet. Enable provider events to inspect low-level notifications.'}
             </p>
           </div>
         ) : (
           visibleEvents.map((event) => {
             const icon = event.type === 'start'
-              ? '⏳'
+              ? '>'
               : event.type === 'provider'
-                ? '📡'
+                ? '~'
                 : event.result?.success
-                  ? '✅'
-                  : '❌';
+                  ? '+'
+                  : '!';
             const argsPreview = event.args
               ? truncateText(JSON.stringify(event.args, null, 2), 220)
               : undefined;

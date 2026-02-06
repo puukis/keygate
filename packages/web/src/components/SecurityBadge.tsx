@@ -15,9 +15,9 @@ export function SecurityBadge({ mode, spicyEnabled, onModeChange }: SecurityBadg
   if (mode === 'spicy') {
     return (
       <button className="security-badge spicy" onClick={handleToggle}>
-        <span className="badge-icon">🔴</span>
-        <span className="badge-text">DANGER: SPICY MODE ACTIVE</span>
-        <span className="badge-pulse" />
+        <span className="badge-icon" aria-hidden="true" />
+        <span className="badge-text">Spicy mode active</span>
+        <span className="badge-toggle">Return to safe</span>
       </button>
     );
   }
@@ -29,7 +29,7 @@ export function SecurityBadge({ mode, spicyEnabled, onModeChange }: SecurityBadg
       disabled={!spicyEnabled}
       title={!spicyEnabled ? 'Spicy mode not enabled during installation' : 'Click to enable Spicy Mode'}
     >
-      <span className="badge-icon">🟢</span>
+      <span className="badge-icon" aria-hidden="true" />
       <span className="badge-text">Safe Mode</span>
       {spicyEnabled && <span className="badge-toggle">Switch</span>}
     </button>
