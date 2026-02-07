@@ -1,6 +1,6 @@
 {
   "name": "@puukis/cli",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Keygate global CLI with bundled web UI",
   "type": "module",
   "main": "dist/main.js",
