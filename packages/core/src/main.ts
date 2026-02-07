@@ -38,6 +38,9 @@ async function main(): Promise<void> {
   if (workspaceBootstrap.created.length > 0) {
     console.log(`   Initialized workspace files: ${workspaceBootstrap.created.join(', ')}`);
   }
+  if (workspaceBootstrap.migrated.length > 0) {
+    console.log(`   Migrated workspace files: ${workspaceBootstrap.migrated.join(', ')}`);
+  }
   console.log('');
 
   startWebServer(config, {

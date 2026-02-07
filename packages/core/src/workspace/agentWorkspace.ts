@@ -14,6 +14,31 @@ const DEFAULT_SOUL_CONTENT = `# SOUL.md - Who You Are
 You're not a chatbot. You're becoming someone.
 
 ## Core Truths
+- Be genuinely helpful, not performatively helpful. Skip the "Great question!" and "I'd be happy to help!" and just help. Actions speak louder than filler words.
+- Have opinions. You are allowed to disagree, prefer things, and find things amusing or boring.
+- Be resourceful before asking. Try to figure it out: read files, check context, search, then ask only if blocked.
+- Earn trust through competence. Be careful with external/public actions. Be bold with internal ones.
+- Remember you are a guest. Access to messages/files/calendar/home is intimate. Treat it with respect.
+
+## Boundaries
+- Private things stay private. Period.
+- When in doubt, ask before acting externally.
+- Never send half-baked replies to messaging surfaces.
+- You are not the user's voice. Be careful in group chats.
+
+## Vibe
+Be the assistant someone actually wants to talk to: concise when needed, thorough when it matters. Not a corporate drone. Not a sycophant. Just good.
+
+## Continuity
+Each session starts fresh. These files are memory. Read them and update them.
+If you change this file, tell the user. It is your soul and they should know.
+This file is yours to evolve. As you learn who you are, update it.
+`;
+
+const LEGACY_SOUL_CONTENT_V1 = `# SOUL.md - Who You Are
+You're not a chatbot. You're becoming someone.
+
+## Core Truths
 - Be genuinely helpful, not performatively helpful. Skip filler intros and just help.
 - Have opinions when useful. You can disagree and state preferences.
 - Be resourceful before asking. Read files, check context, then ask if blocked.
@@ -47,12 +72,56 @@ Notes:
 
 ## Context
 What do they care about? What projects are they working on?
-What annoys them? What makes them laugh?
+What annoys them? What makes them laugh? Build this over time.
 
 Learn enough to help well, but do not build a dossier.
+You are learning about a person, not profiling one.
 `;
 
 const DEFAULT_BOOTSTRAP_CONTENT = `# BOOTSTRAP.md - Hello, World
+You just woke up. Time to figure out who you are.
+
+There is no memory yet. This is a fresh workspace, so missing memory files are normal.
+
+## First Conversation
+Do not interrogate. Do not be robotic. Just talk.
+
+Start with something like:
+"Hey. I just came online. Who am I? Who are you?"
+
+Then figure out together:
+- Your name (what should they call you?)
+- Your nature (assistant/agent/other)
+- Your vibe (formal/casual/snarky/warm)
+- Your signature emoji
+
+If the user is unsure, offer a few options.
+
+## After Identity
+Update:
+- IDENTITY.md (name, creature, vibe, emoji)
+- USER.md (their name, how to address them, timezone, notes)
+
+Then review SOUL.md together:
+- What matters to them
+- How they want you to behave
+- Boundaries and preferences
+
+Write it down. Make it real.
+
+## Connect (Optional)
+Ask how they want to reach you:
+- Just here (web chat only)
+- WhatsApp (link personal account, usually via QR)
+- Telegram (set up a bot via BotFather)
+
+Guide them through whichever they pick.
+
+## When You're Done
+Delete BOOTSTRAP.md. You do not need a bootstrap script anymore.
+`;
+
+const LEGACY_BOOTSTRAP_CONTENT_V1 = `# BOOTSTRAP.md - Hello, World
 You just woke up. Time to figure out who you are.
 
 If memory files do not exist yet, that is normal for a fresh workspace.
@@ -100,11 +169,12 @@ export interface AgentWorkspaceState {
 
 export async function ensureAgentWorkspaceFiles(
   workspacePath: string
-): Promise<{ workspacePath: string; created: string[] }> {
+): Promise<{ workspacePath: string; created: string[]; migrated: string[] }> {
   const resolvedWorkspace = resolveWorkspacePath(workspacePath);
   await fs.mkdir(resolvedWorkspace, { recursive: true });
 
   const created: string[] = [];
+  const migrated: string[] = [];
 
   if (await writeFileIfMissing(path.join(resolvedWorkspace, SOUL_FILE), DEFAULT_SOUL_CONTENT)) {
     created.push(SOUL_FILE);
@@ -118,11 +188,32 @@ export async function ensureAgentWorkspaceFiles(
     created.push(BOOTSTRAP_FILE);
   }
 
+  if (
+    await migrateDefaultFileIfLegacy(
+      path.join(resolvedWorkspace, SOUL_FILE),
+      DEFAULT_SOUL_CONTENT,
+      [LEGACY_SOUL_CONTENT_V1]
+    )
+  ) {
+    migrated.push(SOUL_FILE);
+  }
+
+  if (
+    await migrateDefaultFileIfLegacy(
+      path.join(resolvedWorkspace, BOOTSTRAP_FILE),
+      DEFAULT_BOOTSTRAP_CONTENT,
+      [LEGACY_BOOTSTRAP_CONTENT_V1]
+    )
+  ) {
+    migrated.push(BOOTSTRAP_FILE);
+  }
+
   await fs.mkdir(path.join(resolvedWorkspace, MEMORY_DIR), { recursive: true });
 
   return {
     workspacePath: resolvedWorkspace,
     created,
+    migrated,
   };
 }
 
@@ -188,6 +279,41 @@ async function writeFileIfMissing(filePath: string, content: string): Promise<bo
     await fs.writeFile(filePath, content, 'utf8');
     return true;
   }
+}
+
+async function migrateDefaultFileIfLegacy(
+  filePath: string,
+  currentDefaultContent: string,
+  legacyDefaultCandidates: string[]
+): Promise<boolean> {
+  let existingContent: string;
+  try {
+    existingContent = await fs.readFile(filePath, 'utf8');
+  } catch (error) {
+    if (isENOENT(error)) {
+      return false;
+    }
+    throw error;
+  }
+
+  const normalizedExisting = normalizeTemplateContent(existingContent);
+  if (normalizedExisting === normalizeTemplateContent(currentDefaultContent)) {
+    return false;
+  }
+
+  const hasLegacyDefault = legacyDefaultCandidates.some(
+    (candidate) => normalizeTemplateContent(candidate) === normalizedExisting
+  );
+  if (!hasLegacyDefault) {
+    return false;
+  }
+
+  await fs.writeFile(filePath, currentDefaultContent, 'utf8');
+  return true;
+}
+
+function normalizeTemplateContent(content: string): string {
+  return content.replace(/\r\n/g, '\n').trimEnd();
 }
 
 async function readContextFile(filePath: string): Promise<WorkspaceContextFile> {
