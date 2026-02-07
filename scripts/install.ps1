@@ -10,6 +10,9 @@ $ErrorActionPreference = "Stop"
 
 $PackageName = if ($env:KEYGATE_NPM_PACKAGE) { $env:KEYGATE_NPM_PACKAGE } else { "@keygate/cli" }
 $PackageVersion = if ($env:KEYGATE_VERSION) { $env:KEYGATE_VERSION } else { "latest" }
+$FallbackRepoUrl = if ($env:KEYGATE_REPO_URL) { $env:KEYGATE_REPO_URL } else { "https://github.com/puukis/keygate.git" }
+$FallbackInstallDir = if ($env:KEYGATE_INSTALL_DIR) { $env:KEYGATE_INSTALL_DIR } else { "$env:LOCALAPPDATA\keygate" }
+$FallbackLauncherDir = "$env:USERPROFILE\keygate-bin"
 $ConfigDir = "$env:USERPROFILE\.config\keygate"
 $WorkspaceDir = "$env:USERPROFILE\keygate-workspace"
 $OriginalPath = $env:Path
@@ -173,15 +176,133 @@ function Resolve-KeygateCommand {
     return ""
 }
 
+function Ensure-Pnpm {
+    if (Get-Command pnpm -ErrorAction SilentlyContinue) {
+        return
+    }
+
+    if (Get-Command corepack -ErrorAction SilentlyContinue) {
+        Write-Info "Installing pnpm via corepack..."
+        if ($DryRun) {
+            Write-Host "[dry-run] corepack enable" -ForegroundColor DarkGray
+            Write-Host "[dry-run] corepack prepare pnpm@9.15.0 --activate" -ForegroundColor DarkGray
+            return
+        }
+        cmd /c "corepack enable" | Out-Null
+        cmd /c "corepack prepare pnpm@9.15.0 --activate" | Out-Null
+    } else {
+        Write-Info "Installing pnpm via npm..."
+        if ($DryRun) {
+            Write-Host "[dry-run] npm install -g pnpm@9.15.0" -ForegroundColor DarkGray
+            return
+        }
+        npm install -g pnpm@9.15.0 | Out-Null
+    }
+
+    if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
+        Write-ErrMsg "pnpm is required for source fallback install but could not be installed."
+        exit 1
+    }
+}
+
+function Test-PackageNotFoundError {
+    param([string]$Text)
+    if (-not $Text) { return $false }
+    return ($Text -match '404 Not Found') -or ($Text -match 'is not in this registry') -or ($Text -match 'E404')
+}
+
+function Invoke-NpmInstallGlobal {
+    param([string]$Spec)
+    $outputLines = @()
+    try {
+        $outputLines = & npm --no-fund --no-audit install -g $Spec 2>&1
+    } catch {
+        if ($_.Exception.Message) {
+            $outputLines += $_.Exception.Message
+        }
+    }
+
+    foreach ($line in $outputLines) {
+        Write-Host $line
+    }
+
+    return @{
+        ExitCode = $LASTEXITCODE
+        Output = ($outputLines -join "`n")
+    }
+}
+
+function Install-FromSourceFallback {
+    Write-WarnMsg "npm package $PackageName is not available yet. Falling back to source install."
+
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        Write-ErrMsg "git is required for source fallback install."
+        exit 1
+    }
+
+    Ensure-Pnpm
+
+    if ($DryRun) {
+        Write-Host "[dry-run] git clone $FallbackRepoUrl $FallbackInstallDir" -ForegroundColor DarkGray
+        Write-Host "[dry-run] (cd $FallbackInstallDir && pnpm install && pnpm build)" -ForegroundColor DarkGray
+        Write-Host "[dry-run] write launcher to $FallbackLauncherDir\\keygate.cmd" -ForegroundColor DarkGray
+        $script:KeygateCommand = "$FallbackLauncherDir\\keygate.cmd"
+        Warn-IfPathMissing -BinDir $FallbackLauncherDir -Label "fallback launcher directory"
+        return
+    }
+
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $FallbackInstallDir) | Out-Null
+
+    if (Test-Path "$FallbackInstallDir\\.git") {
+        $isDirty = git -C $FallbackInstallDir status --porcelain
+        if ([string]::IsNullOrWhiteSpace($isDirty)) {
+            Write-Info "Updating fallback checkout in $FallbackInstallDir"
+            git -C $FallbackInstallDir pull --rebase | Out-Null
+        } else {
+            Write-WarnMsg "Fallback checkout is dirty; skipping git pull."
+        }
+    } else {
+        if (Test-Path $FallbackInstallDir) {
+            Remove-Item -Recurse -Force $FallbackInstallDir
+        }
+        Write-Info "Cloning fallback source to $FallbackInstallDir"
+        git clone $FallbackRepoUrl $FallbackInstallDir | Out-Null
+    }
+
+    Push-Location $FallbackInstallDir
+    try {
+        pnpm install
+        pnpm build
+    } finally {
+        Pop-Location
+    }
+
+    New-Item -ItemType Directory -Force -Path $FallbackLauncherDir | Out-Null
+    $launcherPath = "$FallbackLauncherDir\\keygate.cmd"
+    $launcherContent = @"
+@echo off
+node "$FallbackInstallDir\\packages\\cli\\dist\\main.js" %*
+"@
+    Set-Content -Path $launcherPath -Value $launcherContent
+
+    $script:KeygateCommand = $launcherPath
+    Write-Ok "Installed fallback keygate launcher at: $script:KeygateCommand"
+    Warn-IfPathMissing -BinDir $FallbackLauncherDir -Label "fallback launcher directory"
+}
+
 function Warn-IfPathMissing {
-    $binDir = Get-NpmGlobalBin
-    if (-not $binDir) { return }
+    param(
+        [string]$BinDir,
+        [string]$Label = "PATH directory"
+    )
+
+    if (-not $BinDir) { return }
 
     $segments = $OriginalPath -split ';' | ForEach-Object { $_.Trim() }
-    if ($segments -contains $binDir) { return }
+    if ($segments -contains $BinDir) { return }
 
-    Write-WarnMsg "PATH may not include npm global bin: $binDir"
-    Write-Host "Add this to your user PATH if 'keygate' is not found: $binDir"
+    Write-WarnMsg "PATH may not include $Label: $BinDir"
+    Write-Host "Add this to your user PATH if 'keygate' is not found: $BinDir"
 }
 
 function Install-KeygateGlobal {
@@ -194,16 +315,28 @@ function Install-KeygateGlobal {
         return
     }
 
-    try {
-        npm --no-fund --no-audit install -g $spec
-    } catch {
+    $attempt = Invoke-NpmInstallGlobal -Spec $spec
+    if ($attempt.ExitCode -ne 0) {
+        if (Test-PackageNotFoundError -Text $attempt.Output) {
+            Install-FromSourceFallback
+            return
+        }
+
         Write-WarnMsg "Initial npm install failed. Retrying once..."
-        npm --no-fund --no-audit install -g $spec
+        $attempt = Invoke-NpmInstallGlobal -Spec $spec
+        if ($attempt.ExitCode -ne 0) {
+            if (Test-PackageNotFoundError -Text $attempt.Output) {
+                Install-FromSourceFallback
+                return
+            }
+            Write-ErrMsg "npm install failed and no fallback could be applied."
+            exit 1
+        }
     }
 
     $script:KeygateCommand = Resolve-KeygateCommand
     if (-not $script:KeygateCommand) {
-        Warn-IfPathMissing
+        Warn-IfPathMissing -BinDir (Get-NpmGlobalBin) -Label "npm global bin"
         Write-ErrMsg "Installation completed but 'keygate' is not discoverable on PATH."
         exit 1
     }
@@ -425,6 +558,6 @@ function Finish-AndMaybeRun {
 
 Test-Prerequisites
 Install-KeygateGlobal
-Warn-IfPathMissing
+Warn-IfPathMissing -BinDir (Get-NpmGlobalBin) -Label "npm global bin"
 Run-Onboarding
 Finish-AndMaybeRun

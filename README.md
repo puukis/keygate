@@ -33,6 +33,8 @@ pnpm install
 pnpm dev
 ```
 
+If `@keygate/cli` is not published yet, `install.sh` falls back to source install/build automatically.
+
 ### Codex OAuth Onboarding
 
 ```bash

@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2026.2.7"
+VERSION="2026.2.8"
 PACKAGE_NAME="${KEYGATE_NPM_PACKAGE:-@keygate/cli}"
 PACKAGE_VERSION="${KEYGATE_VERSION:-latest}"
+FALLBACK_REPO_URL="${KEYGATE_REPO_URL:-https://github.com/puukis/keygate.git}"
+FALLBACK_INSTALL_DIR="${KEYGATE_INSTALL_DIR:-$HOME/.local/share/keygate}"
 CONFIG_DIR="$HOME/.config/keygate"
 WORKSPACE_DIR="$HOME/keygate-workspace"
 ORIGINAL_PATH="${PATH:-}"
@@ -236,21 +238,103 @@ resolve_keygate_bin() {
 }
 
 warn_path_if_missing() {
-  local npm_bin=""
-  npm_bin="$(npm_global_bin_dir || true)"
-  if [[ -z "$npm_bin" ]]; then
+  local target_dir="$1"
+  local label="$2"
+  if [[ -z "$target_dir" ]]; then
     return
   fi
 
   case ":$ORIGINAL_PATH:" in
-    *":$npm_bin:"*)
+    *":$target_dir:"*)
       return
       ;;
   esac
 
-  log_warn "PATH may not include npm global bin: $npm_bin"
+  log_warn "PATH may not include $label: $target_dir"
   echo "Add this to your shell profile if 'keygate' is not found:"
-  echo "  export PATH=\"$npm_bin:\$PATH\""
+  echo "  export PATH=\"$target_dir:\$PATH\""
+}
+
+ensure_pnpm() {
+  if command -v pnpm >/dev/null 2>&1; then
+    return
+  fi
+
+  if command -v corepack >/dev/null 2>&1; then
+    log_info "Installing pnpm via corepack..."
+    if [[ "$DRY_RUN" == "1" ]]; then
+      echo -e "${DIM}[dry-run] corepack enable${RESET}"
+      echo -e "${DIM}[dry-run] corepack prepare pnpm@9.15.0 --activate${RESET}"
+      return
+    fi
+    corepack enable >/dev/null 2>&1 || true
+    corepack prepare pnpm@9.15.0 --activate
+  else
+    log_info "Installing pnpm via npm..."
+    run_cmd npm install -g pnpm@9.15.0
+  fi
+
+  if ! command -v pnpm >/dev/null 2>&1; then
+    log_error "pnpm is required for source fallback install but could not be installed."
+    exit 1
+  fi
+}
+
+install_from_source_fallback() {
+  local launcher_dir="$HOME/.local/bin"
+  local launcher_path="$launcher_dir/keygate"
+
+  log_warn "npm package $PACKAGE_NAME is not available yet. Falling back to source install."
+
+  if ! command -v git >/dev/null 2>&1; then
+    log_error "git is required for source fallback install."
+    exit 1
+  fi
+
+  ensure_pnpm
+
+  if [[ "$DRY_RUN" == "1" ]]; then
+    echo -e "${DIM}[dry-run] git clone $FALLBACK_REPO_URL $FALLBACK_INSTALL_DIR${RESET}"
+    echo -e "${DIM}[dry-run] (cd $FALLBACK_INSTALL_DIR && pnpm install && pnpm build)${RESET}"
+    echo -e "${DIM}[dry-run] write launcher to $launcher_path${RESET}"
+    KEYGATE_BIN="$launcher_path"
+    warn_path_if_missing "$launcher_dir" "~/.local/bin"
+    return
+  fi
+
+  mkdir -p "$(dirname "$FALLBACK_INSTALL_DIR")"
+  if [[ -d "$FALLBACK_INSTALL_DIR/.git" ]]; then
+    if [[ -z "$(git -C "$FALLBACK_INSTALL_DIR" status --porcelain 2>/dev/null || true)" ]]; then
+      log_info "Updating fallback checkout in $FALLBACK_INSTALL_DIR"
+      git -C "$FALLBACK_INSTALL_DIR" pull --rebase || true
+    else
+      log_warn "Fallback checkout is dirty; skipping git pull."
+    fi
+  else
+    if [[ -d "$FALLBACK_INSTALL_DIR" ]]; then
+      rm -rf "$FALLBACK_INSTALL_DIR"
+    fi
+    log_info "Cloning fallback source to $FALLBACK_INSTALL_DIR"
+    git clone "$FALLBACK_REPO_URL" "$FALLBACK_INSTALL_DIR"
+  fi
+
+  (
+    cd "$FALLBACK_INSTALL_DIR"
+    pnpm install
+    pnpm build
+  )
+
+  mkdir -p "$launcher_dir"
+  cat > "$launcher_path" <<LAUNCHER
+#!/usr/bin/env bash
+set -euo pipefail
+exec node "$FALLBACK_INSTALL_DIR/packages/cli/dist/main.js" "\$@"
+LAUNCHER
+  chmod +x "$launcher_path"
+
+  KEYGATE_BIN="$launcher_path"
+  log_ok "Installed fallback keygate launcher at $KEYGATE_BIN"
+  warn_path_if_missing "$launcher_dir" "~/.local/bin"
 }
 
 install_keygate_global() {
@@ -263,15 +347,34 @@ install_keygate_global() {
     return
   fi
 
-  if ! npm --no-fund --no-audit install -g "$spec"; then
+  local install_log
+  install_log="$(mktemp)"
+
+  if ! npm --no-fund --no-audit install -g "$spec" 2>&1 | tee "$install_log"; then
+    if grep -qi "404 Not Found" "$install_log" || grep -qi "is not in this registry" "$install_log"; then
+      rm -f "$install_log"
+      install_from_source_fallback
+      return
+    fi
+
     log_warn "Initial npm install failed. Retrying once..."
-    npm --no-fund --no-audit install -g "$spec"
+    if ! npm --no-fund --no-audit install -g "$spec" 2>&1 | tee "$install_log"; then
+      if grep -qi "404 Not Found" "$install_log" || grep -qi "is not in this registry" "$install_log"; then
+        rm -f "$install_log"
+        install_from_source_fallback
+        return
+      fi
+      rm -f "$install_log"
+      log_error "npm install failed and no fallback could be applied."
+      exit 1
+    fi
   fi
+  rm -f "$install_log"
 
   hash -r 2>/dev/null || true
   KEYGATE_BIN="$(resolve_keygate_bin || true)"
   if [[ -z "$KEYGATE_BIN" ]]; then
-    warn_path_if_missing
+    warn_path_if_missing "$(npm_global_bin_dir || true)" "npm global bin"
     log_error "Installation completed but 'keygate' is not discoverable on PATH."
     exit 1
   fi
@@ -502,7 +605,7 @@ main() {
 
   check_prerequisites
   install_keygate_global
-  warn_path_if_missing
+  warn_path_if_missing "$(npm_global_bin_dir || true)" "npm global bin"
   run_onboarding
   finish_and_maybe_run
 }
