@@ -11,7 +11,7 @@ import {
   printHelp,
   runCli,
   startWebServer,
-} from '@keygate/core';
+} from '@puukis/core';
 
 const DISABLED_ENV_VALUES = new Set(['0', 'false', 'no', 'off']);
 const DEFAULT_CHAT_PORT = 18790;

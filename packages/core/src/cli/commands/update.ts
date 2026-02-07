@@ -13,7 +13,7 @@ type InstallMode = 'npm' | 'github' | 'unknown';
 export async function runUpdateCommand(args: ParsedArgs): Promise<void> {
   const checkOnly = hasFlag(args.flags, 'check-only');
   const npmPackageOverride = process.env['KEYGATE_NPM_PACKAGE']?.trim();
-  const packageCandidates = uniqueStrings([npmPackageOverride || '@keygate/cli', 'keygate']);
+  const packageCandidates = uniqueStrings([npmPackageOverride || '@puukis/cli', '@keygate/cli', 'keygate']);
 
   const runtimeEntry = process.argv[1] ? path.resolve(process.argv[1]) : undefined;
   const repoRoot = detectRepoRoot(runtimeEntry);

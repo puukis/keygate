@@ -1,5 +1,5 @@
 {
-  "name": "@keygate/discord",
+  "name": "@puukis/discord",
   "version": "0.1.0",
   "private": true,
   "description": "Keygate Discord bot adapter",
@@ -11,7 +11,7 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@keygate/core": "workspace:*",
+    "@puukis/core": "workspace:*",
     "discord.js": "^14.16.0",
     "dotenv": "^16.4.0"
   },

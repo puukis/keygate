@@ -1,5 +1,5 @@
 {
-  "name": "@keygate/core",
+  "name": "@puukis/core",
   "version": "0.1.0",
   "description": "Keygate core - Gateway, Brain, and Tool executor",
   "type": "module",

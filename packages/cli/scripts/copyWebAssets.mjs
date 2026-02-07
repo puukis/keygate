@@ -10,7 +10,7 @@ const destinationDir = path.resolve(packageDir, 'dist', 'web');
 async function main() {
   const sourceStats = await fs.stat(sourceDir).catch(() => null);
   if (!sourceStats || !sourceStats.isDirectory()) {
-    throw new Error(`Web build output not found at ${sourceDir}. Run @keygate/web build first.`);
+    throw new Error(`Web build output not found at ${sourceDir}. Run @puukis/web build first.`);
   }
 
   await fs.rm(destinationDir, { recursive: true, force: true });

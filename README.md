@@ -22,7 +22,7 @@ curl -fsSL https://raw.githubusercontent.com/puukis/keygate/main/scripts/install
 
 ```bash
 # Global npm install (cross-platform)
-npm install -g @keygate/cli
+npm install -g @puukis/cli
 ```
 
 ```bash
@@ -33,7 +33,7 @@ pnpm install
 pnpm dev
 ```
 
-If `@keygate/cli` is not published yet, `install.sh` falls back to source install/build automatically.
+If `@puukis/cli` is not published yet, `install.sh` falls back to source install/build automatically.
 
 ### Codex OAuth Onboarding
 

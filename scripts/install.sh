@@ -2,7 +2,7 @@
 set -euo pipefail
 
 VERSION="2026.2.8"
-PACKAGE_NAME="${KEYGATE_NPM_PACKAGE:-@keygate/cli}"
+PACKAGE_NAME="${KEYGATE_NPM_PACKAGE:-@puukis/cli}"
 PACKAGE_VERSION="${KEYGATE_VERSION:-latest}"
 FALLBACK_REPO_URL="${KEYGATE_REPO_URL:-https://github.com/puukis/keygate.git}"
 FALLBACK_INSTALL_DIR="${KEYGATE_INSTALL_DIR:-$HOME/.local/share/keygate}"

@@ -1,5 +1,5 @@
 {
-  "name": "@keygate/cli",
+  "name": "@puukis/cli",
   "version": "0.1.0",
   "description": "Keygate global CLI with bundled web UI",
   "type": "module",
@@ -13,10 +13,10 @@
   ],
   "scripts": {
     "dev": "tsx watch src/main.ts",
-    "build": "pnpm --filter @keygate/web build && tsc && node ./scripts/copyWebAssets.mjs"
+    "build": "pnpm --filter @puukis/web build && tsc && node ./scripts/copyWebAssets.mjs"
   },
   "dependencies": {
-    "@keygate/core": "workspace:*"
+    "@puukis/core": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

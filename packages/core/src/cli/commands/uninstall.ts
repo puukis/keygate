@@ -24,7 +24,8 @@ export async function runUninstallCommand(args: ParsedArgs): Promise<void> {
   const confirmBypass = hasFlag(args.flags, 'yes') || hasFlag(args.flags, 'y');
   const removeConfig = hasFlag(args.flags, 'remove-config');
   const removeWorkspace = hasFlag(args.flags, 'remove-workspace');
-  const npmPackage = process.env['KEYGATE_NPM_PACKAGE']?.trim() || '@keygate/cli';
+  const npmPackage = process.env['KEYGATE_NPM_PACKAGE']?.trim() || '@puukis/cli';
+  const legacyNpmPackage = '@keygate/cli';
 
   const targets = getRemovalTargets({ removeConfig, removeWorkspace });
   const existingTargets = await filterExistingPaths(targets);
@@ -55,7 +56,7 @@ export async function runUninstallCommand(args: ParsedArgs): Promise<void> {
     }
   }
 
-  const npmResults = uninstallNpmPackages([npmPackage, 'keygate']);
+  const npmResults = uninstallNpmPackages([npmPackage, legacyNpmPackage, 'keygate']);
   const pathResults = await removePaths(existingTargets);
 
   console.log('');

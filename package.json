@@ -5,12 +5,12 @@
   "description": "Personal AI agent gateway - control your computer via a single Brain",
   "type": "module",
   "scripts": {
-    "dev": "pnpm --filter @keygate/core build && pnpm -r --parallel dev",
-    "build": "pnpm --filter @keygate/core build && pnpm --filter @keygate/discord build && pnpm --filter @keygate/cli build",
+    "dev": "pnpm --filter @puukis/core build && pnpm -r --parallel dev",
+    "build": "pnpm --filter @puukis/core build && pnpm --filter @puukis/discord build && pnpm --filter @puukis/cli build",
     "test": "pnpm -r test",
-    "keygate": "pnpm --filter @keygate/cli exec tsx src/main.ts",
-    "onboard": "pnpm --filter @keygate/cli exec tsx src/main.ts onboard --auth-choice openai-codex",
-    "auth:login": "pnpm --filter @keygate/cli exec tsx src/main.ts auth login --provider openai-codex",
+    "keygate": "pnpm --filter @puukis/cli exec tsx src/main.ts",
+    "onboard": "pnpm --filter @puukis/cli exec tsx src/main.ts onboard --auth-choice openai-codex",
+    "auth:login": "pnpm --filter @puukis/cli exec tsx src/main.ts auth login --provider openai-codex",
     "lint": "eslint packages/*/src --ext .ts,.tsx",
     "format": "prettier --write \"packages/*/src/**/*.{ts,tsx,json}\""
   },

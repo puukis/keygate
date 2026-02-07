@@ -8,7 +8,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$PackageName = if ($env:KEYGATE_NPM_PACKAGE) { $env:KEYGATE_NPM_PACKAGE } else { "@keygate/cli" }
+$PackageName = if ($env:KEYGATE_NPM_PACKAGE) { $env:KEYGATE_NPM_PACKAGE } else { "@puukis/cli" }
 $PackageVersion = if ($env:KEYGATE_VERSION) { $env:KEYGATE_VERSION } else { "latest" }
 $FallbackRepoUrl = if ($env:KEYGATE_REPO_URL) { $env:KEYGATE_REPO_URL } else { "https://github.com/puukis/keygate.git" }
 $FallbackInstallDir = if ($env:KEYGATE_INSTALL_DIR) { $env:KEYGATE_INSTALL_DIR } else { "$env:LOCALAPPDATA\keygate" }

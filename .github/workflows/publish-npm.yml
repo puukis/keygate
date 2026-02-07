@@ -44,7 +44,7 @@ jobs:
       - name: Build
         run: pnpm build
 
-      - name: Publish @keygate/core and @keygate/cli if versions are new
+      - name: Publish @puukis/core and @puukis/cli if versions are new
         shell: bash
         run: |
           set -euo pipefail
@@ -64,5 +64,5 @@ jobs:
             pnpm --filter "${package_name}" publish --access public --no-git-checks
           }
 
-          publish_if_needed "@keygate/core" "packages/core/package.json"
-          publish_if_needed "@keygate/cli" "packages/cli/package.json"
+          publish_if_needed "@puukis/core" "packages/core/package.json"
+          publish_if_needed "@puukis/cli" "packages/cli/package.json"

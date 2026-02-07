@@ -10,7 +10,7 @@ import {
   normalizeDiscordMessage,
   BaseChannel,
   type KeygateConfig,
-} from '@keygate/core';
+} from '@puukis/core';
 import path from 'node:path';
 import os from 'node:os';
 import dotenv from 'dotenv';
