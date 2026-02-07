@@ -27,7 +27,7 @@ importers:
   packages/cli:
     dependencies:
       '@puukis/core':
-        specifier: workspace:*
+        specifier: ^0.1.1
         version: link:../core
     devDependencies:
       '@types/node':

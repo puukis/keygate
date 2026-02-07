@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="2026.2.8"
+VERSION="2026.2.9"
 PACKAGE_NAME="${KEYGATE_NPM_PACKAGE:-@puukis/cli}"
 PACKAGE_VERSION="${KEYGATE_VERSION:-latest}"
 FALLBACK_REPO_URL="${KEYGATE_REPO_URL:-https://github.com/puukis/keygate.git}"
@@ -284,7 +284,7 @@ install_from_source_fallback() {
   local launcher_dir="$HOME/.local/bin"
   local launcher_path="$launcher_dir/keygate"
 
-  log_warn "npm package $PACKAGE_NAME is not available yet. Falling back to source install."
+  log_warn "npm install for $PACKAGE_NAME failed. Falling back to source install."
 
   if ! command -v git >/dev/null 2>&1; then
     log_error "git is required for source fallback install."
@@ -337,6 +337,20 @@ LAUNCHER
   warn_path_if_missing "$launcher_dir" "~/.local/bin"
 }
 
+should_use_source_fallback_from_log() {
+  local install_log="$1"
+
+  if grep -qi "404 Not Found" "$install_log" || grep -qi "is not in this registry" "$install_log"; then
+    return 0
+  fi
+
+  if grep -qi "EUNSUPPORTEDPROTOCOL" "$install_log" || grep -qi "Unsupported URL Type \"workspace:\"" "$install_log"; then
+    return 0
+  fi
+
+  return 1
+}
+
 install_keygate_global() {
   local spec="$PACKAGE_NAME@$PACKAGE_VERSION"
   log_info "Installing $spec globally via npm"
@@ -351,7 +365,7 @@ install_keygate_global() {
   install_log="$(mktemp)"
 
   if ! npm --no-fund --no-audit install -g "$spec" 2>&1 | tee "$install_log"; then
-    if grep -qi "404 Not Found" "$install_log" || grep -qi "is not in this registry" "$install_log"; then
+    if should_use_source_fallback_from_log "$install_log"; then
       rm -f "$install_log"
       install_from_source_fallback
       return
@@ -359,7 +373,7 @@ install_keygate_global() {
 
     log_warn "Initial npm install failed. Retrying once..."
     if ! npm --no-fund --no-audit install -g "$spec" 2>&1 | tee "$install_log"; then
-      if grep -qi "404 Not Found" "$install_log" || grep -qi "is not in this registry" "$install_log"; then
+      if should_use_source_fallback_from_log "$install_log"; then
         rm -f "$install_log"
         install_from_source_fallback
         return

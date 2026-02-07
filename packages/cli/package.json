@@ -16,7 +16,7 @@
     "build": "pnpm --filter @puukis/web build && tsc && node ./scripts/copyWebAssets.mjs"
   },
   "dependencies": {
-    "@puukis/core": "workspace:*"
+    "@puukis/core": "^0.1.1"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
