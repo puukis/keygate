@@ -2,6 +2,7 @@ import { parseArgs } from './argv.js';
 import { runOnboardCommand } from './commands/onboard.js';
 import { runAuthCommand } from './commands/auth.js';
 import { runInstallCommand } from './commands/install.js';
+import { runUninstallCommand } from './commands/uninstall.js';
 
 export async function runCli(argv: string[]): Promise<boolean> {
   if (argv.length === 0) {
@@ -35,6 +36,9 @@ export async function runCli(argv: string[]): Promise<boolean> {
     case 'install':
       await runInstallCommand(args);
       return true;
+    case 'uninstall':
+      await runUninstallCommand(args);
+      return true;
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -48,6 +52,7 @@ Usage:
   keygate onboard --auth-choice openai-codex [--device-auth]
   keygate auth login --provider openai-codex [--device-auth]
   keygate install codex [--method npm|brew]
+  keygate uninstall [--yes] [--remove-config] [--remove-workspace]
 
 Notes:
   - openai-codex uses ChatGPT OAuth through Codex app-server.

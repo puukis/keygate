@@ -115,6 +115,9 @@ pnpm dev
 # CLI commands (serve/onboard/auth/install)
 pnpm keygate --help
 
+# Uninstall current Keygate install (global package/fallback artifacts)
+keygate uninstall --yes
+
 # Run tests
 pnpm test
 
