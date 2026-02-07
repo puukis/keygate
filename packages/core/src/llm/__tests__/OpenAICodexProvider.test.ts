@@ -143,6 +143,7 @@ describe('OpenAICodexProvider', () => {
     let observedThreadApprovalPolicy: string | undefined;
     let observedThreadSandbox: string | undefined;
     let observedTurnApprovalPolicy: string | undefined;
+    let observedTurnInputText = '';
 
     fake.stdin.on('data', (chunk) => {
       const lines = String(chunk)
@@ -208,6 +209,16 @@ describe('OpenAICodexProvider', () => {
         if (payload.method === 'turn/start') {
           observedSandboxPolicy = payload.params?.['sandboxPolicy'] as Record<string, unknown> | undefined;
           observedTurnApprovalPolicy = payload.params?.['approvalPolicy'] as string | undefined;
+          const input = payload.params?.['input'];
+          if (Array.isArray(input)) {
+            const first = input[0];
+            if (first && typeof first === 'object') {
+              const text = (first as Record<string, unknown>)['text'];
+              if (typeof text === 'string') {
+                observedTurnInputText = text;
+              }
+            }
+          }
 
           fake.stdout.write(JSON.stringify({
             id: payload.id,
@@ -243,7 +254,10 @@ describe('OpenAICodexProvider', () => {
     });
 
     const stream = provider.stream(
-      [{ role: 'user', content: 'hello codex' }],
+      [
+        { role: 'system', content: 'Bootstrap rules here' },
+        { role: 'user', content: 'hello codex' },
+      ],
       {
         sessionId: 'session-abc',
         securityMode: 'safe',
@@ -261,6 +275,144 @@ describe('OpenAICodexProvider', () => {
     expect(observedThreadApprovalPolicy).toBe('untrusted');
     expect(observedThreadSandbox).toBe('workspace-write');
     expect(observedTurnApprovalPolicy).toBe('untrusted');
+    expect(observedTurnInputText).toContain('SYSTEM INSTRUCTIONS');
+    expect(observedTurnInputText).toContain('Bootstrap rules here');
+    expect(observedTurnInputText).toContain('USER MESSAGE:');
+    expect(observedTurnInputText).toContain('hello codex');
+
+    await provider.dispose();
+  });
+
+  it('does not duplicate completed agent text after streamed delta', async () => {
+    const fake = new FakeChildProcess();
+
+    fake.stdin.on('data', (chunk) => {
+      const lines = String(chunk)
+        .split(/\n/g)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+
+      for (const line of lines) {
+        const payload = JSON.parse(line) as {
+          id?: number;
+          method: string;
+          params?: Record<string, unknown>;
+        };
+
+        if (payload.method === 'initialized') {
+          continue;
+        }
+
+        if (payload.method === 'initialize') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: { sessionId: 'session-1' },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'account/read') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: {
+              requiresOpenaiAuth: false,
+              account: null,
+            },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'model/list') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: {
+              data: [
+                { id: 'gpt-5.2-codex', displayName: 'GPT-5.2 Codex', isDefault: true },
+              ],
+              nextCursor: null,
+            },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'thread/start') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: {
+              thread: { id: 'thread-1' },
+            },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'turn/start') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: {
+              turn: { id: 'turn-1' },
+            },
+          }) + '\n');
+
+          setTimeout(() => {
+            fake.stdout.write(JSON.stringify({
+              method: 'item/agentMessage/delta',
+              params: {
+                threadId: 'thread-1',
+                turnId: 'turn-1',
+                delta: 'Hello.',
+              },
+            }) + '\n');
+
+            fake.stdout.write(JSON.stringify({
+              method: 'item/completed',
+              params: {
+                threadId: 'thread-1',
+                turnId: 'turn-1',
+                item: {
+                  type: 'agentMessage',
+                  text: 'Hello.',
+                },
+              },
+            }) + '\n');
+
+            fake.stdout.write(JSON.stringify({
+              method: 'turn/completed',
+              params: {
+                threadId: 'thread-1',
+                turn: {
+                  id: 'turn-1',
+                  status: 'completed',
+                },
+              },
+            }) + '\n');
+          }, 5);
+          continue;
+        }
+      }
+    });
+
+    const rpcClient = new CodexRpcClient({
+      requestTimeoutMs: 5_000,
+      spawnFactory: () => fake as any,
+    });
+
+    const provider = new OpenAICodexProvider('openai-codex/gpt-5.2', {
+      rpcClient,
+    });
+
+    let text = '';
+    for await (const chunk of provider.stream(
+      [{ role: 'user', content: 'hello codex' }],
+      {
+        sessionId: 'session-dup-test',
+      }
+    )) {
+      if (chunk.content) {
+        text += chunk.content;
+      }
+    }
+
+    expect(text).toBe('Hello.');
 
     await provider.dispose();
   });

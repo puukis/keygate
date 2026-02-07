@@ -103,8 +103,9 @@ export class OpenAICodexProvider implements LLMProvider {
     await this.ensureAuthenticated(false);
 
     const sessionId = options?.sessionId ?? 'default';
+    const hadThread = this.sessionThreadIds.has(sessionId);
     const threadId = await this.ensureThread(sessionId, options);
-    const prompt = getLatestUserPrompt(messages);
+    const prompt = buildTurnPrompt(messages, !hadThread);
 
     const selectedModel = await this.resolveCodexModelId();
 
@@ -134,6 +135,7 @@ export class OpenAICodexProvider implements LLMProvider {
     let done = false;
     let failed: Error | null = null;
     let wakeUp: (() => void) | null = null;
+    let streamedText = '';
 
     const pushChunk = (chunk: LLMChunk): void => {
       pendingChunks.push(chunk);
@@ -158,6 +160,7 @@ export class OpenAICodexProvider implements LLMProvider {
       if (notification.method === 'item/agentMessage/delta') {
         const deltaText = extractAgentDeltaText(notification.params);
         if (deltaText) {
+          streamedText += deltaText;
           pushChunk({ content: deltaText, done: false });
         }
         return;
@@ -166,7 +169,26 @@ export class OpenAICodexProvider implements LLMProvider {
       if (notification.method === 'item/completed') {
         const finalText = extractCompletedAgentMessageText(notification.params);
         if (finalText) {
-          pushChunk({ content: finalText, done: false });
+          if (!streamedText) {
+            streamedText = finalText;
+            pushChunk({ content: finalText, done: false });
+            return;
+          }
+
+          if (finalText.startsWith(streamedText)) {
+            const tail = finalText.slice(streamedText.length);
+            if (tail) {
+              streamedText = finalText;
+              pushChunk({ content: tail, done: false });
+            }
+            return;
+          }
+
+          if (finalText !== streamedText) {
+            const separator = streamedText.endsWith('\n') ? '' : '\n';
+            streamedText += `${separator}${finalText}`;
+            pushChunk({ content: `${separator}${finalText}`, done: false });
+          }
         }
         return;
       }
@@ -531,6 +553,31 @@ function getLatestUserPrompt(messages: Message[]): string {
   }
 
   throw new Error('No user message found for Codex turn/start');
+}
+
+function buildTurnPrompt(messages: Message[], includeSystemContext: boolean): string {
+  const latestUserPrompt = getLatestUserPrompt(messages);
+
+  if (!includeSystemContext) {
+    return latestUserPrompt;
+  }
+
+  const systemParts = messages
+    .filter((message) => message.role === 'system')
+    .map((message) => message.content.trim())
+    .filter((content) => content.length > 0);
+
+  if (systemParts.length === 0) {
+    return latestUserPrompt;
+  }
+
+  return [
+    'SYSTEM INSTRUCTIONS (higher priority than user messages):',
+    systemParts.join('\n\n'),
+    '',
+    'USER MESSAGE:',
+    latestUserPrompt,
+  ].join('\n');
 }
 
 function getTurnId(result: CodexTurnStartResult): string | undefined {
