@@ -29,10 +29,12 @@ interface MenuOption<T> {
 
 const RESET = '\x1b[0m';
 const BOLD = '\x1b[1m';
-const DIM = '\x1b[2m';
-const CYAN = '\x1b[36m';
-const GREEN = '\x1b[32m';
-const YELLOW = '\x1b[33m';
+const ACCENT = '\x1b[38;2;255;90;45m';
+const ACCENT_DIM = '\x1b[38;2;209;74;34m';
+const INFO = '\x1b[38;2;255;138;91m';
+const SUCCESS = '\x1b[38;2;47;191;113m';
+const WARN = '\x1b[38;2;255;176;32m';
+const MUTED = '\x1b[38;2;139;127;119m';
 
 const DEFAULT_CHAT_URL = 'http://localhost:18790';
 const DEFAULT_ALLOWED_BINARIES = ['git', 'ls', 'npm', 'cat', 'node', 'python3'];
@@ -53,10 +55,11 @@ export async function runOnboardingCommand(args: ParsedArgs): Promise<void> {
 
   if (defaultsOnly) {
     if (!promptable) {
-      console.log(`${YELLOW}!${RESET} No interactive TTY detected. Applying deterministic defaults.`);
+      logWarn('No interactive TTY detected. Applying deterministic defaults.');
     } else {
-      console.log(`${CYAN}i${RESET} Applying deterministic defaults.`);
+      logInfo('Applying deterministic defaults.');
     }
+
     await persistOnboardingState(state);
     await finishOnboarding(state, {
       noPrompt,
@@ -66,7 +69,7 @@ export async function runOnboardingCommand(args: ParsedArgs): Promise<void> {
   }
 
   const continueSetup = await selectMenu(
-    'Continue with setup?',
+    'Continue setup?',
     [
       {
         label: 'Continue setup',
@@ -83,7 +86,7 @@ export async function runOnboardingCommand(args: ParsedArgs): Promise<void> {
   );
 
   if (!continueSetup) {
-    console.log(`${YELLOW}!${RESET} Onboarding cancelled.`);
+    logWarn('Onboarding cancelled.');
     return;
   }
 
@@ -92,7 +95,7 @@ export async function runOnboardingCommand(args: ParsedArgs): Promise<void> {
     [
       {
         label: 'Safe Mode (Recommended)',
-        description: 'Sandboxed workspace and safer defaults.',
+        description: 'Sandboxed workspace with safer defaults.',
         value: false,
       },
       {
@@ -111,14 +114,14 @@ export async function runOnboardingCommand(args: ParsedArgs): Promise<void> {
     );
     if (ack === 'I ACCEPT THE RISK') {
       state.spicyModeEnabled = true;
-      console.log(`${YELLOW}!${RESET} Spicy Mode enabled.`);
+      logWarn('Spicy Mode enabled.');
     } else {
       state.spicyModeEnabled = false;
-      console.log(`${GREEN}✓${RESET} Safe Mode kept.`);
+      logOk('Safe Mode kept.');
     }
   } else {
     state.spicyModeEnabled = false;
-    console.log(`${GREEN}✓${RESET} Safe Mode enabled.`);
+    logOk('Safe Mode enabled.');
   }
 
   await collectProviderSettings(state, args);
@@ -131,8 +134,9 @@ export async function runOnboardingCommand(args: ParsedArgs): Promise<void> {
 
 function printHeader(): void {
   console.log('');
-  console.log(`${BOLD}${CYAN}Keygate Onboarding${RESET}`);
-  console.log(`${DIM}Interactive setup for provider, auth, and startup behavior.${RESET}`);
+  for (const line of renderStaticPanel('Keygate Onboarding', 'Configure provider, auth, and startup behavior.')) {
+    console.log(line);
+  }
   console.log('');
 }
 
@@ -224,7 +228,7 @@ async function collectProviderSettings(state: OnboardingState, args: ParsedArgs)
       return;
     }
 
-    console.log(`${CYAN}i${RESET} Returning to provider selection...`);
+    logInfo('Returning to provider selection...');
   }
 }
 
@@ -238,12 +242,12 @@ async function runCodexLogin(args: ParsedArgs): Promise<boolean> {
         ...(hasFlag(args.flags, 'no-device-fallback') ? { 'no-device-fallback': true } : {}),
       },
     });
-    console.log(`${GREEN}✓${RESET} Codex login completed.`);
+    logOk('Codex login completed.');
     return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.log(`${YELLOW}!${RESET} Codex login failed or was cancelled.`);
-    console.log(`${DIM}${message}${RESET}`);
+    logWarn('Codex login failed or was cancelled.');
+    console.log(`${MUTED}${message}${RESET}`);
     return false;
   }
 }
@@ -293,11 +297,13 @@ async function finishOnboarding(
   const chatUrl = getChatUrl();
 
   console.log('');
-  console.log(`${GREEN}✓${RESET} Onboarding complete.`);
-  console.log(`Provider: ${state.provider}`);
-  console.log(`Model: ${state.model}`);
-  console.log(`Spicy Mode Enabled: ${state.spicyModeEnabled}`);
-  console.log(`Chat URL: ${chatUrl}`);
+  for (const line of renderStaticPanel('Onboarding Complete', 'Keygate is configured and ready.')) {
+    console.log(line);
+  }
+  logOk(`Provider: ${state.provider}`);
+  logOk(`Model: ${state.model}`);
+  logOk(`Spicy Mode Enabled: ${state.spicyModeEnabled}`);
+  logInfo(`Chat URL: ${chatUrl}`);
 
   if (options.noRun || options.noPrompt || !isPromptable()) {
     printManualRunInstructions(chatUrl);
@@ -327,7 +333,7 @@ async function finishOnboarding(
   }
 
   queueOpenUrl(chatUrl);
-  console.log(`${CYAN}i${RESET} Starting keygate...`);
+  logInfo('Starting keygate...');
   const exitCode = await runKeygateServe();
   if (exitCode !== 0) {
     process.exitCode = exitCode;
@@ -336,9 +342,9 @@ async function finishOnboarding(
 
 function printManualRunInstructions(chatUrl: string): void {
   console.log('');
-  console.log('Run manually when ready:');
-  console.log('  keygate');
-  console.log(`Then open: ${chatUrl}`);
+  console.log(`${MUTED}Run manually when ready:${RESET}`);
+  console.log(`${BOLD}  keygate${RESET}`);
+  console.log(`${MUTED}Then open:${RESET} ${chatUrl}`);
 }
 
 function queueOpenUrl(url: string): void {
@@ -406,7 +412,7 @@ async function promptText(prompt: string, defaultValue: string): Promise<string>
   const rl = createInterface({ input, output });
   try {
     const suffix = defaultValue.length > 0 ? ` [${defaultValue}]` : '';
-    const answer = (await rl.question(`${prompt}${suffix}: `)).trim();
+    const answer = (await rl.question(`${INFO}›${RESET} ${prompt}${suffix}: `)).trim();
     if (answer.length === 0) {
       return defaultValue;
     }
@@ -425,7 +431,7 @@ async function promptSecret(prompt: string): Promise<string> {
   const previousRawMode = stdin.isRaw ?? false;
   let value = '';
 
-  output.write(`${prompt}: `);
+  output.write(`${INFO}›${RESET} ${prompt}: `);
 
   return new Promise<string>((resolve, reject) => {
     const onData = (chunk: string | Buffer) => {
@@ -449,11 +455,13 @@ async function promptSecret(prompt: string): Promise<string> {
         if (char === '\u007f' || char === '\b') {
           if (value.length > 0) {
             value = value.slice(0, -1);
+            output.write('\b \b');
           }
           continue;
         }
 
         value += char;
+        output.write('•');
       }
     };
 
@@ -502,49 +510,36 @@ async function selectMenu<T>(
       stdin.pause();
       clearRenderedFrame(renderedLineCount);
       output.write('\x1b[?25h');
-      output.write(`${DIM}${title}: ${options[selectedIndex]!.label}${RESET}\n`);
+      logInfo(`${title}: ${options[selectedIndex]!.label}`);
     };
 
     const render = () => {
       clearRenderedFrame(renderedLineCount);
-      const lines: string[] = [];
-      lines.push(`${BOLD}${title}${RESET}`);
-      lines.push('');
-
-      options.forEach((option, index) => {
-        const marker = index === selectedIndex ? `${CYAN}>${RESET}` : ' ';
-        const label = index === selectedIndex ? `${BOLD}${option.label}${RESET}` : option.label;
-        lines.push(`  ${marker} ${label}`);
-        lines.push(`    ${DIM}${option.description}${RESET}`);
-      });
-
-      lines.push('');
-      lines.push(`${DIM}Use Up/Down arrows, Enter to confirm, Ctrl+C to cancel.${RESET}`);
-
+      const lines = renderMenuFrame(title, options, selectedIndex);
       output.write(`${lines.join('\n')}\n`);
       renderedLineCount = lines.length;
     };
 
-    const onKeypress = (str: string, key: { name?: string; ctrl?: boolean }) => {
-      if (key.ctrl && key.name === 'c') {
+    const onKeypress = (str: string, key: { name?: string; ctrl?: boolean } | undefined) => {
+      if (key?.ctrl && key.name === 'c') {
         cleanup();
         reject(new Error('Onboarding cancelled.'));
         return;
       }
 
-      if (key.name === 'up' || key.name === 'k') {
+      if (key?.name === 'up' || key?.name === 'k') {
         selectedIndex = selectedIndex <= 0 ? options.length - 1 : selectedIndex - 1;
         render();
         return;
       }
 
-      if (key.name === 'down' || key.name === 'j') {
+      if (key?.name === 'down' || key?.name === 'j') {
         selectedIndex = (selectedIndex + 1) % options.length;
         render();
         return;
       }
 
-      if (key.name === 'return' || key.name === 'enter') {
+      if (key?.name === 'return' || key?.name === 'enter') {
         const value = options[selectedIndex]!.value;
         cleanup();
         resolve(value);
@@ -570,6 +565,53 @@ async function selectMenu<T>(
   });
 }
 
+function renderMenuFrame<T>(title: string, options: MenuOption<T>[], selectedIndex: number): string[] {
+  const menuWidth = getPreferredMenuWidth();
+  const innerWidth = menuWidth - 2;
+  const contentWidth = innerWidth - 2;
+  const lines: string[] = [];
+
+  lines.push(`${ACCENT}┌${'─'.repeat(innerWidth)}┐${RESET}`);
+  lines.push(`${ACCENT}│${RESET} ${BOLD}${padText(title, contentWidth)}${RESET} ${ACCENT}│${RESET}`);
+  lines.push(`${ACCENT}├${'─'.repeat(innerWidth)}┤${RESET}`);
+
+  options.forEach((option, index) => {
+    const isSelected = index === selectedIndex;
+    const marker = isSelected ? `${ACCENT}❯${RESET}` : ' ';
+    const labelPrefix = `${index + 1}) `;
+    const labelText = `${labelPrefix}${option.label}`;
+    const label = isSelected ? `${BOLD}${padText(labelText, contentWidth - 2)}${RESET}` : padText(labelText, contentWidth - 2);
+    lines.push(`${ACCENT}│${RESET} ${marker} ${label} ${ACCENT}│${RESET}`);
+    lines.push(
+      `${ACCENT}│${RESET}   ${MUTED}${padText(option.description, contentWidth - 3)}${RESET} ${ACCENT}│${RESET}`
+    );
+  });
+
+  lines.push(`${ACCENT}└${'─'.repeat(innerWidth)}┘${RESET}`);
+  lines.push(`${ACCENT_DIM}  ↑/↓ move • Enter select • 1-9 quick select • Ctrl+C cancel${RESET}`);
+
+  return lines;
+}
+
+function renderStaticPanel(title: string, subtitle: string): string[] {
+  const panelWidth = getPreferredMenuWidth();
+  const innerWidth = panelWidth - 2;
+  const contentWidth = innerWidth - 2;
+
+  return [
+    `${ACCENT}┌${'─'.repeat(innerWidth)}┐${RESET}`,
+    `${ACCENT}│${RESET} ${BOLD}${padText(title, contentWidth)}${RESET} ${ACCENT}│${RESET}`,
+    `${ACCENT}├${'─'.repeat(innerWidth)}┤${RESET}`,
+    `${ACCENT}│${RESET} ${MUTED}${padText(subtitle, contentWidth)}${RESET} ${ACCENT}│${RESET}`,
+    `${ACCENT}└${'─'.repeat(innerWidth)}┘${RESET}`,
+  ];
+}
+
+function getPreferredMenuWidth(): number {
+  const columns = output.columns ?? 80;
+  return Math.max(64, Math.min(96, columns - 2));
+}
+
 function clearRenderedFrame(lineCount: number): void {
   if (lineCount <= 0) {
     return;
@@ -582,10 +624,34 @@ function clearRenderedFrame(lineCount: number): void {
       readline.moveCursor(output, 0, 1);
     }
   }
+
   if (lineCount > 1) {
     readline.moveCursor(output, 0, -(lineCount - 1));
   }
   readline.cursorTo(output, 0);
+}
+
+function truncateText(value: string, maxLength: number): string {
+  const chars = Array.from(value);
+  if (chars.length <= maxLength) {
+    return value;
+  }
+
+  if (maxLength <= 1) {
+    return chars.slice(0, maxLength).join('');
+  }
+
+  return `${chars.slice(0, maxLength - 1).join('')}…`;
+}
+
+function padText(value: string, maxLength: number): string {
+  const truncated = truncateText(value, maxLength);
+  const visibleLength = Array.from(truncated).length;
+  if (visibleLength >= maxLength) {
+    return truncated;
+  }
+
+  return `${truncated}${' '.repeat(maxLength - visibleLength)}`;
 }
 
 function expandHomePath(value: string): string {
@@ -602,4 +668,16 @@ function expandHomePath(value: string): string {
 
 function isPromptable(): boolean {
   return Boolean(input.isTTY && output.isTTY);
+}
+
+function logInfo(message: string): void {
+  console.log(`${INFO}i${RESET} ${message}`);
+}
+
+function logOk(message: string): void {
+  console.log(`${SUCCESS}✓${RESET} ${message}`);
+}
+
+function logWarn(message: string): void {
+  console.log(`${WARN}!${RESET} ${message}`);
 }
