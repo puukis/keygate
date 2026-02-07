@@ -45,7 +45,7 @@ jobs:
           npm ping
           npm whoami
           # Verifies token has scope access before publish.
-          npm access ls-packages puukis
+          npm access list packages puukis
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
