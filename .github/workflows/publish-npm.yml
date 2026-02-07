@@ -1,0 +1,68 @@
+name: Publish npm packages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: github.repository == 'puukis/keygate'
+    runs-on: ubuntu-latest
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Validate npm token is configured
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::error::Missing NPM_TOKEN secret. Add it in repository settings."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Publish @keygate/core and @keygate/cli if versions are new
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          publish_if_needed() {
+            local package_name="$1"
+            local package_json="$2"
+            local version
+            version="$(node -p "require('./${package_json}').version")"
+
+            if npm view "${package_name}@${version}" version >/dev/null 2>&1; then
+              echo "::notice::${package_name}@${version} is already published. Skipping."
+              return 0
+            fi
+
+            echo "Publishing ${package_name}@${version}"
+            pnpm --filter "${package_name}" publish --access public --no-git-checks
+          }
+
+          publish_if_needed "@keygate/core" "packages/core/package.json"
+          publish_if_needed "@keygate/cli" "packages/cli/package.json"

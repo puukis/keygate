@@ -118,6 +118,9 @@ pnpm keygate --help
 # Uninstall current Keygate install (global package/fallback artifacts)
 keygate uninstall --yes
 
+# Update current Keygate install (npm/global or github source fallback)
+keygate update
+
 # Run tests
 pnpm test
 
