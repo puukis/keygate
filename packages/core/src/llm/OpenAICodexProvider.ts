@@ -48,6 +48,12 @@ interface LoginOptions {
   allowDeviceAuthFallback?: boolean;
 }
 
+interface ServerRequestPayload {
+  id: number | string;
+  method: string;
+  params?: unknown;
+}
+
 export class OpenAICodexProvider implements LLMProvider {
   name = 'openai-codex';
 
@@ -62,6 +68,7 @@ export class OpenAICodexProvider implements LLMProvider {
   private selectedCodexModelId: string | null = null;
   private cachedModels: CodexModel[] | null = null;
   private sessionThreadIds = new Map<string, string>();
+  private allowAlwaysApprovalSignatures = new Set<string>();
 
   constructor(model: string, options: OpenAICodexProviderOptions = {}) {
     this.cwd = expandHomePath(options.cwd ?? process.cwd());
@@ -70,8 +77,10 @@ export class OpenAICodexProvider implements LLMProvider {
     this.openExternalUrl = options.openExternalUrl ?? openExternalUrl;
     this.allowDeviceAuthFallback = options.allowDeviceAuthFallback ?? true;
     this.loginTimeoutMs = options.loginTimeoutMs ?? 240_000;
+    const codexCommand = resolveCodexCommandFromEnv();
 
     this.client = options.rpcClient ?? new CodexRpcClient({
+      command: codexCommand,
       cwd: this.cwd,
       requestTimeoutMs: options.requestTimeoutMs,
       modelReasoningEffort: this.reasoningEffort,
@@ -80,6 +89,11 @@ export class OpenAICodexProvider implements LLMProvider {
         title: 'Keygate',
         version: '0.1.0',
       },
+    });
+
+    this.client.on('exit', () => {
+      this.sessionThreadIds.clear();
+      this.allowAlwaysApprovalSignatures.clear();
     });
   }
 
@@ -102,6 +116,12 @@ export class OpenAICodexProvider implements LLMProvider {
     await this.ensureConnected();
     await this.ensureAuthenticated(false);
 
+    this.client.setServerRequestHandler(
+      options?.requestConfirmation
+        ? async (request) => this.handleServerRequest(request as ServerRequestPayload, options)
+        : null
+    );
+
     const sessionId = options?.sessionId ?? 'default';
     const hadThread = this.sessionThreadIds.has(sessionId);
     const threadId = await this.ensureThread(sessionId, options);
@@ -122,6 +142,7 @@ export class OpenAICodexProvider implements LLMProvider {
     );
     if (sandboxPolicy) {
       turnParams['sandboxPolicy'] = sandboxPolicy;
+      turnParams['sandbox_policy'] = sandboxPolicy;
     }
 
     const turnStart = await this.client.request<CodexTurnStartResult>('turn/start', turnParams);
@@ -136,6 +157,7 @@ export class OpenAICodexProvider implements LLMProvider {
     let failed: Error | null = null;
     let wakeUp: (() => void) | null = null;
     let streamedText = '';
+    let emittedText = '';
 
     const pushChunk = (chunk: LLMChunk): void => {
       pendingChunks.push(chunk);
@@ -160,8 +182,8 @@ export class OpenAICodexProvider implements LLMProvider {
       if (notification.method === 'item/agentMessage/delta') {
         const deltaText = extractAgentDeltaText(notification.params);
         if (deltaText) {
-          streamedText += deltaText;
-          pushChunk({ content: deltaText, done: false });
+          const merged = mergeDeltaText(streamedText, deltaText);
+          streamedText = merged.next;
         }
         return;
       }
@@ -169,25 +191,10 @@ export class OpenAICodexProvider implements LLMProvider {
       if (notification.method === 'item/completed') {
         const finalText = extractCompletedAgentMessageText(notification.params);
         if (finalText) {
-          if (!streamedText) {
-            streamedText = finalText;
+          streamedText = finalText;
+          if (finalText !== emittedText) {
+            emittedText = finalText;
             pushChunk({ content: finalText, done: false });
-            return;
-          }
-
-          if (finalText.startsWith(streamedText)) {
-            const tail = finalText.slice(streamedText.length);
-            if (tail) {
-              streamedText = finalText;
-              pushChunk({ content: tail, done: false });
-            }
-            return;
-          }
-
-          if (finalText !== streamedText) {
-            const separator = streamedText.endsWith('\n') ? '' : '\n';
-            streamedText += `${separator}${finalText}`;
-            pushChunk({ content: `${separator}${finalText}`, done: false });
           }
         }
         return;
@@ -198,6 +205,11 @@ export class OpenAICodexProvider implements LLMProvider {
 
         if (status === 'failed') {
           failed = new Error(getTurnFailureMessage(notification.params) ?? 'Codex turn failed');
+        }
+
+        if (!failed && emittedText.length === 0 && streamedText.length > 0) {
+          emittedText = streamedText;
+          pushChunk({ content: streamedText, done: false });
         }
 
         done = true;
@@ -234,6 +246,7 @@ export class OpenAICodexProvider implements LLMProvider {
       yield { done: true };
     } finally {
       this.client.off('notification', onNotification);
+      this.client.setServerRequestHandler(null);
     }
   }
 
@@ -425,6 +438,14 @@ export class OpenAICodexProvider implements LLMProvider {
       sandbox: options?.securityMode === 'spicy' ? 'danger-full-access' : 'workspace-write',
     };
 
+    const sandboxPolicy = this.normalizeSandboxPolicy(
+      options?.sandboxPolicy ?? this.getDefaultSandboxPolicy(options)
+    );
+    if (sandboxPolicy) {
+      threadParams['sandboxPolicy'] = sandboxPolicy;
+      threadParams['sandbox_policy'] = sandboxPolicy;
+    }
+
     const startResult = await this.client.request<CodexThreadStartResult>('thread/start', threadParams);
     const threadId = startResult.thread?.id ?? startResult.threadId;
 
@@ -516,6 +537,87 @@ export class OpenAICodexProvider implements LLMProvider {
     delete normalized['excludeTmpdirEnvVar'];
 
     return normalized;
+  }
+
+  private async handleServerRequest(
+    request: ServerRequestPayload,
+    options?: ChatOptions
+  ): Promise<{ result?: unknown; error?: { code: number; message: string } } | null> {
+    if (!options?.requestConfirmation) {
+      return null;
+    }
+
+    const approvalKind = classifyApprovalMethod(request.method);
+    if (!approvalKind) {
+      return null;
+    }
+
+    const params = toRecord(request.params);
+    const signature = buildApprovalSignature(approvalKind, request.method, params);
+    if (this.allowAlwaysApprovalSignatures.has(signature)) {
+      return { result: buildApprovalResult('allow_always', request.method) };
+    }
+
+    if (approvalKind === 'exec') {
+      const command = formatCommandPreview(params?.['command']);
+      const cwd = firstString(params?.['cwd']);
+      const reason = firstString(params?.['reason']);
+      const summary = command
+        ? `Run command \`${command}\`${cwd ? ` in \`${cwd}\`` : ''}.${reason ? ` ${reason}` : ''}`
+        : 'Approve command execution requested by Codex.';
+
+      const decision = await options.requestConfirmation({
+        tool: 'codex.exec',
+        action: 'command execution',
+        summary,
+        command,
+        cwd,
+        args: params ?? undefined,
+      });
+
+      if (decision === 'allow_always') {
+        this.allowAlwaysApprovalSignatures.add(signature);
+      }
+
+      return { result: buildApprovalResult(decision, request.method) };
+    }
+
+    if (approvalKind === 'patch') {
+      const reason = firstString(params?.['reason']);
+      const grantRoot = firstString(params?.['grantRoot']);
+      const summary = [
+        'Apply file changes requested by Codex.',
+        reason,
+        grantRoot ? `Requested write root: \`${grantRoot}\`.` : undefined,
+      ]
+        .filter((part): part is string => typeof part === 'string' && part.trim().length > 0)
+        .join(' ');
+      const decision = await options.requestConfirmation({
+        tool: 'codex.apply_patch',
+        action: 'patch apply',
+        summary,
+        args: params ?? undefined,
+      });
+
+      if (decision === 'allow_always') {
+        this.allowAlwaysApprovalSignatures.add(signature);
+      }
+
+      return { result: buildApprovalResult(decision, request.method) };
+    }
+
+    const decision = await options.requestConfirmation({
+      tool: 'codex.approval',
+      action: 'tool approval',
+      summary: `Approve \`${request.method}\` requested by Codex.`,
+      args: params ?? undefined,
+    });
+
+    if (decision === 'allow_always') {
+      this.allowAlwaysApprovalSignatures.add(signature);
+    }
+
+    return { result: buildApprovalResult(decision, request.method) };
   }
 }
 
@@ -809,6 +911,15 @@ function normalizeCodexReasoningEffort(value: unknown): CodexReasoningEffort | n
   }
 }
 
+function resolveCodexCommandFromEnv(): string {
+  const explicit = process.env['KEYGATE_CODEX_BIN']?.trim();
+  if (explicit) {
+    return explicit;
+  }
+
+  return 'codex';
+}
+
 function normalizeApprovalPolicy(value: unknown): 'untrusted' | 'on-failure' | 'on-request' | 'never' {
   if (typeof value !== 'string') {
     return 'untrusted';
@@ -862,4 +973,276 @@ function normalizeTurnSandboxPolicyType(
     default:
       return 'workspaceWrite';
   }
+}
+
+function mapDecision(
+  decision: import('../types.js').ConfirmationDecision,
+  method: string
+): 'approved' | 'approved_for_session' | 'denied' | 'accept' | 'acceptForSession' | 'decline' {
+  if (usesRequestApprovalDecisionFormat(method)) {
+    switch (decision) {
+      case 'allow_once':
+        return 'accept';
+      case 'allow_always':
+        return 'acceptForSession';
+      case 'cancel':
+      default:
+        return 'decline';
+    }
+  }
+
+  switch (decision) {
+    case 'allow_once':
+      return 'approved';
+    case 'allow_always':
+      return 'approved_for_session';
+    case 'cancel':
+    default:
+      return 'denied';
+  }
+}
+
+function buildApprovalResult(
+  decision: import('../types.js').ConfirmationDecision,
+  method: string
+): {
+  decision: 'approved' | 'approved_for_session' | 'denied' | 'accept' | 'acceptForSession' | 'decline';
+} {
+  return {
+    decision: mapDecision(decision, method),
+  };
+}
+
+function classifyApprovalMethod(method: string): 'exec' | 'patch' | 'generic' | null {
+  const normalized = method.trim().toLowerCase();
+  const compact = normalized.replace(/[^a-z]/g, '');
+
+  if (!compact.includes('approval')) {
+    return null;
+  }
+
+  if (compact.includes('exec') || compact.includes('command')) {
+    return 'exec';
+  }
+
+  if (compact.includes('patch') || compact.includes('filechange')) {
+    return 'patch';
+  }
+
+  return 'generic';
+}
+
+function usesRequestApprovalDecisionFormat(method: string): boolean {
+  const normalized = method.trim().toLowerCase();
+  const compact = normalized.replace(/[^a-z]/g, '');
+  return compact.includes('requestapproval');
+}
+
+function buildApprovalSignature(
+  kind: 'exec' | 'patch' | 'generic',
+  method: string,
+  params: Record<string, unknown> | null
+): string {
+  if (kind === 'exec') {
+    const command = formatCommandPreview(params?.['command']) ?? '';
+    const cwd = firstString(params?.['cwd']) ?? '';
+    return `exec|${method}|${command}|${cwd}`;
+  }
+
+  if (kind === 'patch') {
+    // Patch payload IDs are often per-call; scope "always" at method granularity.
+    return `patch|${method}`;
+  }
+
+  return `generic|${method}`;
+}
+
+function toRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  return value as Record<string, unknown>;
+}
+
+function firstString(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function formatCommandPreview(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const parts = value
+    .filter((part): part is string => typeof part === 'string')
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+
+  if (parts.length === 0) {
+    return undefined;
+  }
+
+  return parts.join(' ');
+}
+
+function mergeDeltaText(current: string, delta: string): { next: string; emit: string } {
+  if (!delta) {
+    return { next: current, emit: '' };
+  }
+
+  const normalizedDelta = normalizeStreamingDelta(current, delta);
+  if (!normalizedDelta) {
+    return { next: current, emit: '' };
+  }
+
+  if (!current) {
+    return { next: normalizedDelta, emit: normalizedDelta };
+  }
+
+  if (normalizedDelta === current) {
+    return { next: current, emit: '' };
+  }
+
+  // Some streams send cumulative text snapshots as "delta".
+  if (normalizedDelta.startsWith(current)) {
+    const tail = normalizedDelta.slice(current.length);
+    return { next: normalizedDelta, emit: tail };
+  }
+
+  // Duplicate replay of recent chunk.
+  if (current.endsWith(normalizedDelta)) {
+    return { next: current, emit: '' };
+  }
+
+  // Suppress only large replayed chunks; short token deltas (e.g. ".", " I")
+  // must remain append-only or they get dropped.
+  if (normalizedDelta.length >= 24 && current.includes(normalizedDelta)) {
+    return { next: current, emit: '' };
+  }
+
+  const overlap = longestOverlap(current, normalizedDelta);
+  if (overlap > 0) {
+    const tail = normalizedDelta.slice(overlap);
+    return { next: `${current}${tail}`, emit: tail };
+  }
+
+  // Normal incremental token/chunk: append verbatim without injecting separators.
+  return {
+    next: `${current}${normalizedDelta}`,
+    emit: normalizedDelta,
+  };
+}
+
+function longestOverlap(left: string, right: string): number {
+  const max = Math.min(left.length, right.length);
+  for (let size = max; size > 0; size -= 1) {
+    if (left.slice(-size) === right.slice(0, size)) {
+      return size;
+    }
+  }
+  return 0;
+}
+
+function normalizeStreamingDelta(current: string, delta: string): string {
+  let normalized = delta.replace(/\r\n/g, '\n');
+
+  if (normalized.startsWith('\n') && !normalized.startsWith('\n\n')) {
+    const rest = normalized.slice(1);
+    const trimmed = rest.trimStart();
+    if (shouldFlattenSingleLeadingNewline(trimmed)) {
+      if (!trimmed) {
+        normalized = '';
+      } else if (/^[,.;:!?)}\]]/.test(trimmed)) {
+        normalized = trimmed;
+      } else if (current.length === 0 || /\s$/.test(current)) {
+        normalized = trimmed;
+      } else {
+        normalized = ` ${trimmed}`;
+      }
+    }
+  }
+
+  if (normalized.endsWith('\n') && !normalized.endsWith('\n\n')) {
+    const withoutTrailing = normalized.slice(0, -1);
+    const trimmed = withoutTrailing.trim();
+    if (shouldFlattenSingleTrailingNewline(trimmed, withoutTrailing)) {
+      normalized = withoutTrailing;
+    }
+  }
+
+  return normalized;
+}
+
+function shouldFlattenSingleLeadingNewline(trimmed: string): boolean {
+  if (!trimmed) {
+    return false;
+  }
+
+  if (/^[-*+]\s/.test(trimmed)) {
+    return false;
+  }
+
+  if (/^\d+\.\s/.test(trimmed)) {
+    return false;
+  }
+
+  if (/^#{1,6}\s/.test(trimmed)) {
+    return false;
+  }
+
+  if (/^>/.test(trimmed)) {
+    return false;
+  }
+
+  if (/^```/.test(trimmed)) {
+    return false;
+  }
+
+  return true;
+}
+
+function shouldFlattenSingleTrailingNewline(trimmed: string, rawWithoutTrailing: string): boolean {
+  if (!trimmed) {
+    return true;
+  }
+
+  // Keep structural markdown/newline boundaries.
+  if (/^[-*+]\s/.test(trimmed)) {
+    return false;
+  }
+
+  if (/^\d+\.\s/.test(trimmed)) {
+    return false;
+  }
+
+  if (/^#{1,6}\s/.test(trimmed)) {
+    return false;
+  }
+
+  if (/^>/.test(trimmed)) {
+    return false;
+  }
+
+  if (/^```/.test(trimmed)) {
+    return false;
+  }
+
+  // Flatten token-like chunks such as "Hey\n", " I\n", "?\n".
+  const hasInnerNewline = rawWithoutTrailing.includes('\n');
+  if (!hasInnerNewline && rawWithoutTrailing.length <= 64) {
+    return true;
+  }
+
+  return false;
 }

@@ -6,6 +6,7 @@ import type {
   CodexInitializeResult,
   CodexRpcNotification,
   JsonRpcErrorResponse,
+  JsonRpcId,
   JsonRpcRequest,
   JsonRpcSuccessResponse,
 } from './types.js';
@@ -15,6 +16,20 @@ interface PendingRequest {
   timer: NodeJS.Timeout;
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
+}
+
+interface IncomingServerRequest {
+  id: JsonRpcId;
+  method: string;
+  params?: unknown;
+}
+
+interface ServerRequestResult {
+  result?: unknown;
+  error?: {
+    code: number;
+    message: string;
+  };
 }
 
 type SpawnFactory = (
@@ -38,6 +53,7 @@ export interface CodexRpcClientOptions {
   requestTimeoutMs?: number;
   spawnFactory?: SpawnFactory;
   clientInfo?: CodexInitializeParams['clientInfo'];
+  serverRequestHandler?: (request: IncomingServerRequest) => Promise<ServerRequestResult | null>;
 }
 
 export class CodexRpcClient extends EventEmitter<CodexRpcClientEvents> {
@@ -49,16 +65,18 @@ export class CodexRpcClient extends EventEmitter<CodexRpcClientEvents> {
   private readonly requestTimeoutMs: number;
   private readonly spawnFactory: SpawnFactory;
   private readonly clientInfo: CodexInitializeParams['clientInfo'];
+  private serverRequestHandler: ((request: IncomingServerRequest) => Promise<ServerRequestResult | null>) | null;
 
   private process: ChildProcessWithoutNullStreams | null = null;
   private stdoutReadline: readline.Interface | null = null;
   private nextRequestId = 1;
-  private pendingRequests = new Map<number, PendingRequest>();
+  private pendingRequests = new Map<JsonRpcId, PendingRequest>();
   private initialized = false;
   private closing = false;
   private stderrLines: string[] = [];
   private attemptedReasoningEffortCompat = false;
   private useReasoningEffortCompatOverride = false;
+  private transportRecovery: Promise<void> | null = null;
 
   constructor(options: CodexRpcClientOptions = {}) {
     super();
@@ -74,6 +92,7 @@ export class CodexRpcClient extends EventEmitter<CodexRpcClientEvents> {
       title: 'Keygate',
       version: '0.1.0',
     };
+    this.serverRequestHandler = options.serverRequestHandler ?? null;
   }
 
   async start(): Promise<void> {
@@ -158,8 +177,12 @@ export class CodexRpcClient extends EventEmitter<CodexRpcClientEvents> {
   }
 
   async ensureInitialized(params?: CodexInitializeParams): Promise<void> {
-    if (this.initialized && this.process) {
+    if (this.initialized && this.isProcessWritable()) {
       return;
+    }
+
+    if (this.process && !this.isProcessWritable()) {
+      await this.recoverTransport(new Error('Codex RPC transport is unavailable'));
     }
 
     try {
@@ -178,6 +201,14 @@ export class CodexRpcClient extends EventEmitter<CodexRpcClientEvents> {
   }
 
   async request<TResult = unknown, TParams = unknown>(method: string, params?: TParams): Promise<TResult> {
+    return this.requestWithRetry(method, params, true);
+  }
+
+  private async requestWithRetry<TResult = unknown, TParams = unknown>(
+    method: string,
+    params: TParams | undefined,
+    allowRetry: boolean
+  ): Promise<TResult> {
     this.assertProcessRunning();
 
     const requestId = this.nextRequestId++;
@@ -204,15 +235,34 @@ export class CodexRpcClient extends EventEmitter<CodexRpcClientEvents> {
         reject,
       });
 
-      this.process!.stdin.write(line, (error) => {
-        if (!error) {
+      const handleWriteFailure = (message: string): void => {
+        clearTimeout(timer);
+        this.pendingRequests.delete(requestId);
+
+        const writeError = new Error(`Failed to write Codex request (${method}): ${message}`);
+
+        if (!allowRetry || !isRecoverableTransportWriteError(message)) {
+          reject(writeError);
           return;
         }
 
-        clearTimeout(timer);
-        this.pendingRequests.delete(requestId);
-        reject(new Error(`Failed to write Codex request (${method}): ${error.message}`));
-      });
+        void this.recoverTransport(writeError)
+          .then(() => this.requestWithRetry<TResult, TParams>(method, params, false))
+          .then(resolve)
+          .catch(reject);
+      };
+
+      try {
+        this.process!.stdin.write(line, (error) => {
+          if (!error) {
+            return;
+          }
+
+          handleWriteFailure(error.message);
+        });
+      } catch (error) {
+        handleWriteFailure(error instanceof Error ? error.message : String(error));
+      }
     });
   }
 
@@ -270,6 +320,12 @@ export class CodexRpcClient extends EventEmitter<CodexRpcClientEvents> {
     return this.stderrLines.slice(-maxLines);
   }
 
+  setServerRequestHandler(
+    handler: ((request: IncomingServerRequest) => Promise<ServerRequestResult | null>) | null
+  ): void {
+    this.serverRequestHandler = handler;
+  }
+
   private resolveSpawnArgs(): string[] {
     const args = [...this.args];
 
@@ -323,8 +379,13 @@ export class CodexRpcClient extends EventEmitter<CodexRpcClientEvents> {
 
     const value = parsed as Record<string, unknown>;
 
-    const hasId = typeof value['id'] === 'number';
+    const hasId = isJsonRpcId(value['id']);
     const hasMethod = typeof value['method'] === 'string';
+
+    if (isServerRequest(value)) {
+      this.handleServerRequest(value);
+      return;
+    }
 
     if (isSuccessResponse(value)) {
       this.handleResponse(value);
@@ -345,33 +406,108 @@ export class CodexRpcClient extends EventEmitter<CodexRpcClientEvents> {
   }
 
   private handleResponse(response: JsonRpcSuccessResponse<unknown>): void {
-    const requestId = response.id;
-    const pending = this.pendingRequests.get(requestId);
+    const entry = this.getPendingRequestEntry(response.id);
 
-    if (!pending) {
+    if (!entry) {
       return;
     }
 
+    const { key, pending } = entry;
     clearTimeout(pending.timer);
-    this.pendingRequests.delete(requestId);
+    this.pendingRequests.delete(key);
     pending.resolve(response.result);
   }
 
   private handleErrorResponse(response: JsonRpcErrorResponse): void {
-    const requestId = response.id;
-    const pending = this.pendingRequests.get(requestId);
+    const entry = this.getPendingRequestEntry(response.id);
 
-    if (!pending) {
+    if (!entry) {
       return;
     }
 
+    const { key, pending } = entry;
     clearTimeout(pending.timer);
-    this.pendingRequests.delete(requestId);
+    this.pendingRequests.delete(key);
 
     const errorMessage = response.error?.message ?? 'Unknown Codex RPC error';
     const code = response.error?.code;
 
     pending.reject(new Error(`Codex request failed (${pending.method}): [${code}] ${errorMessage}`));
+  }
+
+  private handleServerRequest(request: IncomingServerRequest): void {
+    const handler = this.serverRequestHandler;
+    if (!handler) {
+      this.respondToServerRequest(request.id, this.getDefaultServerRequestResult(request.method));
+      return;
+    }
+
+    void handler(request)
+      .then((response) => {
+        if (!response) {
+          this.respondToServerRequest(request.id, this.getDefaultServerRequestResult(request.method));
+          return;
+        }
+
+        if (response.error) {
+          this.respondWithServerError(request.id, response.error.code, response.error.message);
+          return;
+        }
+
+        this.respondToServerRequest(
+          request.id,
+          response.result ?? this.getDefaultServerRequestResult(request.method)
+        );
+      })
+      .catch((error) => {
+        this.respondWithServerError(
+          request.id,
+          -32000,
+          error instanceof Error ? error.message : 'Server request handler failed'
+        );
+      });
+  }
+
+  private getDefaultServerRequestResult(method: string): unknown {
+    const normalized = method.trim().toLowerCase().replace(/[^a-z]/g, '');
+    if (normalized.includes('requestapproval')) {
+      return { decision: 'accept' };
+    }
+    if (normalized.includes('approval')) {
+      return { decision: 'approved' };
+    }
+    return {};
+  }
+
+  private respondToServerRequest(id: JsonRpcId, result: unknown): void {
+    if (!this.process) {
+      return;
+    }
+
+    const payload = {
+      jsonrpc: '2.0',
+      id,
+      result,
+    };
+
+    this.process.stdin.write(`${JSON.stringify(payload)}\n`);
+  }
+
+  private respondWithServerError(id: JsonRpcId, code: number, message: string): void {
+    if (!this.process) {
+      return;
+    }
+
+    const payload = {
+      jsonrpc: '2.0',
+      id,
+      error: {
+        code,
+        message,
+      },
+    };
+
+    this.process.stdin.write(`${JSON.stringify(payload)}\n`);
   }
 
   private handleStderrChunk(chunk: string): void {
@@ -421,6 +557,40 @@ export class CodexRpcClient extends EventEmitter<CodexRpcClientEvents> {
     }
   }
 
+  private async recoverTransport(cause: Error): Promise<void> {
+    if (this.transportRecovery) {
+      await this.transportRecovery;
+      return;
+    }
+
+    this.transportRecovery = (async () => {
+      const child = this.process;
+
+      this.failPendingRequests(cause);
+      this.cleanupProcessState();
+      this.initialized = false;
+
+      // Signal higher layers that any cached per-process state (thread ids, approvals) is stale now.
+      this.emit('exit', { code: null, signal: null });
+
+      if (child && !child.killed) {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          // Ignore kill errors while recovering transport.
+        }
+      }
+
+      await this.start();
+    })();
+
+    try {
+      await this.transportRecovery;
+    } finally {
+      this.transportRecovery = null;
+    }
+  }
+
   private failPendingRequests(error: Error): void {
     for (const pending of this.pendingRequests.values()) {
       clearTimeout(pending.timer);
@@ -431,9 +601,45 @@ export class CodexRpcClient extends EventEmitter<CodexRpcClientEvents> {
   }
 
   private assertProcessRunning(): void {
-    if (!this.process) {
+    if (!this.isProcessWritable()) {
       throw new Error('Codex app-server process is not running');
     }
+  }
+
+  private isProcessWritable(): boolean {
+    if (!this.process) {
+      return false;
+    }
+
+    const stdin = this.process.stdin;
+    if (!stdin) {
+      return false;
+    }
+
+    if (stdin.destroyed || stdin.writableEnded || !stdin.writable) {
+      return false;
+    }
+
+    return true;
+  }
+
+  private getPendingRequestEntry(id: JsonRpcId): { key: JsonRpcId; pending: PendingRequest } | null {
+    const exact = this.pendingRequests.get(id);
+    if (exact) {
+      return { key: id, pending: exact };
+    }
+
+    if (typeof id === 'string') {
+      const numeric = Number(id);
+      if (Number.isInteger(numeric)) {
+        const pending = this.pendingRequests.get(numeric);
+        if (pending) {
+          return { key: numeric, pending };
+        }
+      }
+    }
+
+    return null;
   }
 }
 
@@ -453,7 +659,7 @@ function isSuccessResponse(value: unknown): value is JsonRpcSuccessResponse<unkn
   }
 
   const row = value as Record<string, unknown>;
-  return typeof row['id'] === 'number' && Object.prototype.hasOwnProperty.call(row, 'result');
+  return isJsonRpcId(row['id']) && Object.prototype.hasOwnProperty.call(row, 'result');
 }
 
 function isErrorResponse(value: unknown): value is JsonRpcErrorResponse {
@@ -462,7 +668,24 @@ function isErrorResponse(value: unknown): value is JsonRpcErrorResponse {
   }
 
   const row = value as Record<string, unknown>;
-  return typeof row['id'] === 'number' && Object.prototype.hasOwnProperty.call(row, 'error');
+  return isJsonRpcId(row['id']) && Object.prototype.hasOwnProperty.call(row, 'error');
+}
+
+function isServerRequest(value: unknown): value is IncomingServerRequest {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const row = value as Record<string, unknown>;
+  if (!isJsonRpcId(row['id']) || typeof row['method'] !== 'string') {
+    return false;
+  }
+
+  return true;
+}
+
+function isJsonRpcId(value: unknown): value is JsonRpcId {
+  return typeof value === 'number' || typeof value === 'string';
 }
 
 function withModelReasoningEffortOverride(args: string[], effort: string): string[] {
@@ -532,4 +755,15 @@ function normalizeModelReasoningEffort(value: string | undefined): string | unde
     default:
       return undefined;
   }
+}
+
+function isRecoverableTransportWriteError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return (
+    lower.includes('stream was destroyed') ||
+    lower.includes('err_stream_destroyed') ||
+    lower.includes('write eof') ||
+    lower.includes('broken pipe') ||
+    lower.includes('epipe')
+  );
 }

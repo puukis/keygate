@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import {
   ensureAgentWorkspaceFiles,
+  getDefaultWorkspacePath,
   loadConfigFromEnv,
   loadEnvironment,
   printHelp,
@@ -32,7 +33,7 @@ async function main(): Promise<void> {
   }
 
   const config = loadConfigFromEnv();
-  const workspaceBootstrap = await ensureAgentWorkspaceFiles(config.security.workspacePath);
+  const workspaceBootstrap = await ensureAgentWorkspaceFiles(getDefaultWorkspacePath());
   const staticAssetsDir = await resolveStaticAssetsDir();
 
   console.log('⚡ Starting Keygate...');

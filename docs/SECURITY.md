@@ -20,7 +20,7 @@ Keygate operates in two distinct modes. Understanding the difference is critical
 ### 1. Safe Mode (Default)
 In this mode, Keygate acts as a passive assistant or restricted operator.
 - **Read-Only**: It can read files in the `WORKSPACE_PATH`.
-- **Ask Before Execution**: Every tool call that modifies state (writing files, running commands) requires explicit user confirmation via the CLI or Web UI.
+- **Ask Before Execution**: State-changing tool calls still require confirmation, except managed continuity markdown files (`SOUL.md`, `USER.md`, `BOOTSTRAP.md`, `IDENTITY.md`, `MEMORY.md`, `memory/*.md`) under the Keygate config workspace.
 - **No Network**: It cannot make outbound network requests (curl, ssh) unless explicitly whitelisted.
 
 ### 2. Spicy Mode (Autonomous)

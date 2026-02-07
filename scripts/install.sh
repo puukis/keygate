@@ -6,8 +6,14 @@ PACKAGE_NAME="${KEYGATE_NPM_PACKAGE:-@puukis/cli}"
 PACKAGE_VERSION="${KEYGATE_VERSION:-latest}"
 FALLBACK_REPO_URL="${KEYGATE_REPO_URL:-https://github.com/puukis/keygate.git}"
 FALLBACK_INSTALL_DIR="${KEYGATE_INSTALL_DIR:-$HOME/.local/share/keygate}"
-CONFIG_DIR="$HOME/.config/keygate"
-WORKSPACE_DIR="$HOME/keygate-workspace"
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+CONFIG_DIR="$CONFIG_HOME/keygate"
+DEVICE_ID="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo device)"
+DEVICE_ID="$(printf '%s' "$DEVICE_ID" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9._-]+/-/g; s/^-+//; s/-+$//')"
+if [[ -z "$DEVICE_ID" ]]; then
+  DEVICE_ID="device"
+fi
+WORKSPACE_DIR="$CONFIG_DIR/workspaces/$DEVICE_ID"
 ORIGINAL_PATH="${PATH:-}"
 
 NO_PROMPT="${KEYGATE_NO_PROMPT:-0}"

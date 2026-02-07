@@ -79,7 +79,8 @@
 }
 
 .btn-cancel,
-.btn-confirm {
+.btn-confirm,
+.btn-confirm-secondary {
   min-width: 100px;
   padding: 10px 16px;
   border-radius: 11px;
@@ -105,4 +106,60 @@
 
 .btn-confirm:hover {
   filter: brightness(1.03);
+}
+
+.btn-confirm-secondary {
+  background: #ffffff;
+  color: var(--brand-700);
+  border: 1px solid color-mix(in srgb, var(--brand-600) 38%, transparent);
+}
+
+.btn-confirm-secondary:hover {
+  background: color-mix(in srgb, var(--brand-200) 28%, white);
+}
+
+.modal-details {
+  margin-top: 12px;
+  border: 1px solid color-mix(in srgb, var(--brand-500) 18%, transparent);
+  border-radius: 12px;
+  padding: 12px;
+  background: rgba(247, 251, 255, 0.86);
+}
+
+.modal-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.modal-span {
+  grid-column: 1 / -1;
+}
+
+.modal-label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 0.7rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  font-weight: 700;
+}
+
+.modal-grid code,
+.modal-args pre {
+  display: block;
+  margin: 0;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: rgba(240, 246, 255, 0.95);
+  border: 1px solid color-mix(in srgb, var(--brand-500) 16%, transparent);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.modal-args {
+  margin-top: 12px;
 }

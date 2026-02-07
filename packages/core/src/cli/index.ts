@@ -5,6 +5,7 @@ import { runAuthCommand } from './commands/auth.js';
 import { runInstallCommand } from './commands/install.js';
 import { runUninstallCommand } from './commands/uninstall.js';
 import { runUpdateCommand } from './commands/update.js';
+import { runGatewayCommand } from './commands/gateway.js';
 
 export async function runCli(argv: string[]): Promise<boolean> {
   if (argv.length === 0) {
@@ -47,6 +48,9 @@ export async function runCli(argv: string[]): Promise<boolean> {
     case 'update':
       await runUpdateCommand(args);
       return true;
+    case 'gateway':
+      await runGatewayCommand(args);
+      return true;
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -63,9 +67,11 @@ Usage:
   keygate install codex [--method npm|brew]
   keygate uninstall [--yes] [--remove-config] [--remove-workspace]
   keygate update [--check-only]
+  keygate gateway <open|close|status>
 
 Notes:
   - openai-codex uses ChatGPT OAuth through Codex app-server.
   - No OpenAI API key is required for openai-codex.
+  - gateway uses native OS managers (systemd/launchd/Task Scheduler) for background lifecycle.
 `);
 }

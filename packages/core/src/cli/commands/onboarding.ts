@@ -6,7 +6,7 @@ import * as readline from 'node:readline';
 import { createInterface } from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import { getFlagString, hasFlag, type ParsedArgs } from '../argv.js';
-import { getConfigDir, updateEnvFile } from '../../config/env.js';
+import { getConfigDir, getDefaultWorkspacePath, updateEnvFile } from '../../config/env.js';
 import { runAuthCommand } from './auth.js';
 
 type ProviderChoice = 'openai' | 'openai-codex' | 'gemini' | 'ollama';
@@ -147,7 +147,7 @@ function createDefaultState(): OnboardingState {
     apiKey: '',
     ollamaHost: '',
     spicyModeEnabled: false,
-    workspacePath: path.join(os.homedir(), 'keygate-workspace'),
+    workspacePath: getDefaultWorkspacePath(),
     port: 18790,
   };
 }

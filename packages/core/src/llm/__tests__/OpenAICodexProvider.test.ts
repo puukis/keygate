@@ -416,4 +416,1035 @@ describe('OpenAICodexProvider', () => {
 
     await provider.dispose();
   });
+
+  it('continues turn after server approval request is answered', async () => {
+    const fake = new FakeChildProcess();
+    let approvalResponseSeen = false;
+
+    fake.stdin.on('data', (chunk) => {
+      const lines = String(chunk)
+        .split(/\n/g)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+
+      for (const line of lines) {
+        const payload = JSON.parse(line) as {
+          id?: number;
+          method?: string;
+          params?: Record<string, unknown>;
+          result?: { decision?: string };
+        };
+
+        if (payload.method === 'initialized') {
+          continue;
+        }
+
+        if (payload.method === 'initialize') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: { sessionId: 'session-1' },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'account/read') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: {
+              requiresOpenaiAuth: false,
+              account: null,
+            },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'model/list') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: {
+              data: [
+                { id: 'gpt-5.2-codex', displayName: 'GPT-5.2 Codex', isDefault: true },
+              ],
+              nextCursor: null,
+            },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'thread/start') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: {
+              thread: { id: 'thread-1' },
+            },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'turn/start') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: {
+              turn: { id: 'turn-1' },
+            },
+          }) + '\n');
+
+          setTimeout(() => {
+            fake.stdout.write(JSON.stringify({
+              id: 9001,
+              method: 'execCommandApproval',
+              params: {
+                conversationId: 'conv-1',
+                callId: 'call-1',
+                command: ['echo', 'hello'],
+                cwd: '/tmp',
+                reason: null,
+                risk: null,
+                parsedCmd: [],
+              },
+            }) + '\n');
+          }, 5);
+          continue;
+        }
+
+        if (payload.id === 9001 && payload.result?.decision === 'approved') {
+          approvalResponseSeen = true;
+          fake.stdout.write(JSON.stringify({
+            method: 'turn/completed',
+            params: {
+              threadId: 'thread-1',
+              turn: {
+                id: 'turn-1',
+                status: 'completed',
+              },
+            },
+          }) + '\n');
+        }
+      }
+    });
+
+    const rpcClient = new CodexRpcClient({
+      requestTimeoutMs: 5_000,
+      spawnFactory: () => fake as any,
+    });
+
+    const provider = new OpenAICodexProvider('openai-codex/gpt-5.2', {
+      rpcClient,
+    });
+
+    for await (const _chunk of provider.stream(
+      [{ role: 'user', content: 'hello codex' }],
+      { sessionId: 'session-approval-test' }
+    )) {
+      // drain stream to completion
+    }
+
+    expect(approvalResponseSeen).toBe(true);
+
+    await provider.dispose();
+  });
+
+  it('forwards codex approval requests to requestConfirmation callback', async () => {
+    const fake = new FakeChildProcess();
+    const requestConfirmation = vi.fn(async () => 'allow_once' as const);
+
+    fake.stdin.on('data', (chunk) => {
+      const lines = String(chunk)
+        .split(/\n/g)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+
+      for (const line of lines) {
+        const payload = JSON.parse(line) as {
+          id?: number;
+          method?: string;
+          params?: Record<string, unknown>;
+          result?: { decision?: string };
+        };
+
+        if (payload.method === 'initialized') {
+          continue;
+        }
+
+        if (payload.method === 'initialize') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { sessionId: 'session-1' } }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'account/read') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: { requiresOpenaiAuth: false, account: null },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'model/list') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: { data: [{ id: 'gpt-5.2-codex', displayName: 'GPT-5.2 Codex', isDefault: true }], nextCursor: null },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'thread/start') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { thread: { id: 'thread-1' } } }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'turn/start') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { turn: { id: 'turn-1' } } }) + '\n');
+
+          setTimeout(() => {
+            fake.stdout.write(JSON.stringify({
+              id: 321,
+              method: 'execCommandApproval',
+              params: {
+                conversationId: 'conv-1',
+                callId: 'call-1',
+                command: ['echo', 'hello'],
+                cwd: '/tmp',
+                reason: null,
+                risk: null,
+                parsedCmd: [],
+              },
+            }) + '\n');
+          }, 5);
+          continue;
+        }
+
+        if (payload.id === 321) {
+          fake.stdout.write(JSON.stringify({
+            method: 'turn/completed',
+            params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } },
+          }) + '\n');
+        }
+      }
+    });
+
+    const rpcClient = new CodexRpcClient({
+      requestTimeoutMs: 5_000,
+      spawnFactory: () => fake as any,
+    });
+
+    const provider = new OpenAICodexProvider('openai-codex/gpt-5.2', { rpcClient });
+
+    for await (const _chunk of provider.stream(
+      [{ role: 'user', content: 'hello codex' }],
+      { sessionId: 'session-forward-approval', requestConfirmation }
+    )) {
+      // drain stream
+    }
+
+    expect(requestConfirmation).toHaveBeenCalledTimes(1);
+    expect(requestConfirmation.mock.calls[0]?.[0]).toMatchObject({
+      tool: 'codex.exec',
+      action: 'command execution',
+    });
+
+    await provider.dispose();
+  });
+
+  it('forwards codex approval requests with string ids to requestConfirmation callback', async () => {
+    const fake = new FakeChildProcess();
+    const requestConfirmation = vi.fn(async () => 'allow_once' as const);
+    let approvalResponseId: number | string | undefined;
+
+    fake.stdin.on('data', (chunk) => {
+      const lines = String(chunk)
+        .split(/\n/g)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+
+      for (const line of lines) {
+        const payload = JSON.parse(line) as {
+          id?: number | string;
+          method?: string;
+          params?: Record<string, unknown>;
+          result?: { decision?: string };
+        };
+
+        if (payload.method === 'initialized') {
+          continue;
+        }
+
+        if (payload.method === 'initialize') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { sessionId: 'session-1' } }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'account/read') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: { requiresOpenaiAuth: false, account: null },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'model/list') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: { data: [{ id: 'gpt-5.2-codex', displayName: 'GPT-5.2 Codex', isDefault: true }], nextCursor: null },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'thread/start') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { thread: { id: 'thread-1' } } }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'turn/start') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { turn: { id: 'turn-1' } } }) + '\n');
+
+          setTimeout(() => {
+            fake.stdout.write(JSON.stringify({
+              id: 'approval-321',
+              method: 'execCommandApproval',
+              params: {
+                conversationId: 'conv-1',
+                callId: 'call-1',
+                command: ['echo', 'hello'],
+                cwd: '/tmp',
+                reason: null,
+                risk: null,
+                parsedCmd: [],
+              },
+            }) + '\n');
+          }, 5);
+          continue;
+        }
+
+        if (payload.id === 'approval-321') {
+          approvalResponseId = payload.id;
+          fake.stdout.write(JSON.stringify({
+            method: 'turn/completed',
+            params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } },
+          }) + '\n');
+        }
+      }
+    });
+
+    const rpcClient = new CodexRpcClient({
+      requestTimeoutMs: 5_000,
+      spawnFactory: () => fake as any,
+    });
+
+    const provider = new OpenAICodexProvider('openai-codex/gpt-5.2', { rpcClient });
+
+    for await (const _chunk of provider.stream(
+      [{ role: 'user', content: 'hello codex' }],
+      { sessionId: 'session-forward-approval-string-id', requestConfirmation }
+    )) {
+      // drain stream
+    }
+
+    expect(approvalResponseId).toBe('approval-321');
+    expect(requestConfirmation).toHaveBeenCalledTimes(1);
+    expect(requestConfirmation.mock.calls[0]?.[0]).toMatchObject({
+      tool: 'codex.exec',
+      action: 'command execution',
+    });
+
+    await provider.dispose();
+  });
+
+  it('forwards approval method variants to requestConfirmation callback', async () => {
+    const fake = new FakeChildProcess();
+    const requestConfirmation = vi.fn(async () => 'allow_once' as const);
+
+    fake.stdin.on('data', (chunk) => {
+      const lines = String(chunk)
+        .split(/\n/g)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+
+      for (const line of lines) {
+        const payload = JSON.parse(line) as {
+          id?: number | string;
+          method?: string;
+          result?: { decision?: string };
+        };
+
+        if (payload.method === 'initialized') {
+          continue;
+        }
+
+        if (payload.method === 'initialize') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { sessionId: 'session-1' } }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'account/read') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: { requiresOpenaiAuth: false, account: null },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'model/list') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: { data: [{ id: 'gpt-5.2-codex', displayName: 'GPT-5.2 Codex', isDefault: true }], nextCursor: null },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'thread/start') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { thread: { id: 'thread-1' } } }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'turn/start') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { turn: { id: 'turn-1' } } }) + '\n');
+
+          setTimeout(() => {
+            fake.stdout.write(JSON.stringify({
+              id: 'approval-variant-1',
+              method: 'patch_apply_approval',
+              params: {
+                call_id: 'call-1',
+              },
+            }) + '\n');
+          }, 5);
+          continue;
+        }
+
+        if (payload.id === 'approval-variant-1') {
+          fake.stdout.write(JSON.stringify({
+            method: 'turn/completed',
+            params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } },
+          }) + '\n');
+        }
+      }
+    });
+
+    const rpcClient = new CodexRpcClient({
+      requestTimeoutMs: 5_000,
+      spawnFactory: () => fake as any,
+    });
+
+    const provider = new OpenAICodexProvider('openai-codex/gpt-5.2', { rpcClient });
+
+    for await (const _chunk of provider.stream(
+      [{ role: 'user', content: 'hello codex' }],
+      { sessionId: 'session-forward-approval-variant', requestConfirmation }
+    )) {
+      // drain stream
+    }
+
+    expect(requestConfirmation).toHaveBeenCalledTimes(1);
+    expect(requestConfirmation.mock.calls[0]?.[0]).toMatchObject({
+      tool: 'codex.apply_patch',
+      action: 'patch apply',
+    });
+
+    await provider.dispose();
+  });
+
+  it('maps allow_always to approved and reuses it for repeated patch approvals', async () => {
+    const fake = new FakeChildProcess();
+    const requestConfirmation = vi.fn(async () => 'allow_always' as const);
+    let firstDecision: string | undefined;
+    let secondDecision: string | undefined;
+
+    fake.stdin.on('data', (chunk) => {
+      const lines = String(chunk)
+        .split(/\n/g)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+
+      for (const line of lines) {
+        const payload = JSON.parse(line) as {
+          id?: number | string;
+          method?: string;
+          result?: { decision?: string };
+        };
+
+        if (payload.method === 'initialized') {
+          continue;
+        }
+
+        if (payload.method === 'initialize') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { sessionId: 'session-1' } }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'account/read') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: { requiresOpenaiAuth: false, account: null },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'model/list') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: { data: [{ id: 'gpt-5.2-codex', displayName: 'GPT-5.2 Codex', isDefault: true }], nextCursor: null },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'thread/start') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { thread: { id: 'thread-1' } } }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'turn/start') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { turn: { id: 'turn-1' } } }) + '\n');
+
+          setTimeout(() => {
+            fake.stdout.write(JSON.stringify({
+              id: 'patch-approval-1',
+              method: 'patch_apply_approval',
+              params: { call_id: 'call-1' },
+            }) + '\n');
+          }, 5);
+          continue;
+        }
+
+        if (payload.id === 'patch-approval-1') {
+          firstDecision = payload.result?.decision;
+          fake.stdout.write(JSON.stringify({
+            id: 'patch-approval-2',
+            method: 'patch_apply_approval',
+            params: { call_id: 'call-2' },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.id === 'patch-approval-2') {
+          secondDecision = payload.result?.decision;
+          fake.stdout.write(JSON.stringify({
+            method: 'turn/completed',
+            params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } },
+          }) + '\n');
+        }
+      }
+    });
+
+    const rpcClient = new CodexRpcClient({
+      requestTimeoutMs: 5_000,
+      spawnFactory: () => fake as any,
+    });
+
+    const provider = new OpenAICodexProvider('openai-codex/gpt-5.2', { rpcClient });
+
+    for await (const _chunk of provider.stream(
+      [{ role: 'user', content: 'hello codex' }],
+      { sessionId: 'session-allow-always-patch', requestConfirmation }
+    )) {
+      // drain stream
+    }
+
+    expect(firstDecision).toBe('approved_for_session');
+    expect(secondDecision).toBe('approved_for_session');
+    expect(requestConfirmation).toHaveBeenCalledTimes(1);
+
+    await provider.dispose();
+  });
+
+  it('maps allow_always to acceptForSession for item requestApproval methods', async () => {
+    const fake = new FakeChildProcess();
+    const requestConfirmation = vi.fn(async () => 'allow_always' as const);
+    let firstDecision: string | undefined;
+    let secondDecision: string | undefined;
+
+    fake.stdin.on('data', (chunk) => {
+      const lines = String(chunk)
+        .split(/\n/g)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+
+      for (const line of lines) {
+        const payload = JSON.parse(line) as {
+          id?: number | string;
+          method?: string;
+          result?: { decision?: string };
+        };
+
+        if (payload.method === 'initialized') {
+          continue;
+        }
+
+        if (payload.method === 'initialize') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { sessionId: 'session-1' } }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'account/read') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: { requiresOpenaiAuth: false, account: null },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'model/list') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: { data: [{ id: 'gpt-5.2-codex', displayName: 'GPT-5.2 Codex', isDefault: true }], nextCursor: null },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'thread/start') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { thread: { id: 'thread-1' } } }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'turn/start') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { turn: { id: 'turn-1' } } }) + '\n');
+
+          setTimeout(() => {
+            fake.stdout.write(JSON.stringify({
+              id: 'filechange-approval-1',
+              method: 'item/fileChange/requestApproval',
+              params: {
+                threadId: 'thread-1',
+                turnId: 'turn-1',
+                itemId: 'call-1',
+                reason: null,
+                grantRoot: null,
+              },
+            }) + '\n');
+          }, 5);
+          continue;
+        }
+
+        if (payload.id === 'filechange-approval-1') {
+          firstDecision = payload.result?.decision;
+          fake.stdout.write(JSON.stringify({
+            id: 'filechange-approval-2',
+            method: 'item/fileChange/requestApproval',
+            params: {
+              threadId: 'thread-1',
+              turnId: 'turn-1',
+              itemId: 'call-2',
+              reason: null,
+              grantRoot: null,
+            },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.id === 'filechange-approval-2') {
+          secondDecision = payload.result?.decision;
+          fake.stdout.write(JSON.stringify({
+            method: 'turn/completed',
+            params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } },
+          }) + '\n');
+        }
+      }
+    });
+
+    const rpcClient = new CodexRpcClient({
+      requestTimeoutMs: 5_000,
+      spawnFactory: () => fake as any,
+    });
+
+    const provider = new OpenAICodexProvider('openai-codex/gpt-5.2', { rpcClient });
+
+    for await (const _chunk of provider.stream(
+      [{ role: 'user', content: 'hello codex' }],
+      { sessionId: 'session-allow-always-item-approval', requestConfirmation }
+    )) {
+      // drain stream
+    }
+
+    expect(firstDecision).toBe('acceptForSession');
+    expect(secondDecision).toBe('acceptForSession');
+    expect(requestConfirmation).toHaveBeenCalledTimes(1);
+    expect(requestConfirmation.mock.calls[0]?.[0]).toMatchObject({
+      tool: 'codex.apply_patch',
+      action: 'patch apply',
+    });
+
+    await provider.dispose();
+  });
+
+  it('dedupes cumulative delta payloads from codex notifications', async () => {
+    const fake = new FakeChildProcess();
+
+    fake.stdin.on('data', (chunk) => {
+      const lines = String(chunk)
+        .split(/\n/g)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+
+      for (const line of lines) {
+        const payload = JSON.parse(line) as {
+          id?: number;
+          method: string;
+        };
+
+        if (payload.method === 'initialized') {
+          continue;
+        }
+
+        if (payload.method === 'initialize') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { sessionId: 'session-1' } }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'account/read') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: { requiresOpenaiAuth: false, account: null },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'model/list') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: { data: [{ id: 'gpt-5.2-codex', displayName: 'GPT-5.2 Codex', isDefault: true }], nextCursor: null },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'thread/start') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { thread: { id: 'thread-1' } } }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'turn/start') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { turn: { id: 'turn-1' } } }) + '\n');
+
+          setTimeout(() => {
+            fake.stdout.write(JSON.stringify({
+              method: 'item/agentMessage/delta',
+              params: { threadId: 'thread-1', turnId: 'turn-1', delta: 'Hello' },
+            }) + '\n');
+            fake.stdout.write(JSON.stringify({
+              method: 'item/agentMessage/delta',
+              params: { threadId: 'thread-1', turnId: 'turn-1', delta: 'Hello world' },
+            }) + '\n');
+            fake.stdout.write(JSON.stringify({
+              method: 'item/completed',
+              params: { threadId: 'thread-1', turnId: 'turn-1', item: { type: 'agentMessage', text: 'Hello world' } },
+            }) + '\n');
+            fake.stdout.write(JSON.stringify({
+              method: 'turn/completed',
+              params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } },
+            }) + '\n');
+          }, 5);
+          continue;
+        }
+      }
+    });
+
+    const rpcClient = new CodexRpcClient({
+      requestTimeoutMs: 5_000,
+      spawnFactory: () => fake as any,
+    });
+
+    const provider = new OpenAICodexProvider('openai-codex/gpt-5.2', { rpcClient });
+
+    let text = '';
+    for await (const chunk of provider.stream(
+      [{ role: 'user', content: 'hello codex' }],
+      { sessionId: 'session-cumulative-delta' }
+    )) {
+      if (chunk.content) {
+        text += chunk.content;
+      }
+    }
+
+    expect(text).toBe('Hello world');
+    await provider.dispose();
+  });
+
+  it('does not inject newlines for incremental token deltas', async () => {
+    const fake = new FakeChildProcess();
+
+    fake.stdin.on('data', (chunk) => {
+      const lines = String(chunk)
+        .split(/\n/g)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+
+      for (const line of lines) {
+        const payload = JSON.parse(line) as {
+          id?: number;
+          method: string;
+        };
+
+        if (payload.method === 'initialized') {
+          continue;
+        }
+
+        if (payload.method === 'initialize') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { sessionId: 'session-1' } }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'account/read') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: { requiresOpenaiAuth: false, account: null },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'model/list') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: { data: [{ id: 'gpt-5.2-codex', displayName: 'GPT-5.2 Codex', isDefault: true }], nextCursor: null },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'thread/start') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { thread: { id: 'thread-1' } } }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'turn/start') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { turn: { id: 'turn-1' } } }) + '\n');
+
+          setTimeout(() => {
+            const deltas = ['Hey', '.', ' I', ' just', ' came', ' online', '.'];
+            for (const delta of deltas) {
+              fake.stdout.write(JSON.stringify({
+                method: 'item/agentMessage/delta',
+                params: { threadId: 'thread-1', turnId: 'turn-1', delta },
+              }) + '\n');
+            }
+
+            fake.stdout.write(JSON.stringify({
+              method: 'turn/completed',
+              params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } },
+            }) + '\n');
+          }, 5);
+          continue;
+        }
+      }
+    });
+
+    const rpcClient = new CodexRpcClient({
+      requestTimeoutMs: 5_000,
+      spawnFactory: () => fake as any,
+    });
+
+    const provider = new OpenAICodexProvider('openai-codex/gpt-5.2', { rpcClient });
+
+    let text = '';
+    for await (const chunk of provider.stream(
+      [{ role: 'user', content: 'hello codex' }],
+      { sessionId: 'session-token-delta' }
+    )) {
+      if (chunk.content) {
+        text += chunk.content;
+      }
+    }
+
+    expect(text).toBe('Hey. I just came online.');
+    expect(text).not.toContain('\n');
+    await provider.dispose();
+  });
+
+  it('flattens single-leading-newline token deltas into normal inline text', async () => {
+    const fake = new FakeChildProcess();
+
+    fake.stdin.on('data', (chunk) => {
+      const lines = String(chunk)
+        .split(/\n/g)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+
+      for (const line of lines) {
+        const payload = JSON.parse(line) as {
+          id?: number;
+          method: string;
+        };
+
+        if (payload.method === 'initialized') {
+          continue;
+        }
+
+        if (payload.method === 'initialize') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { sessionId: 'session-1' } }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'account/read') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: { requiresOpenaiAuth: false, account: null },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'model/list') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: { data: [{ id: 'gpt-5.2-codex', displayName: 'GPT-5.2 Codex', isDefault: true }], nextCursor: null },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'thread/start') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { thread: { id: 'thread-1' } } }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'turn/start') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { turn: { id: 'turn-1' } } }) + '\n');
+
+          setTimeout(() => {
+            const deltas = ['Hey', '\n.', '\n I', '\n just', '\n came', '\n online', '\n?'];
+            for (const delta of deltas) {
+              fake.stdout.write(JSON.stringify({
+                method: 'item/agentMessage/delta',
+                params: { threadId: 'thread-1', turnId: 'turn-1', delta },
+              }) + '\n');
+            }
+
+            fake.stdout.write(JSON.stringify({
+              method: 'item/completed',
+              params: {
+                threadId: 'thread-1',
+                turnId: 'turn-1',
+                item: {
+                  type: 'agentMessage',
+                  text: 'Hey. I just came online?',
+                },
+              },
+            }) + '\n');
+
+            fake.stdout.write(JSON.stringify({
+              method: 'turn/completed',
+              params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } },
+            }) + '\n');
+          }, 5);
+          continue;
+        }
+      }
+    });
+
+    const rpcClient = new CodexRpcClient({
+      requestTimeoutMs: 5_000,
+      spawnFactory: () => fake as any,
+    });
+
+    const provider = new OpenAICodexProvider('openai-codex/gpt-5.2', { rpcClient });
+
+    let text = '';
+    for await (const chunk of provider.stream(
+      [{ role: 'user', content: 'hello codex' }],
+      { sessionId: 'session-leading-newline-token' }
+    )) {
+      if (chunk.content) {
+        text += chunk.content;
+      }
+    }
+
+    expect(text).toBe('Hey. I just came online?');
+    expect(text).not.toContain('\n');
+    await provider.dispose();
+  });
+
+  it('flattens token deltas that arrive with trailing newlines', async () => {
+    const fake = new FakeChildProcess();
+
+    fake.stdin.on('data', (chunk) => {
+      const lines = String(chunk)
+        .split(/\n/g)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+
+      for (const line of lines) {
+        const payload = JSON.parse(line) as {
+          id?: number;
+          method: string;
+        };
+
+        if (payload.method === 'initialized') {
+          continue;
+        }
+
+        if (payload.method === 'initialize') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { sessionId: 'session-1' } }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'account/read') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: { requiresOpenaiAuth: false, account: null },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'model/list') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: { data: [{ id: 'gpt-5.2-codex', displayName: 'GPT-5.2 Codex', isDefault: true }], nextCursor: null },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'thread/start') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { thread: { id: 'thread-1' } } }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'turn/start') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { turn: { id: 'turn-1' } } }) + '\n');
+
+          setTimeout(() => {
+            const deltas = ['Hey\n', '.\n', ' I\n', ' just\n', ' came\n', ' online\n', '?\n'];
+            for (const delta of deltas) {
+              fake.stdout.write(JSON.stringify({
+                method: 'item/agentMessage/delta',
+                params: { threadId: 'thread-1', turnId: 'turn-1', delta },
+              }) + '\n');
+            }
+
+            fake.stdout.write(JSON.stringify({
+              method: 'item/completed',
+              params: {
+                threadId: 'thread-1',
+                turnId: 'turn-1',
+                item: {
+                  type: 'agentMessage',
+                  text: 'Hey. I just came online?',
+                },
+              },
+            }) + '\n');
+
+            fake.stdout.write(JSON.stringify({
+              method: 'turn/completed',
+              params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } },
+            }) + '\n');
+          }, 5);
+          continue;
+        }
+      }
+    });
+
+    const rpcClient = new CodexRpcClient({
+      requestTimeoutMs: 5_000,
+      spawnFactory: () => fake as any,
+    });
+
+    const provider = new OpenAICodexProvider('openai-codex/gpt-5.2', { rpcClient });
+
+    let text = '';
+    for await (const chunk of provider.stream(
+      [{ role: 'user', content: 'hello codex' }],
+      { sessionId: 'session-trailing-newline-token' }
+    )) {
+      if (chunk.content) {
+        text += chunk.content;
+      }
+    }
+
+    expect(text).toBe('Hey. I just came online?');
+    expect(text).not.toContain('\n');
+    await provider.dispose();
+  });
 });

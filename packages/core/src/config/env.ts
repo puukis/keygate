@@ -6,8 +6,37 @@ import type { CodexReasoningEffort, KeygateConfig } from '../types.js';
 
 const DEFAULT_ALLOWED_BINARIES = ['git', 'ls', 'npm', 'cat', 'node', 'python3'];
 
+export function getConfigHomeDir(): string {
+  if (process.platform === 'win32') {
+    const appData = process.env['APPDATA']?.trim();
+    if (appData) {
+      return appData;
+    }
+    return path.join(os.homedir(), 'AppData', 'Roaming');
+  }
+
+  const xdgConfigHome = process.env['XDG_CONFIG_HOME']?.trim();
+  if (xdgConfigHome) {
+    return xdgConfigHome;
+  }
+
+  return path.join(os.homedir(), '.config');
+}
+
 export function getConfigDir(): string {
-  return path.join(os.homedir(), '.config', 'keygate');
+  return path.join(getConfigHomeDir(), 'keygate');
+}
+
+export function getDeviceId(): string {
+  return sanitizeDeviceName(os.hostname());
+}
+
+export function getDefaultWorkspacePath(): string {
+  return path.join(getConfigDir(), 'workspaces', getDeviceId());
+}
+
+export function getLegacyWorkspacePath(): string {
+  return path.join(os.homedir(), 'keygate-workspace');
 }
 
 export function getEnvFilePath(): string {
@@ -21,6 +50,7 @@ export function loadEnvironment(): void {
 
 export function loadConfigFromEnv(): KeygateConfig {
   const provider = normalizeProvider(process.env['LLM_PROVIDER']);
+  const workspacePath = resolveWorkspacePath(process.env['WORKSPACE_PATH']);
 
   return {
     llm: {
@@ -37,13 +67,43 @@ export function loadConfigFromEnv(): KeygateConfig {
     security: {
       mode: 'safe',
       spicyModeEnabled: process.env['SPICY_MODE_ENABLED'] === 'true',
-      workspacePath: process.env['WORKSPACE_PATH'] ?? '~/keygate-workspace',
+      workspacePath,
       allowedBinaries: DEFAULT_ALLOWED_BINARIES,
     },
     server: {
       port: parseInt(process.env['PORT'] ?? '18790', 10),
     },
   };
+}
+
+function resolveWorkspacePath(value: string | undefined): string {
+  const configured = value?.trim();
+  if (!configured) {
+    return getDefaultWorkspacePath();
+  }
+
+  const expanded = expandHomePath(configured);
+  const resolved = path.resolve(expanded);
+  const legacy = path.resolve(getLegacyWorkspacePath());
+
+  // Auto-migrate historical default workspace to per-device config workspace.
+  if (resolved === legacy) {
+    return getDefaultWorkspacePath();
+  }
+
+  return expanded;
+}
+
+function expandHomePath(value: string): string {
+  if (value === '~') {
+    return os.homedir();
+  }
+
+  if (value.startsWith('~/')) {
+    return path.join(os.homedir(), value.slice(2));
+  }
+
+  return value;
 }
 
 export async function updateEnvFile(updates: Record<string, string>): Promise<void> {
@@ -151,4 +211,19 @@ function serializeEnvValue(value: string): string {
     .replace(/\n/g, '\\n');
 
   return `"${escaped}"`;
+}
+
+function sanitizeDeviceName(value: string): string {
+  const sanitized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+/g, '')
+    .replace(/-+$/g, '');
+
+  if (sanitized.length > 0) {
+    return sanitized;
+  }
+
+  return 'device';
 }

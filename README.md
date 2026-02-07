@@ -52,6 +52,28 @@ The `openai-codex` provider delegates auth/token storage to official Codex tooli
 The installers run `keygate onboarding`, which triggers `keygate auth login --provider openai-codex` immediately when you select the Codex provider.
 See smoke test steps in `docs/CODEX_SMOKE_TEST.md`.
 
+### Background Gateway Lifecycle
+
+```bash
+# Start Keygate server in background (native OS manager)
+keygate gateway open
+
+# Check background server state
+keygate gateway status
+
+# Stop background server
+keygate gateway close
+```
+
+Manager mapping by OS:
+- Linux: `systemd --user` (`keygate-gateway.service`)
+- macOS: `launchd` user agent (`dev.keygate.gateway`)
+- Windows: Task Scheduler task (`KeygateGateway`)
+
+Notes:
+- This lifecycle is start/stop-on-demand only (no login/boot auto-start is configured).
+- `keygate gateway open` forces `KEYGATE_OPEN_CHAT_ON_START=false` for the managed process, so it will not auto-open a browser tab.
+
 ## Architecture
 
 ```
@@ -89,7 +111,7 @@ See smoke test steps in `docs/CODEX_SMOKE_TEST.md`.
 
 ## Configuration
 
-After installation, config is stored at `~/.config/keygate/`:
+After installation, config is stored at `~/.config/keygate/` (or the platform-equivalent config directory):
 - `config.json` - LLM provider, model, security settings
 - `.env` - API keys
 
@@ -99,7 +121,7 @@ Startup behavior:
 
 `openai-codex` uses `provider/model` format in config and UI, for example `openai-codex/gpt-5.2`.
 
-On first start, Keygate also initializes workspace context files in `WORKSPACE_PATH`:
+On first start, Keygate also initializes continuity files in a device-specific folder under the config dir (default `~/.config/keygate/workspaces/<device-id>/`), and Safe Mode allows editing these continuity markdown files:
 - `SOUL.md` - behavior contract/personality
 - `USER.md` - user profile/preferences
 - `BOOTSTRAP.md` - first-chat setup guidance
@@ -115,7 +137,7 @@ pnpm install
 # Start all services in dev mode
 pnpm dev
 
-# CLI commands (serve/onboarding/onboard/auth/install)
+# CLI commands (serve/onboarding/onboard/auth/install/gateway)
 pnpm keygate --help
 
 # Uninstall current Keygate install (global package/fallback artifacts)

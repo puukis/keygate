@@ -38,7 +38,19 @@ export interface Channel {
   type: ChannelType;
   send(content: string): Promise<void>;
   sendStream(stream: AsyncIterable<string>): Promise<void>;
-  requestConfirmation(prompt: string): Promise<boolean>;
+  requestConfirmation(prompt: string, details?: ConfirmationDetails): Promise<ConfirmationDecision>;
+}
+
+export type ConfirmationDecision = 'allow_once' | 'allow_always' | 'cancel';
+
+export interface ConfirmationDetails {
+  tool: string;
+  action: string;
+  summary: string;
+  command?: string;
+  cwd?: string;
+  path?: string;
+  args?: Record<string, unknown>;
 }
 
 // ==================== Tools ====================
@@ -92,6 +104,7 @@ export interface ChatOptions {
   securityMode?: SecurityMode;
   approvalPolicy?: string;
   sandboxPolicy?: Record<string, unknown>;
+  requestConfirmation?: (details: ConfirmationDetails) => Promise<ConfirmationDecision>;
   onProviderEvent?: (event: ProviderEvent) => void;
 }
 
@@ -170,5 +183,10 @@ export interface KeygateEvents {
   'tool:end': { sessionId: string; tool: string; result: ToolResult };
   'provider:event': { sessionId: string; event: ProviderEvent };
   'mode:changed': { mode: SecurityMode };
-  'confirm:request': { sessionId: string; prompt: string; resolve: (confirmed: boolean) => void };
+  'confirm:request': {
+    sessionId: string;
+    prompt: string;
+    details?: ConfirmationDetails;
+    resolve: (decision: ConfirmationDecision) => void;
+  };
 }

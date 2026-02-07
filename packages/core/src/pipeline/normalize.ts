@@ -48,5 +48,8 @@ export abstract class BaseChannel implements Channel {
   abstract type: ChannelType;
   abstract send(content: string): Promise<void>;
   abstract sendStream(stream: AsyncIterable<string>): Promise<void>;
-  abstract requestConfirmation(prompt: string): Promise<boolean>;
+  abstract requestConfirmation(
+    prompt: string,
+    details?: import('../types.js').ConfirmationDetails
+  ): Promise<import('../types.js').ConfirmationDecision>;
 }

@@ -1,6 +1,8 @@
+export type JsonRpcId = number | string;
+
 export interface JsonRpcRequest<TParams = unknown> {
   jsonrpc: '2.0';
-  id: number;
+  id: JsonRpcId;
   method: string;
   params?: TParams;
 }
@@ -13,7 +15,7 @@ export interface JsonRpcNotification<TParams = unknown> {
 
 export interface JsonRpcSuccessResponse<TResult = unknown> {
   jsonrpc?: '2.0';
-  id: number;
+  id: JsonRpcId;
   result: TResult;
 }
 
@@ -25,7 +27,7 @@ export interface JsonRpcErrorObject {
 
 export interface JsonRpcErrorResponse {
   jsonrpc?: '2.0';
-  id: number;
+  id: JsonRpcId;
   error: JsonRpcErrorObject;
 }
 

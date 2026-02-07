@@ -13,8 +13,13 @@ $PackageVersion = if ($env:KEYGATE_VERSION) { $env:KEYGATE_VERSION } else { "lat
 $FallbackRepoUrl = if ($env:KEYGATE_REPO_URL) { $env:KEYGATE_REPO_URL } else { "https://github.com/puukis/keygate.git" }
 $FallbackInstallDir = if ($env:KEYGATE_INSTALL_DIR) { $env:KEYGATE_INSTALL_DIR } else { "$env:LOCALAPPDATA\keygate" }
 $FallbackLauncherDir = "$env:USERPROFILE\keygate-bin"
-$ConfigDir = "$env:USERPROFILE\.config\keygate"
-$WorkspaceDir = "$env:USERPROFILE\keygate-workspace"
+$ConfigHome = if ($env:APPDATA) { $env:APPDATA } else { "$env:USERPROFILE\AppData\Roaming" }
+$ConfigDir = Join-Path $ConfigHome "keygate"
+$DeviceName = ([Environment]::MachineName.ToLowerInvariant() -replace '[^a-z0-9._-]+', '-').Trim('-')
+if ([string]::IsNullOrWhiteSpace($DeviceName)) {
+    $DeviceName = "device"
+}
+$WorkspaceDir = Join-Path $ConfigDir "workspaces\$DeviceName"
 $OriginalPath = $env:Path
 $IsWindowsPlatform = $env:OS -eq 'Windows_NT'
 $script:KeygateCommand = ""

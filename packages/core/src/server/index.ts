@@ -6,13 +6,20 @@ import { promises as fs } from 'node:fs';
 import { Gateway } from '../gateway/index.js';
 import { normalizeWebMessage, BaseChannel } from '../pipeline/index.js';
 import { allBuiltinTools } from '../tools/index.js';
-import type { CodexReasoningEffort, KeygateConfig, SecurityMode } from '../types.js';
+import type {
+  CodexReasoningEffort,
+  ConfirmationDecision,
+  ConfirmationDetails,
+  KeygateConfig,
+  SecurityMode,
+} from '../types.js';
 import 'dotenv/config';
 
 interface WSMessage {
   type: 'message' | 'confirm_response' | 'set_mode' | 'clear_session' | 'get_models' | 'set_model';
   sessionId?: string;
   content?: string;
+  decision?: ConfirmationDecision;
   confirmed?: boolean;
   mode?: SecurityMode;
   provider?: KeygateConfig['llm']['provider'];
@@ -32,7 +39,7 @@ class WebSocketChannel extends BaseChannel {
   type = 'web' as const;
   private ws: WebSocket;
   private sessionId: string;
-  private pendingConfirmation: ((confirmed: boolean) => void) | null = null;
+  private pendingConfirmation: ((decision: ConfirmationDecision) => void) | null = null;
 
   constructor(ws: WebSocket, sessionId: string) {
     super();
@@ -62,28 +69,29 @@ class WebSocketChannel extends BaseChannel {
     }));
   }
 
-  async requestConfirmation(prompt: string): Promise<boolean> {
+  async requestConfirmation(prompt: string, details?: ConfirmationDetails): Promise<ConfirmationDecision> {
     return new Promise((resolve) => {
       this.pendingConfirmation = resolve;
       this.ws.send(JSON.stringify({
         type: 'confirm_request',
         sessionId: this.sessionId,
         prompt,
+        details,
       }));
 
       // Timeout after 60 seconds
       setTimeout(() => {
         if (this.pendingConfirmation) {
-          this.pendingConfirmation(false);
+          this.pendingConfirmation('cancel');
           this.pendingConfirmation = null;
         }
       }, 60000);
     });
   }
 
-  handleConfirmResponse(confirmed: boolean): void {
+  handleConfirmResponse(decision: ConfirmationDecision): void {
     if (this.pendingConfirmation) {
-      this.pendingConfirmation(confirmed);
+      this.pendingConfirmation(decision);
       this.pendingConfirmation = null;
     }
   }
@@ -182,7 +190,8 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
           }
 
           case 'confirm_response': {
-            channel.handleConfirmResponse(msg.confirmed ?? false);
+            const decision = msg.decision ?? (msg.confirmed ? 'allow_once' : 'cancel');
+            channel.handleConfirmResponse(decision);
             break;
           }
 

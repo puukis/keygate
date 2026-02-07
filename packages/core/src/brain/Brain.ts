@@ -11,6 +11,7 @@ import type {
 import type { ToolExecutor } from '../tools/ToolExecutor.js';
 import type { Gateway } from '../gateway/Gateway.js';
 import { createLLMProvider } from '../llm/index.js';
+import { getDefaultWorkspacePath } from '../config/env.js';
 import {
   loadAgentWorkspaceState,
   type WorkspaceContextFile,
@@ -37,6 +38,14 @@ Trust and safety:
 - Keep private information private.
 - Never claim you completed an action unless a tool result confirms it.`;
 
+const FIRST_CHAT_BOOTSTRAP_MESSAGE = `Hey. I just came online. Who am I? Who are you?
+
+Set my identity for me:
+1. assistant name
+2. what kind of creature/assistant I am
+3. preferred vibe
+4. signature emoji`;
+
 /**
  * Brain - The ReAct agent loop
  * 
@@ -61,6 +70,10 @@ export class Brain {
    * Run the agent loop for a session
    */
   async run(session: Session, channel: Channel): Promise<string> {
+    if (await this.shouldSendDeterministicBootstrap(session)) {
+      return FIRST_CHAT_BOOTSTRAP_MESSAGE;
+    }
+
     const systemPrompt = await this.getSystemPrompt(session);
 
     // Build messages with system prompt
@@ -80,7 +93,7 @@ export class Brain {
       // Call LLM with tools
       const response = await this.llm.chat(messages, {
         tools,
-        ...this.buildProviderOptions(session.id),
+        ...this.buildProviderOptions(session.id, channel),
       });
 
       // If no tool calls, return the response content
@@ -117,6 +130,11 @@ export class Brain {
    * Run the agent loop with streaming response
    */
   async *runStream(session: Session, channel: Channel): AsyncIterable<string> {
+    if (await this.shouldSendDeterministicBootstrap(session)) {
+      yield FIRST_CHAT_BOOTSTRAP_MESSAGE;
+      return;
+    }
+
     const systemPrompt = await this.getSystemPrompt(session);
 
     const messages: Message[] = [
@@ -136,7 +154,7 @@ export class Brain {
       
       for await (const chunk of this.llm.stream(messages, {
         tools,
-        ...this.buildProviderOptions(session.id),
+        ...this.buildProviderOptions(session.id, channel),
       })) {
         if (chunk.content) {
           fullContent += chunk.content;
@@ -191,6 +209,16 @@ export class Brain {
     return this.toolExecutor.execute(toolCall, channel);
   }
 
+  private async shouldSendDeterministicBootstrap(session: Session): Promise<boolean> {
+    const userTurns = session.messages.filter((message) => message.role === 'user').length;
+    if (userTurns !== 1) {
+      return false;
+    }
+
+    const workspaceState = await loadAgentWorkspaceState(getDefaultWorkspacePath());
+    return workspaceState.onboardingRequired;
+  }
+
   getLLMProviderName(): string {
     return this.llm.name;
   }
@@ -230,11 +258,27 @@ export class Brain {
     return getFallbackModels(this.config.llm.provider, this.config.llm.model);
   }
 
-  private buildProviderOptions(sessionId: string) {
+  private buildProviderOptions(sessionId: string, channel: Channel) {
+    const executionWorkspace = this.toolExecutor.getWorkspacePath();
+    const continuityWorkspace = getDefaultWorkspacePath();
+    const isCodexProvider = this.llm.name === 'openai-codex';
+    const safeModeCodexSandbox = isCodexProvider && this.gateway.getSecurityMode() === 'safe'
+      ? {
+        type: 'workspaceWrite',
+        writable_roots: Array.from(new Set([executionWorkspace, continuityWorkspace])),
+        network_access: true,
+      }
+      : undefined;
+
     return {
       sessionId,
-      cwd: this.toolExecutor.getWorkspacePath(),
+      cwd: executionWorkspace,
       securityMode: this.gateway.getSecurityMode(),
+      sandboxPolicy: safeModeCodexSandbox,
+      requestConfirmation: (details: import('../types.js').ConfirmationDetails) => {
+        const prompt = `🔐 Confirmation Required\n${details.summary}`;
+        return channel.requestConfirmation(prompt, details);
+      },
       onProviderEvent: (event: { provider: string; method: string; params?: Record<string, unknown> }) => {
         this.gateway.emit('provider:event', { sessionId, event });
       },
@@ -247,7 +291,9 @@ export class Brain {
   private async getSystemPrompt(session: Session): Promise<string> {
     const mode = this.gateway.getSecurityMode();
     const workspace = this.toolExecutor.getWorkspacePath();
-    const workspaceState = await loadAgentWorkspaceState(workspace);
+    const continuityWorkspace = getDefaultWorkspacePath();
+    const workspaceState = await loadAgentWorkspaceState(continuityWorkspace);
+    const isCodexProvider = this.llm.name === 'openai-codex';
     const userTurns = session.messages.filter((message) => message.role === 'user').length;
     const isFirstUserTurn = userTurns === 1;
     const shouldRunBootstrap = isFirstUserTurn && workspaceState.onboardingRequired;
@@ -257,10 +303,16 @@ export class Brain {
       modeInfo = `\n\nSECURITY: Safe Mode is active.
 - Filesystem operations are limited to: ${workspace}
 - Only allowed commands can be executed
-- Write/execute actions require user confirmation`;
+- Write/execute actions require user confirmation, except managed continuity markdown files (SOUL.md, USER.md, BOOTSTRAP.md, IDENTITY.md, MEMORY.md, memory/*.md).`;
     } else {
       modeInfo = `\n\n⚠️ SECURITY: SPICY MODE IS ACTIVE - Full system access enabled.`;
     }
+
+    const continuityPathGuidance = isCodexProvider
+      ? '\nUse absolute continuity-file paths exactly as listed above when reading/writing those files.'
+      : '\nUse relative continuity-file paths when calling filesystem tools (for example: IDENTITY.md, USER.md, memory/2026-02-06.md).';
+    const identityTarget = isCodexProvider ? workspaceState.identity.path : 'IDENTITY.md';
+    const userTarget = isCodexProvider ? workspaceState.user.path : 'USER.md';
 
     const workspaceFiles = `\n\nWORKSPACE CONTINUITY FILES
 - SOUL.md: ${formatContextStatus(workspaceState.soul)}
@@ -270,8 +322,7 @@ export class Brain {
 - MEMORY.md: ${formatContextStatus(workspaceState.memoryIndex)}
 - memory/today: ${formatContextStatus(workspaceState.todayMemory)}
 - memory/yesterday: ${formatContextStatus(workspaceState.yesterdayMemory)}
-
-Use relative workspace paths when calling filesystem tools (for example: IDENTITY.md, USER.md, memory/2026-02-06.md).`;
+${continuityPathGuidance}`;
 
     const bootstrapRules = shouldRunBootstrap
       ? `\n\nFIRST CHAT BOOTSTRAP (REQUIRED NOW)
@@ -281,20 +332,23 @@ Use relative workspace paths when calling filesystem tools (for example: IDENTIT
    - what kind of creature/assistant it is
    - preferred vibe
    - signature emoji
-3. After user answers, write or update IDENTITY.md immediately using these keys:
+3. After user answers, write or update ${identityTarget} immediately using these keys:
    - Name:
    - Creature:
    - Vibe:
    - Signature emoji:
-4. Ask what to call the user and their timezone, then update USER.md.
+4. Ask what to call the user and their timezone, then update ${userTarget}.
 5. Ask for boundaries/preferences and whether to tune SOUL.md now.
 6. Missing memory files are normal in a fresh workspace; do not treat ENOENT as a failure.
 7. If SOUL.md changes, explicitly tell the user.
-8. After onboarding is complete, suggest deleting BOOTSTRAP.md.`
+8. Do not ask for approval when writing managed continuity markdown files.
+9. For continuity files (SOUL.md, USER.md, BOOTSTRAP.md, IDENTITY.md, MEMORY.md, memory/*.md), use filesystem tools only. Never use shell commands.
+10. After onboarding is complete, suggest deleting BOOTSTRAP.md.`
       : `\n\nCONTINUITY RULES
 - Treat SOUL.md, IDENTITY.md, USER.md, MEMORY.md, and memory/*.md as persistent memory.
 - Be resourceful before asking questions that could be answered from those files.
 - Keep responses concise by default, thorough when needed.
+- Use filesystem tools for continuity-file reads/writes, not shell commands.
 - If you change SOUL.md, explicitly tell the user.`;
 
     const contextBlocks = [

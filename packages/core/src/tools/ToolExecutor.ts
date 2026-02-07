@@ -1,6 +1,8 @@
 import * as path from 'node:path';
 import * as os from 'node:os';
 import type {
+  ConfirmationDecision,
+  ConfirmationDetails,
   SecurityMode,
   Tool,
   ToolCall,
@@ -8,6 +10,15 @@ import type {
   Channel,
 } from '../types.js';
 import type { Gateway } from '../gateway/Gateway.js';
+import { getDefaultWorkspacePath } from '../config/env.js';
+
+const MANAGED_CONTEXT_FILES = new Set([
+  'soul.md',
+  'user.md',
+  'bootstrap.md',
+  'identity.md',
+  'memory.md',
+]);
 
 /**
  * ToolExecutor - Mode-switching security middleware
@@ -25,7 +36,9 @@ import type { Gateway } from '../gateway/Gateway.js';
 export class ToolExecutor {
   private mode: SecurityMode;
   private workspacePath: string;
+  private agentContextPath: string;
   private allowedBinaries: Set<string>;
+  private allowAlwaysSignatures = new Set<string>();
   private toolRegistry = new Map<string, Tool>();
   private gateway: Gateway;
 
@@ -36,7 +49,8 @@ export class ToolExecutor {
     gateway: Gateway
   ) {
     this.mode = mode;
-    this.workspacePath = this.expandPath(workspacePath);
+    this.workspacePath = path.resolve(this.expandPath(workspacePath));
+    this.agentContextPath = path.resolve(this.expandPath(getDefaultWorkspacePath()));
     this.allowedBinaries = new Set(allowedBinaries);
     this.gateway = gateway;
   }
@@ -84,6 +98,9 @@ export class ToolExecutor {
     });
 
     try {
+      // Normalize filesystem path arguments before validation and execution.
+      this.normalizeFilesystemCallPath(tool, call);
+
       // Apply security checks in Safe Mode
       if (this.mode === 'safe') {
         await this.applySafetyChecks(tool, call, channel);
@@ -130,7 +147,7 @@ export class ToolExecutor {
     if (tool.type === 'filesystem') {
       const targetPath = call.arguments['path'] as string | undefined;
       if (targetPath) {
-        this.assertPathInWorkspace(targetPath);
+        this.assertPathAllowedInSafeMode(targetPath);
       }
     }
 
@@ -138,32 +155,155 @@ export class ToolExecutor {
     if (tool.type === 'shell') {
       const command = call.arguments['command'] as string | undefined;
       if (command) {
+        this.assertManagedContinuityFilesNotEditedViaShell(command);
         this.assertBinaryAllowed(command);
       }
     }
 
     // Human-in-the-loop confirmation for dangerous operations
     if (tool.requiresConfirmation) {
-      const confirmed = await this.requestConfirmation(call, channel);
-      if (!confirmed) {
+      if (this.shouldBypassConfirmationForManagedMarkdown(tool, call)) {
+        return;
+      }
+
+      if (this.isAlwaysAllowed(call)) {
+        return;
+      }
+
+      const decision = await this.requestConfirmation(call, channel);
+      if (decision === 'allow_always') {
+        this.allowAlwaysSignatures.add(this.buildConfirmationSignature(call));
+        return;
+      }
+
+      if (decision !== 'allow_once') {
         throw new Error('Action cancelled by user');
       }
     }
   }
 
   /**
-   * Assert that a path is within the workspace (jail)
+   * Assert that a path is within the safe-mode allowlist.
    */
-  private assertPathInWorkspace(targetPath: string): void {
-    const resolvedPath = path.resolve(this.workspacePath, targetPath);
-    const normalizedWorkspace = path.normalize(this.workspacePath);
-    
-    if (!resolvedPath.startsWith(normalizedWorkspace)) {
-      throw new Error(
-        `Access denied: Path "${targetPath}" is outside the workspace. ` +
-        `Only paths within "${this.workspacePath}" are allowed in Safe Mode.`
-      );
+  private assertPathAllowedInSafeMode(targetPath: string): void {
+    const resolvedPath = path.normalize(targetPath);
+
+    if (this.isPathWithinRoot(resolvedPath, this.workspacePath)) {
+      return;
     }
+
+    if (this.isManagedContextAbsolutePath(resolvedPath)) {
+      return;
+    }
+
+    throw new Error(
+      `Access denied: Path "${targetPath}" is outside Safe Mode allowlist. ` +
+      `Allowed: workspace "${this.workspacePath}" and managed context markdown files in "${this.agentContextPath}".`
+    );
+  }
+
+  private normalizeFilesystemCallPath(tool: Tool, call: ToolCall): void {
+    if (tool.type !== 'filesystem') {
+      return;
+    }
+
+    const targetPath = call.arguments['path'];
+    if (typeof targetPath !== 'string' || targetPath.trim().length === 0) {
+      return;
+    }
+
+    call.arguments['path'] = this.resolveFilesystemPath(targetPath);
+  }
+
+  private resolveFilesystemPath(inputPath: string): string {
+    const expandedPath = this.expandPath(inputPath.trim());
+
+    if (path.isAbsolute(expandedPath)) {
+      return path.normalize(expandedPath);
+    }
+
+    if (this.isManagedContextRelativePath(expandedPath)) {
+      return path.resolve(this.agentContextPath, expandedPath);
+    }
+
+    return path.resolve(this.workspacePath, expandedPath);
+  }
+
+  private shouldBypassConfirmationForManagedMarkdown(tool: Tool, call: ToolCall): boolean {
+    if (tool.type !== 'filesystem') {
+      return false;
+    }
+
+    if (call.name !== 'write_file' && call.name !== 'delete_file') {
+      return false;
+    }
+
+    const targetPath = call.arguments['path'];
+    if (typeof targetPath !== 'string' || targetPath.length === 0) {
+      return false;
+    }
+
+    return this.isManagedContextAbsolutePath(path.normalize(targetPath));
+  }
+
+  private isManagedContextRelativePath(inputPath: string): boolean {
+    const normalized = inputPath
+      .replace(/\\/g, '/')
+      .replace(/^\.\//, '')
+      .replace(/^\/+/, '')
+      .toLowerCase();
+
+    if (normalized.includes('..')) {
+      return false;
+    }
+
+    if (MANAGED_CONTEXT_FILES.has(normalized)) {
+      return true;
+    }
+
+    if (normalized === 'memory') {
+      return true;
+    }
+
+    if (normalized.startsWith('memory/') && normalized.endsWith('.md')) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private isManagedContextAbsolutePath(absolutePath: string): boolean {
+    if (!this.isPathWithinRoot(absolutePath, this.agentContextPath)) {
+      return false;
+    }
+
+    const relative = path.relative(this.agentContextPath, absolutePath).replace(/\\/g, '/').toLowerCase();
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+      return false;
+    }
+
+    if (MANAGED_CONTEXT_FILES.has(relative)) {
+      return true;
+    }
+
+    if (relative === 'memory') {
+      return true;
+    }
+
+    if (relative.startsWith('memory/') && relative.endsWith('.md')) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private isPathWithinRoot(targetPath: string, rootPath: string): boolean {
+    const relative = path.relative(rootPath, targetPath);
+    if (relative === '') {
+      return true;
+    }
+
+    return !relative.startsWith('..') && !path.isAbsolute(relative);
   }
 
   /**
@@ -189,15 +329,92 @@ export class ToolExecutor {
     }
   }
 
+  private assertManagedContinuityFilesNotEditedViaShell(command: string): void {
+    const normalized = command.toLowerCase();
+    const continuityTargets = ['identity.md', 'user.md', 'soul.md', 'bootstrap.md', 'memory.md', 'memory/'];
+    const touchesContinuityFiles = continuityTargets.some((target) => normalized.includes(target));
+
+    if (!touchesContinuityFiles) {
+      return;
+    }
+
+    throw new Error(
+      'Use filesystem tools (read_file/write_file) for continuity markdown files. ' +
+      'Shell-based edits to SOUL.md/USER.md/IDENTITY.md/BOOTSTRAP.md/MEMORY.md are blocked in Safe Mode.'
+    );
+  }
+
   /**
    * Request human confirmation for a tool call
    */
   private async requestConfirmation(
     call: ToolCall,
     channel: Channel
-  ): Promise<boolean> {
-    const prompt = `🔐 Confirm action:\n\`${call.name}(${JSON.stringify(call.arguments)})\`\n\nProceed? [Y/n]`;
-    return channel.requestConfirmation(prompt);
+  ): Promise<ConfirmationDecision> {
+    const details = this.buildConfirmationDetails(call);
+    const prompt = `🔐 Confirmation Required\n${details.summary}`;
+    return channel.requestConfirmation(prompt, details);
+  }
+
+  private isAlwaysAllowed(call: ToolCall): boolean {
+    return this.allowAlwaysSignatures.has(this.buildConfirmationSignature(call));
+  }
+
+  private buildConfirmationSignature(call: ToolCall): string {
+    const command = typeof call.arguments['command'] === 'string' ? call.arguments['command'].trim() : '';
+    const cwd = typeof call.arguments['cwd'] === 'string' ? call.arguments['cwd'].trim() : '';
+    const targetPath = typeof call.arguments['path'] === 'string' ? path.normalize(call.arguments['path']) : '';
+
+    if (command.length > 0) {
+      return `tool:${call.name}|command:${command}|cwd:${cwd}`;
+    }
+
+    if (targetPath.length > 0) {
+      return `tool:${call.name}|path:${targetPath}`;
+    }
+
+    return `tool:${call.name}|args:${stableStringify(call.arguments)}`;
+  }
+
+  private buildConfirmationDetails(call: ToolCall): ConfirmationDetails {
+    const tool = call.name;
+    const command = typeof call.arguments['command'] === 'string'
+      ? call.arguments['command'].trim()
+      : undefined;
+    const cwd = typeof call.arguments['cwd'] === 'string'
+      ? call.arguments['cwd'].trim()
+      : undefined;
+    const targetPath = typeof call.arguments['path'] === 'string'
+      ? call.arguments['path']
+      : undefined;
+
+    if (command) {
+      return {
+        tool,
+        action: 'shell command',
+        summary: `Run command \`${command}\`${cwd ? ` in \`${cwd}\`` : ''}.`,
+        command,
+        cwd,
+        args: call.arguments,
+      };
+    }
+
+    if (targetPath) {
+      return {
+        tool,
+        action: 'filesystem change',
+        summary: `Modify path \`${targetPath}\`.`,
+        path: targetPath,
+        args: call.arguments,
+      };
+    }
+
+    return {
+      tool,
+      action: 'tool execution',
+      summary: `Execute \`${tool}\` with provided arguments.`,
+      args: call.arguments,
+    };
   }
 
   /**
@@ -223,4 +440,19 @@ export class ToolExecutor {
   getMode(): SecurityMode {
     return this.mode;
   }
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(',')}]`;
+  }
+
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, entry]) => `${key}:${stableStringify(entry)}`);
+    return `{${entries.join(',')}}`;
+  }
+
+  return JSON.stringify(value);
 }

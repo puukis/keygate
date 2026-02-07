@@ -6,7 +6,7 @@
 
 import { startWebServer } from './server/index.js';
 import { runCli, printHelp } from './cli/index.js';
-import { loadConfigFromEnv, loadEnvironment } from './config/env.js';
+import { getDefaultWorkspacePath, loadConfigFromEnv, loadEnvironment } from './config/env.js';
 import { ensureAgentWorkspaceFiles } from './workspace/agentWorkspace.js';
 import { spawn } from 'node:child_process';
 
@@ -29,7 +29,7 @@ async function main(): Promise<void> {
   }
 
   const config = loadConfigFromEnv();
-  const workspaceBootstrap = await ensureAgentWorkspaceFiles(config.security.workspacePath);
+  const workspaceBootstrap = await ensureAgentWorkspaceFiles(getDefaultWorkspacePath());
 
   console.log('⚡ Starting Keygate...');
   console.log(`   LLM Provider: ${config.llm.provider}`);

@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import { hasFlag, type ParsedArgs } from '../argv.js';
+import { getConfigDir, getDefaultWorkspacePath } from '../../config/env.js';
 
 interface NpmUninstallResult {
   packageName: string;
@@ -42,10 +43,10 @@ export async function runUninstallCommand(args: ParsedArgs): Promise<void> {
   }
 
   if (!removeConfig) {
-    console.log(`- keeping config: ${path.join(os.homedir(), '.config', 'keygate')}`);
+    console.log(`- keeping config: ${getConfigDir()}`);
   }
   if (!removeWorkspace) {
-    console.log(`- keeping workspace: ${path.join(os.homedir(), 'keygate-workspace')}`);
+    console.log(`- keeping workspace: ${getDefaultWorkspacePath()}`);
   }
 
   if (!confirmBypass) {
@@ -183,10 +184,12 @@ function getRemovalTargets(options: { removeConfig: boolean; removeWorkspace: bo
   }
 
   if (options.removeConfig) {
-    targets.push(path.join(homeDir, '.config', 'keygate'));
+    targets.push(getConfigDir());
   }
 
   if (options.removeWorkspace) {
+    targets.push(getDefaultWorkspacePath());
+    // Legacy default workspace path from older versions.
     targets.push(path.join(homeDir, 'keygate-workspace'));
   }
 

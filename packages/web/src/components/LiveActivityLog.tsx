@@ -22,9 +22,12 @@ export function LiveActivityLog({ events }: LiveActivityLogProps) {
 
   const orderedEvents = events.slice().reverse();
   const providerEventCount = events.filter((event) => event.type === 'provider').length;
+  const hiddenProviderEventCount = events.filter(
+    (event) => event.type === 'provider' && !event.important
+  ).length;
   const filteredEvents = showProviderEvents
     ? orderedEvents
-    : orderedEvents.filter((event) => event.type !== 'provider');
+    : orderedEvents.filter((event) => event.type !== 'provider' || event.important);
   const hasOverflow = filteredEvents.length > MAX_VISIBLE_EVENTS;
   const collapsedEventCount = Math.max(0, filteredEvents.length - MAX_VISIBLE_EVENTS);
   const visibleEvents = showAllEvents
@@ -46,9 +49,9 @@ export function LiveActivityLog({ events }: LiveActivityLogProps) {
         >
           {showProviderEvents ? 'Provider events: on' : 'Provider events: off'}
         </button>
-        {!showProviderEvents && providerEventCount > 0 && (
+        {!showProviderEvents && hiddenProviderEventCount > 0 && (
           <span className="provider-summary">
-            {providerEventCount} provider notifications hidden
+            {hiddenProviderEventCount} low-level provider notifications hidden
           </span>
         )}
       </div>
@@ -59,7 +62,9 @@ export function LiveActivityLog({ events }: LiveActivityLogProps) {
             <p>
               {events.length === 0
                 ? 'Tool and provider updates appear here in real time.'
-                : 'No tool updates yet. Enable provider events to inspect low-level notifications.'}
+                : providerEventCount > 0
+                  ? 'No critical events yet. Enable provider events to inspect low-level notifications.'
+                  : 'No tool updates yet.'}
             </p>
           </div>
         ) : (

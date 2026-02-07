@@ -9,6 +9,8 @@ import {
   Gateway,
   normalizeDiscordMessage,
   BaseChannel,
+  type ConfirmationDetails,
+  type ConfirmationDecision,
   type KeygateConfig,
 } from '@puukis/core';
 import path from 'node:path';
@@ -74,27 +76,49 @@ class DiscordChannel extends BaseChannel {
     await this.updateReply(buffer || '(No response)');
   }
 
-  async requestConfirmation(prompt: string): Promise<boolean> {
+  async requestConfirmation(prompt: string, details?: ConfirmationDetails): Promise<ConfirmationDecision> {
+    const detailLines: string[] = [];
+    if (details?.summary) {
+      detailLines.push(`Summary: ${details.summary}`);
+    }
+    if (details?.command) {
+      detailLines.push(`Command: ${details.command}`);
+    }
+    if (details?.cwd) {
+      detailLines.push(`CWD: ${details.cwd}`);
+    }
+    if (details?.path) {
+      detailLines.push(`Path: ${details.path}`);
+    }
+
     const confirmMsg = await this.message.reply(
-      `${prompt}\n\nReact with ✅ to confirm or ❌ to cancel.`
+      `${prompt}${detailLines.length > 0 ? `\n\n${detailLines.join('\n')}` : ''}\n\nReact with ✅ allow once, ♾️ allow always, or ❌ cancel.`
     );
 
     await confirmMsg.react('✅');
+    await confirmMsg.react('♾️');
     await confirmMsg.react('❌');
 
     try {
       const collected = await confirmMsg.awaitReactions({
         filter: (reaction, user) =>
-          ['✅', '❌'].includes(reaction.emoji.name ?? '') &&
+          ['✅', '♾️', '♾', '❌'].includes(reaction.emoji.name ?? '') &&
           user.id === this.message.author.id,
         max: 1,
         time: 60000, // 1 minute timeout
       });
 
       const reaction = collected.first();
-      return reaction?.emoji.name === '✅';
+      const emoji = reaction?.emoji.name;
+      if (emoji === '✅') {
+        return 'allow_once';
+      }
+      if (emoji === '♾️' || emoji === '♾') {
+        return 'allow_always';
+      }
+      return 'cancel';
     } catch {
-      return false; // Timeout = reject
+      return 'cancel'; // Timeout = reject
     }
   }
 

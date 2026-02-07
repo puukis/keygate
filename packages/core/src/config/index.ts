@@ -1,5 +1,8 @@
 export {
+  getConfigHomeDir,
   getConfigDir,
+  getDefaultWorkspacePath,
+  getDeviceId,
   getDefaultModelForProvider,
   getEnvFilePath,
   loadConfigFromEnv,

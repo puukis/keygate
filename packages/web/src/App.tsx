@@ -9,6 +9,7 @@ import './App.css';
 export type SecurityMode = 'safe' | 'spicy';
 export type LLMProviderId = 'openai' | 'gemini' | 'ollama' | 'openai-codex';
 type CodexReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
+type ConfirmationDecision = 'allow_once' | 'allow_always' | 'cancel';
 
 interface LLMState {
   provider: LLMProviderId;
@@ -40,12 +41,24 @@ export interface ToolEvent {
   args?: Record<string, unknown>;
   result?: { success: boolean; output: string; error?: string };
   detail?: string;
+  important?: boolean;
   timestamp: Date;
 }
 
 export interface PendingConfirmation {
   id: string;
   prompt: string;
+  details?: ConfirmationDetails;
+}
+
+interface ConfirmationDetails {
+  tool: string;
+  action: string;
+  summary: string;
+  command?: string;
+  cwd?: string;
+  path?: string;
+  args?: Record<string, unknown>;
 }
 
 export interface StreamActivity {
@@ -342,6 +355,54 @@ function getProviderStreamActivity(
   };
 }
 
+function isImportantProviderEvent(method: string, params?: Record<string, unknown>): boolean {
+  const normalizedMethod = method.toLowerCase();
+  const messageType = extractProviderMessageType(params)?.toLowerCase();
+  const itemType = extractProviderItemType(params)?.toLowerCase();
+  const turnStatus = extractProviderTurnStatus(params)?.toLowerCase();
+
+  if (
+    normalizedMethod.includes('approval') ||
+    Boolean(messageType?.includes('approval'))
+  ) {
+    return true;
+  }
+
+  if (
+    normalizedMethod.includes('exec') ||
+    normalizedMethod.includes('apply_patch') ||
+    normalizedMethod.includes('patch') ||
+    Boolean(messageType?.includes('exec')) ||
+    Boolean(messageType?.includes('apply_patch')) ||
+    Boolean(messageType?.includes('patch'))
+  ) {
+    return true;
+  }
+
+  if (normalizedMethod.includes('item/completed') || Boolean(messageType?.includes('item_completed'))) {
+    return Boolean(itemType && /(tool|exec|command|patch|shell|function)/.test(itemType));
+  }
+
+  if (normalizedMethod.includes('turn/completed') || Boolean(messageType?.includes('turn_completed'))) {
+    return true;
+  }
+
+  if (
+    normalizedMethod.includes('error') ||
+    normalizedMethod.includes('failed') ||
+    Boolean(messageType?.includes('error')) ||
+    Boolean(messageType?.includes('failed'))
+  ) {
+    return true;
+  }
+
+  if (turnStatus === 'failed') {
+    return true;
+  }
+
+  return false;
+}
+
 function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [toolEvents, setToolEvents] = useState<ToolEvent[]>([]);
@@ -540,36 +601,61 @@ function App() {
         const payload = asRecord(data['event']);
         const method = payload?.['method'];
         const params = asRecord(payload?.['params']);
+        const activity = typeof method === 'string' ? getProviderStreamActivity(method, params) : null;
+        const important = typeof method === 'string' ? isImportantProviderEvent(method, params) : false;
 
         setToolEvents(prev => [...prev, {
           id: crypto.randomUUID(),
           type: 'provider',
           tool: typeof method === 'string' ? method : 'provider/notification',
           args: params,
-          detail: 'Codex app-server notification',
+          detail: activity?.detail ?? (important ? 'Important provider event' : 'Codex app-server notification'),
+          important,
           timestamp: new Date(),
         }]);
 
-        if (typeof method === 'string') {
-          const activity = getProviderStreamActivity(method, params);
-          if (activity) {
-            appendStreamActivity(activity);
-          }
+        if (activity) {
+          appendStreamActivity(activity);
         }
         break;
       }
 
       case 'confirm_request':
+        {
+          const details = asRecord(data['details']);
+          const parsedDetails: ConfirmationDetails | undefined = details && typeof details['tool'] === 'string'
+            ? {
+              tool: details['tool'] as string,
+              action: typeof details['action'] === 'string' ? details['action'] : 'tool execution',
+              summary: typeof details['summary'] === 'string' ? details['summary'] : '',
+              command: firstString(details['command']),
+              cwd: firstString(details['cwd']),
+              path: firstString(details['path']),
+              args: asRecord(details['args']),
+            }
+            : undefined;
+
+        setToolEvents(prev => [...prev, {
+          id: crypto.randomUUID(),
+          type: 'start',
+          tool: parsedDetails?.tool ?? 'confirmation',
+          args: parsedDetails?.args,
+          detail: firstString(parsedDetails?.summary, data['prompt']) ?? 'Waiting for confirmation',
+          timestamp: new Date(),
+        }]);
+
         setPendingConfirmation({
           id: crypto.randomUUID(),
           prompt: data['prompt'] as string,
+          details: parsedDetails,
         });
         appendStreamActivity({
           source: 'system',
           status: 'Waiting for your confirmation',
-          detail: firstString(data['prompt']),
+          detail: firstString(parsedDetails?.summary, data['prompt']),
         });
         break;
+        }
 
       case 'mode_changed':
         setMode(data['mode'] as SecurityMode);
@@ -651,10 +737,30 @@ function App() {
     send({ type: 'message', content });
   }, [connected, send]);
 
-  const handleConfirm = useCallback((confirmed: boolean) => {
-    send({ type: 'confirm_response', confirmed });
+  const handleConfirm = useCallback((decision: ConfirmationDecision) => {
+    const confirmation = pendingConfirmation;
+    send({ type: 'confirm_response', decision });
     setPendingConfirmation(null);
-  }, [send]);
+    if (!confirmation) {
+      return;
+    }
+
+    const allowed = decision !== 'cancel';
+    setToolEvents(prev => [...prev, {
+      id: crypto.randomUUID(),
+      type: 'end',
+      tool: confirmation.details?.tool ?? 'confirmation',
+      detail: firstString(confirmation.details?.summary, confirmation.prompt),
+      result: {
+        success: allowed,
+        output: allowed
+          ? (decision === 'allow_always' ? 'Approved for this session' : 'Approved once')
+          : 'Cancelled by user',
+        error: allowed ? undefined : 'Cancelled by user',
+      },
+      timestamp: new Date(),
+    }]);
+  }, [pendingConfirmation, send]);
 
   const handleModeChange = useCallback((newMode: SecurityMode) => {
     if (newMode === 'spicy' && !spicyEnabled) {
@@ -820,8 +926,10 @@ function App() {
       {pendingConfirmation && (
         <ConfirmationModal
           prompt={pendingConfirmation.prompt}
-          onConfirm={() => handleConfirm(true)}
-          onCancel={() => handleConfirm(false)}
+          details={pendingConfirmation.details}
+          onAllowOnce={() => handleConfirm('allow_once')}
+          onAllowAlways={() => handleConfirm('allow_always')}
+          onCancel={() => handleConfirm('cancel')}
         />
       )}
     </div>
