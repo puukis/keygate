@@ -44,8 +44,10 @@ jobs:
           set -euo pipefail
           npm ping
           npm whoami
-          # Verifies token has scope access before publish.
-          npm access list packages puukis
+          # This can be forbidden for granular tokens without org-read scope.
+          if ! npm access list packages puukis; then
+            echo "::warning::Token cannot list org packages (non-fatal). Continuing to publish step."
+          fi
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
