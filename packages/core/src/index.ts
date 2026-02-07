@@ -10,3 +10,5 @@ export * from './config/index.js';
 export { normalizeDiscordMessage, normalizeWebMessage, BaseChannel } from './pipeline/index.js';
 export { Database } from './db/index.js';
 export { startWebServer, WebSocketChannel } from './server/index.js';
+export { runCli, printHelp } from './cli/index.js';
+export { ensureAgentWorkspaceFiles } from './workspace/agentWorkspace.js';

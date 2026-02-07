@@ -1,0 +1,32 @@
+{
+  "name": "@keygate/cli",
+  "version": "0.1.0",
+  "description": "Keygate global CLI with bundled web UI",
+  "type": "module",
+  "main": "dist/main.js",
+  "types": "dist/main.d.ts",
+  "bin": {
+    "keygate": "dist/main.js"
+  },
+  "files": [
+    "dist/**/*"
+  ],
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "pnpm --filter @keygate/web build && tsc && node ./scripts/copyWebAssets.mjs"
+  },
+  "dependencies": {
+    "@keygate/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

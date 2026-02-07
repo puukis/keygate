@@ -1,17 +1,20 @@
 #!/usr/bin/env node
-/**
- * Keygate Main Entry Point
- * Starts WebSocket server or runs onboarding/auth CLI commands.
- */
 
-import { startWebServer } from './server/index.js';
-import { runCli, printHelp } from './cli/index.js';
-import { loadConfigFromEnv, loadEnvironment } from './config/env.js';
-import { ensureAgentWorkspaceFiles } from './workspace/agentWorkspace.js';
+import path from 'node:path';
+import { promises as fs } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import {
+  ensureAgentWorkspaceFiles,
+  loadConfigFromEnv,
+  loadEnvironment,
+  printHelp,
+  runCli,
+  startWebServer,
+} from '@keygate/core';
 
-const DEFAULT_CHAT_SITE_URL = 'http://localhost:18790';
 const DISABLED_ENV_VALUES = new Set(['0', 'false', 'no', 'off']);
+const DEFAULT_CHAT_PORT = 18790;
 
 async function main(): Promise<void> {
   loadEnvironment();
@@ -30,6 +33,7 @@ async function main(): Promise<void> {
 
   const config = loadConfigFromEnv();
   const workspaceBootstrap = await ensureAgentWorkspaceFiles(config.security.workspacePath);
+  const staticAssetsDir = await resolveStaticAssetsDir();
 
   console.log('⚡ Starting Keygate...');
   console.log(`   LLM Provider: ${config.llm.provider}`);
@@ -38,15 +42,19 @@ async function main(): Promise<void> {
   if (workspaceBootstrap.created.length > 0) {
     console.log(`   Initialized workspace files: ${workspaceBootstrap.created.join(', ')}`);
   }
+  if (!staticAssetsDir) {
+    console.log('   Web UI bundle not found; API/WS server will still start.');
+  }
   console.log('');
 
   startWebServer(config, {
+    staticAssetsDir: staticAssetsDir ?? undefined,
     onListening: async () => {
       if (!shouldOpenChatSiteOnStart()) {
         return;
       }
 
-      const chatSiteUrl = getChatSiteUrl();
+      const chatSiteUrl = getChatSiteUrl(config.server.port);
       const opened = await openExternalUrl(chatSiteUrl);
 
       if (opened) {
@@ -71,14 +79,41 @@ function shouldOpenChatSiteOnStart(): boolean {
   return !DISABLED_ENV_VALUES.has(rawValue.trim().toLowerCase());
 }
 
-function getChatSiteUrl(): string {
+function getChatSiteUrl(port: number): string {
   const configuredUrl = process.env['KEYGATE_CHAT_URL']?.trim();
 
-  if (!configuredUrl) {
-    return DEFAULT_CHAT_SITE_URL;
+  if (configuredUrl) {
+    return configuredUrl;
   }
 
-  return configuredUrl;
+  const effectivePort = Number.isFinite(port) ? port : DEFAULT_CHAT_PORT;
+  return `http://localhost:${effectivePort}`;
+}
+
+async function resolveStaticAssetsDir(): Promise<string | null> {
+  const currentDir = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    path.resolve(currentDir, 'web'),
+    path.resolve(currentDir, '..', 'web'),
+    path.resolve(currentDir, '..', '..', 'web', 'dist'),
+  ];
+
+  for (const candidate of candidates) {
+    if (await isDirectory(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+async function isDirectory(dirPath: string): Promise<boolean> {
+  try {
+    const stats = await fs.stat(dirPath);
+    return stats.isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 async function openExternalUrl(url: string): Promise<boolean> {

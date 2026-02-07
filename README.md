@@ -4,7 +4,7 @@ Personal AI agent gateway - control your computer and online services via a sing
 
 ## Features
 
-- **Multi-Channel**: Connect via Web UI (`localhost:18789`) or Discord bot
+- **Multi-Channel**: Connect via Web UI (`localhost:18790`) or Discord bot
 - **ReAct Agent Loop**: Iterative reasoning with tool calling
 - **OpenAI Codex OAuth**: Sign in with ChatGPT through Codex CLI/app-server (no API key paste)
 - **File-Based Agent Identity**: First-chat bootstrap with persistent `SOUL.md`, `USER.md`, `BOOTSTRAP.md`, and `IDENTITY.md`
@@ -19,6 +19,9 @@ Personal AI agent gateway - control your computer and online services via a sing
 # One-liner install (Unix)
 curl -fsSL https://raw.githubusercontent.com/puukis/keygate/main/scripts/install.sh | bash
 
+# Global npm install (cross-platform)
+npm install -g @keygate/cli
+
 # Or clone and run locally
 git clone https://github.com/puukis/keygate.git
 cd keygate
@@ -30,13 +33,14 @@ pnpm dev
 
 ```bash
 # Install Codex CLI if needed + run ChatGPT OAuth login + select default Codex model
-pnpm keygate onboard --auth-choice openai-codex
+keygate onboard --auth-choice openai-codex
 
 # Login only
-pnpm keygate auth login --provider openai-codex
+keygate auth login --provider openai-codex
 ```
 
 The `openai-codex` provider delegates auth/token storage to official Codex tooling. Keygate does not store OpenAI OAuth tokens.
+The installers run `keygate auth login --provider openai-codex` immediately when you select the Codex provider.
 See smoke test steps in `docs/CODEX_SMOKE_TEST.md`.
 
 ## Architecture
@@ -44,10 +48,10 @@ See smoke test steps in `docs/CODEX_SMOKE_TEST.md`.
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                     Chat Interfaces                         │
-│   ┌─────────────────┐           ┌─────────────────────┐     │
-│   │   Web UI        │           │   Discord Bot       │     │
-│   │ localhost:18789 │           │   !keygate {msg}    │     │
-│   └────────┬────────┘           └──────────┬──────────┘     │
+│   ┌─────────────────┐           ┌─────────────────────┐    │
+│   │   Web UI        │           │   Discord Bot       │    │
+│   │ localhost:18790 │           │   !keygate {msg}    │    │
+│   └────────┬────────┘           └──────────┬──────────┘    │
 │            │                               │                │
 │            └───────────────┬───────────────┘                │
 │                            ▼                                │
@@ -82,7 +86,7 @@ After installation, config is stored at `~/.config/keygate/`:
 
 Startup behavior:
 - `KEYGATE_OPEN_CHAT_ON_START=true` opens chat UI automatically when `keygate` starts
-- `KEYGATE_CHAT_URL=http://localhost:18789` controls which chat page is opened
+- `KEYGATE_CHAT_URL=http://localhost:18790` controls which chat page is opened
 
 `openai-codex` uses `provider/model` format in config and UI, for example `openai-codex/gpt-5.2`.
 

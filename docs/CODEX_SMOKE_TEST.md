@@ -3,7 +3,7 @@
 ## 1) Install + Onboard
 
 ```bash
-pnpm keygate onboard --auth-choice openai-codex
+keygate onboard --auth-choice openai-codex
 ```
 
 Expected:
@@ -16,22 +16,22 @@ Expected:
 ## 2) Login Only (repeatable)
 
 ```bash
-pnpm keygate auth login --provider openai-codex
+keygate auth login --provider openai-codex
 ```
 
 Optional headless/device flow:
 
 ```bash
-pnpm keygate auth login --provider openai-codex --device-auth
+keygate auth login --provider openai-codex --device-auth
 ```
 
 ## 3) Run Prompt
 
 ```bash
-pnpm keygate serve
+keygate serve
 ```
 
-Open web UI (`http://localhost:18789`) and send:
+Open web UI (`http://localhost:18790`) and send:
 
 ```text
 What files are in the current workspace?

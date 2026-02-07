@@ -1,6 +1,8 @@
 import { createServer } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { spawnSync } from 'node:child_process';
+import path from 'node:path';
+import { promises as fs } from 'node:fs';
 import { Gateway } from '../gateway/index.js';
 import { normalizeWebMessage, BaseChannel } from '../pipeline/index.js';
 import { allBuiltinTools } from '../tools/index.js';
@@ -20,6 +22,7 @@ interface WSMessage {
 
 interface StartWebServerOptions {
   onListening?: () => void | Promise<void>;
+  staticAssetsDir?: string;
 }
 
 /**
@@ -91,6 +94,7 @@ class WebSocketChannel extends BaseChannel {
  */
 export function startWebServer(config: KeygateConfig, options: StartWebServerOptions = {}): void {
   const gateway = Gateway.getInstance(config);
+  const staticAssetsDir = options.staticAssetsDir;
   
   // Register all built-in tools
   for (const tool of allBuiltinTools) {
@@ -109,8 +113,10 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
       return;
     }
 
+    const url = new URL(req.url ?? '/', 'http://localhost');
+
     // Simple REST endpoints
-    if (req.url === '/api/status') {
+    if (url.pathname === '/api/status') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         status: 'ok',
@@ -118,6 +124,11 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
         spicyEnabled: config.security.spicyModeEnabled,
         llm: gateway.getLLMState(),
       }));
+      return;
+    }
+
+    if (staticAssetsDir && req.method && ['GET', 'HEAD'].includes(req.method)) {
+      void serveStaticAsset(res, staticAssetsDir, url.pathname, req.method === 'HEAD');
       return;
     }
 
@@ -357,4 +368,108 @@ function normalizeCodexReasoningEffort(value: unknown): CodexReasoningEffort | u
     default:
       return undefined;
   }
+}
+
+async function serveStaticAsset(
+  res: import('node:http').ServerResponse,
+  staticAssetsDir: string,
+  requestPath: string,
+  headOnly: boolean
+): Promise<void> {
+  const normalizedPath = sanitizePathname(requestPath);
+  const resolvedAssetsDir = path.resolve(staticAssetsDir);
+
+  const tryPaths = normalizedPath === '/'
+    ? [path.join(resolvedAssetsDir, 'index.html')]
+    : [path.join(resolvedAssetsDir, normalizedPath.slice(1))];
+
+  // SPA fallback for routes without extension.
+  if (!path.extname(normalizedPath)) {
+    tryPaths.push(path.join(resolvedAssetsDir, 'index.html'));
+  }
+
+  for (const filePath of tryPaths) {
+    const resolved = path.resolve(filePath);
+
+    if (!resolved.startsWith(resolvedAssetsDir + path.sep) && resolved !== path.join(resolvedAssetsDir, 'index.html')) {
+      continue;
+    }
+
+    try {
+      const stats = await fs.stat(resolved);
+      if (!stats.isFile()) {
+        continue;
+      }
+
+      const contentType = getContentType(resolved);
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        'Cache-Control': getCacheControl(resolved),
+      });
+
+      if (headOnly) {
+        res.end();
+        return;
+      }
+
+      const content = await fs.readFile(resolved);
+      res.end(content);
+      return;
+    } catch {
+      // Try next path candidate.
+    }
+  }
+
+  res.writeHead(404);
+  res.end('Not Found');
+}
+
+function sanitizePathname(input: string): string {
+  const decoded = decodeURIComponent(input);
+  const normalized = path.posix.normalize(decoded);
+  if (!normalized.startsWith('/')) {
+    return `/${normalized}`;
+  }
+  return normalized;
+}
+
+function getContentType(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  switch (ext) {
+    case '.html':
+      return 'text/html; charset=utf-8';
+    case '.js':
+      return 'application/javascript; charset=utf-8';
+    case '.mjs':
+      return 'application/javascript; charset=utf-8';
+    case '.css':
+      return 'text/css; charset=utf-8';
+    case '.json':
+      return 'application/json; charset=utf-8';
+    case '.svg':
+      return 'image/svg+xml';
+    case '.png':
+      return 'image/png';
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg';
+    case '.gif':
+      return 'image/gif';
+    case '.webp':
+      return 'image/webp';
+    case '.ico':
+      return 'image/x-icon';
+    case '.txt':
+      return 'text/plain; charset=utf-8';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
+function getCacheControl(filePath: string): string {
+  const base = path.basename(filePath);
+  if (base === 'index.html') {
+    return 'no-cache';
+  }
+  return 'public, max-age=31536000, immutable';
 }

@@ -1,369 +1,430 @@
-# Keygate Installer for Windows
-# Run with: powershell -ExecutionPolicy Bypass -File install.ps1
+param(
+    [switch]$NoPrompt,
+    [switch]$NoOnboard,
+    [switch]$DryRun,
+    [switch]$Verbose,
+    [switch]$NoRun
+)
 
 $ErrorActionPreference = "Stop"
 
-# Config paths
+$PackageName = if ($env:KEYGATE_NPM_PACKAGE) { $env:KEYGATE_NPM_PACKAGE } else { "@keygate/cli" }
+$PackageVersion = if ($env:KEYGATE_VERSION) { $env:KEYGATE_VERSION } else { "latest" }
 $ConfigDir = "$env:USERPROFILE\.config\keygate"
-$DefaultInstallDir = "$env:LOCALAPPDATA\keygate"
-$BinDir = "$env:USERPROFILE\keygate-bin"
+$WorkspaceDir = "$env:USERPROFILE\keygate-workspace"
+$OriginalPath = $env:Path
+$IsWindowsPlatform = $env:OS -eq 'Windows_NT'
+$script:KeygateCommand = ""
 
-function Write-ColorOutput($Text, $Color) {
+if ($NoPrompt) {
+    $NoRun = $true
+}
+
+if ($Verbose) {
+    $VerbosePreference = "Continue"
+}
+
+function Write-Info($Message) { Write-Host "i $Message" -ForegroundColor Cyan }
+function Write-Ok($Message) { Write-Host "✓ $Message" -ForegroundColor Green }
+function Write-WarnMsg($Message) { Write-Host "! $Message" -ForegroundColor Yellow }
+function Write-ErrMsg($Message) { Write-Host "x $Message" -ForegroundColor Red }
+
+function Is-Promptable {
+    if ($NoPrompt) { return $false }
     try {
-        Write-Host $Text -ForegroundColor $Color
+        if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) {
+            return $false
+        }
+        return $true
     } catch {
-        Write-Host $Text
+        return $false
     }
 }
 
-function Show-Spinner {
-    param([int]$ProcessingId)
-    $spinChars = @('|', '/', '-', '\')
-    while (Get-Process -Id $ProcessingId -ErrorAction SilentlyContinue) {
-        foreach ($char in $spinChars) {
-            Write-Host -NoNewline "`r [$char]  "
-            Start-Sleep -Milliseconds 100
+function Invoke-Step {
+    param(
+        [scriptblock]$Action,
+        [string]$DryRunMessage
+    )
+
+    if ($DryRun) {
+        if ($DryRunMessage) {
+            Write-Host "[dry-run] $DryRunMessage" -ForegroundColor DarkGray
+        }
+        return
+    }
+
+    & $Action
+}
+
+function Prompt-Text {
+    param(
+        [string]$Prompt,
+        [string]$Default = ""
+    )
+
+    if (-not (Is-Promptable)) {
+        return $Default
+    }
+
+    if ($Default) {
+        $input = Read-Host "$Prompt [$Default]"
+    } else {
+        $input = Read-Host $Prompt
+    }
+
+    if ([string]::IsNullOrWhiteSpace($input)) {
+        return $Default
+    }
+
+    return $input
+}
+
+function Prompt-YesNo {
+    param(
+        [string]$Prompt,
+        [bool]$DefaultYes = $true
+    )
+
+    if (-not (Is-Promptable)) {
+        return $DefaultYes
+    }
+
+    $suffix = if ($DefaultYes) { "[Y/n]" } else { "[y/N]" }
+    $input = Read-Host "$Prompt $suffix"
+
+    if ([string]::IsNullOrWhiteSpace($input)) {
+        return $DefaultYes
+    }
+
+    return $input -match '^[Yy]$'
+}
+
+function Prompt-Secret {
+    param([string]$Prompt)
+
+    if (-not (Is-Promptable)) {
+        return ""
+    }
+
+    $secure = Read-Host $Prompt -AsSecureString
+    $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try {
+        return [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+    } finally {
+        if ($bstr -ne [IntPtr]::Zero) {
+            [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
         }
     }
-    Write-Host "`r      "
 }
 
-Clear-Host
+function Test-Prerequisites {
+    Write-Host "Keygate installer" -ForegroundColor Magenta
 
-Write-ColorOutput "╔═══════════════════════════════════════════════════════════════╗" "Magenta"
-Write-ColorOutput "║                                                               ║" "Magenta"
-Write-ColorOutput "║   ⚡ KEYGATE INSTALLER                                        ║" "Magenta"
-Write-ColorOutput "║   Personal AI Agent Gateway                                   ║" "Magenta"
-Write-ColorOutput "║                                                               ║" "Magenta"
-Write-ColorOutput "╚═══════════════════════════════════════════════════════════════╝" "Magenta"
-Write-Host ""
-
-Write-ColorOutput "Welcome to the Keygate setup wizard!" "Cyan"
-Write-Host "This script will install Keygate and configure your environment."
-Write-Host ""
-Read-Host "Press Enter to continue..."
-Write-Host ""
-
-# =============================================
-# PREREQUISITE CHECK
-# =============================================
-
-Write-ColorOutput "Step 1: Checking Prerequisites..." "Cyan"
-
-if (Get-Command git -ErrorAction SilentlyContinue) {
-    Write-ColorOutput "✓ git found" "Green"
-} else {
-    Write-ColorOutput "❌ git is not installed. Please install git first." "Red"
-    exit 1
-}
-
-if (Get-Command node -ErrorAction SilentlyContinue) {
-    $NodeVersion = (node -v) -replace 'v', ''
-    $MajorVersion = [int]($NodeVersion.Split('.')[0])
-    
-    if ($MajorVersion -ge 22) {
-        Write-ColorOutput "✓ Node.js v$NodeVersion found" "Green"
-    } else {
-        Write-ColorOutput "⚠️  Warning: Node.js version $NodeVersion detected. Keygate requires Node.js 22+" "Yellow"
-        $ContinueNode = Read-Host "Continue anyway? [y/N]"
-        if ($ContinueNode -notmatch "^[Yy]$") { exit 1 }
-    }
-} else {
-    Write-ColorOutput "❌ Node.js is not installed. Please install Node.js 22+ first." "Red"
-    exit 1
-}
-
-if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
-    Write-ColorOutput "⚠️  pnpm not found. Installing pnpm via corepack..." "Yellow"
-    cmd /c "corepack enable"
-    cmd /c "corepack prepare pnpm@latest --activate"
-    if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
-        Write-ColorOutput "❌ Failed to install pnpm automatically. Please run: npm install -g pnpm" "Red"
+    if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+        Write-ErrMsg "Node.js is required (v22+)."
         exit 1
     }
+
+    $nodeVersion = (node -v) -replace '^v', ''
+    $major = [int]($nodeVersion.Split('.')[0])
+    if ($major -lt 22) {
+        Write-ErrMsg "Node.js v$nodeVersion detected. Node.js v22+ is required."
+        exit 1
+    }
+    Write-Ok "Node.js v$nodeVersion found"
+
+    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+        Write-ErrMsg "npm is required."
+        exit 1
+    }
+    Write-Ok "npm $(npm -v) found"
 }
-Write-ColorOutput "✓ pnpm $((pnpm -v)) found" "Green"
 
-# =============================================
-# INSTALL LOCATION
-# =============================================
+function Get-NpmGlobalBin {
+    try {
+        $prefix = (npm prefix -g).Trim()
+        if (-not $prefix) { return "" }
+        return $prefix
+    } catch {
+        return ""
+    }
+}
 
-Write-Host ""
-Write-ColorOutput "Step 2: Installation Location" "Cyan"
+function Resolve-KeygateCommand {
+    $cmd = Get-Command keygate -ErrorAction SilentlyContinue
+    if ($cmd) {
+        return $cmd.Source
+    }
 
-if (Test-Path "package.json") {
-    $CurrentDir = Get-Location
-    if (Select-String -Path "package.json" -Pattern "keygate" -Quiet) {
-        Write-Host "Detected running inside Keygate repository at: $CurrentDir" -ForegroundColor Yellow
-        $InstallHere = Read-Host "Install here? [Y/n]"
-        if ($InstallHere -eq "" -or $InstallHere -match "^[Yy]$") {
-            $InstallDir = $CurrentDir
+    $binDir = Get-NpmGlobalBin
+    if ($binDir) {
+        $candidate = if ($IsWindowsPlatform) {
+            Join-Path $binDir "keygate.cmd"
         } else {
-            $InstallDir = Read-Host "Enter installation path [$DefaultInstallDir]"
-            if ([string]::IsNullOrEmpty($InstallDir)) { $InstallDir = $DefaultInstallDir }
+            Join-Path $binDir "keygate"
         }
-    } else {
-        $InstallDir = Read-Host "Enter installation path [$DefaultInstallDir]"
-        if ([string]::IsNullOrEmpty($InstallDir)) { $InstallDir = $DefaultInstallDir }
-    }
-} else {
-    $InstallDir = Read-Host "Enter installation path [$DefaultInstallDir]"
-    if ([string]::IsNullOrEmpty($InstallDir)) { $InstallDir = $DefaultInstallDir }
-}
 
-$WorkspaceDir = "$env:USERPROFILE\keygate-workspace"
-Write-Host "Keygate Workspace will be created at: $WorkspaceDir" -ForegroundColor Yellow
-
-# =============================================
-# SAFETY DISCLAIMER
-# =============================================
-
-Write-Host ""
-Write-ColorOutput "Step 3: Security Configuration" "Cyan"
-Write-ColorOutput "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" "Yellow"
-Write-ColorOutput "⚠️  IMPORTANT SAFETY DISCLAIMER" "Red"
-Write-ColorOutput "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" "Yellow"
-Write-Host ""
-Write-Host "Keygate is an AI agent that can execute commands on your computer."
-Write-Host ""
-Write-ColorOutput "SAFE MODE (Default):" "Green"
-Write-Host "  • File operations restricted to $WorkspaceDir"
-Write-Host "  • Only allowed commands: git, ls, npm, cat, node, python3"
-Write-Host "  • All write/execute actions require your confirmation"
-Write-Host ""
-Write-ColorOutput "SPICY MODE (Dangerous):" "Red"
-Write-Host "  • FULL access to your entire filesystem"
-Write-Host "  • Can run ANY command without restrictions"
-Write-Host "  • NO confirmation prompts - autonomous execution"
-Write-Host ""
-Write-ColorOutput "Spicy Mode should ONLY be used in sandboxed/VM environments." "Red"
-Write-Host ""
-Write-Host "To " -NoNewline
-Write-ColorOutput "enable Spicy Mode" "Red" -NoNewline
-Write-Host ", type exactly: " -NoNewline
-Write-ColorOutput "I ACCEPT THE RISK" "Yellow"
-Write-Host "To continue with Safe Mode only, press Enter."
-Write-Host ""
-
-$RiskInput = Read-Host "> "
-$SpicyEnabled = "false"
-
-if ($RiskInput -eq "I ACCEPT THE RISK") {
-    $SpicyEnabled = "true"
-    Write-Host ""
-    Write-ColorOutput "⚠️  SPICY MODE ENABLED - You have been warned!" "Red"
-} else {
-    Write-Host ""
-    Write-ColorOutput "✓ Safe Mode only - Good choice!" "Green"
-}
-
-# =============================================
-# LLM CONFIGURATION
-# =============================================
-
-Write-Host ""
-Write-ColorOutput "Step 4: AI Model Configuration" "Cyan"
-
-Write-Host "Select your LLM provider:"
-Write-Host "  1) OpenAI (gpt-4o, gpt-4-turbo, etc.)"
-Write-Host "  2) OpenAI Codex (ChatGPT OAuth, no API key)"
-Write-Host "  3) Google Gemini (gemini-1.5-pro, gemini-1.5-flash, etc.)"
-Write-Host "  4) local Ollama (llama3, mistral, deepseek-r1, etc.)"
-Write-Host ""
-
-$ProviderChoice = Read-Host "Enter choice [1/2/3/4]"
-
-switch ($ProviderChoice) {
-    "2" {
-        $LLMProvider = "openai-codex"
-        $DefaultModel = "openai-codex/gpt-5.2"
-    }
-    "3" {
-        $LLMProvider = "gemini"
-        $DefaultModel = "gemini-1.5-pro"
-    }
-    "4" {
-        $LLMProvider = "ollama"
-        $DefaultModel = "llama3"
-    }
-    default {
-        $LLMProvider = "openai"
-        $DefaultModel = "gpt-4o"
-    }
-}
-
-Write-Host "Selected: $LLMProvider" -ForegroundColor Green
-$LLMModel = Read-Host "Enter model name (default: $DefaultModel)"
-if ([string]::IsNullOrEmpty($LLMModel)) { $LLMModel = $DefaultModel }
-
-$OLLAMA_HOST = ""
-$ApiKey = ""
-$ApiKeyPlain = ""
-
-if ($LLMProvider -eq "ollama") {
-    $OLLAMA_HOST = Read-Host "Enter Ollama Host (default: http://127.0.0.1:11434)"
-    if ([string]::IsNullOrEmpty($OLLAMA_HOST)) { $OLLAMA_HOST = "http://127.0.0.1:11434" }
-} elseif ($LLMProvider -eq "openai-codex") {
-    if (Get-Command codex -ErrorAction SilentlyContinue) {
-        Write-ColorOutput "✓ codex CLI detected in PATH" "Green"
-    } else {
-        Write-ColorOutput "⚠️  codex CLI not found. Install later with: npm i -g @openai/codex" "Yellow"
-    }
-    Write-Host "After install, run: keygate auth login --provider openai-codex" -ForegroundColor Yellow
-} else {
-    Write-Host ""
-    $ApiKeySecure = Read-Host "Enter your API key" -AsSecureString
-    $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($ApiKeySecure)
-    $ApiKeyPlain = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
-
-    while ([string]::IsNullOrEmpty($ApiKeyPlain)) {
-        Write-ColorOutput "API key is required." "Red"
-        $ApiKeySecure = Read-Host "Enter your API key" -AsSecureString
-        $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($ApiKeySecure)
-        $ApiKeyPlain = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
-    }
-}
-
-# =============================================
-# DISCORD CONFIG
-# =============================================
-
-Write-Host ""
-Write-ColorOutput "Step 5: Integrations (Optional)" "Cyan"
-$SetupDiscord = Read-Host "Set up Discord bot? [y/N]"
-$DiscordTokenPlain = ""
-
-if ($SetupDiscord -match "^[Yy]") {
-    $DiscordTokenSecure = Read-Host "Enter Discord bot token" -AsSecureString
-    $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($DiscordTokenSecure)
-    $DiscordTokenPlain = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
-}
-
-# =============================================
-# INSTALLATION
-# =============================================
-
-Write-Host ""
-Write-ColorOutput "Step 6: Installing Keygate..." "Cyan"
-
-if (!(Test-Path $ConfigDir)) { New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null }
-if (!(Test-Path $WorkspaceDir)) { New-Item -ItemType Directory -Force -Path $WorkspaceDir | Out-Null }
-
-if ($InstallDir -ne (Get-Location).Path) {
-    if (Test-Path $InstallDir) {
-        Write-Host "Directory $InstallDir already exists." -ForegroundColor Yellow
-        $Overwrite = Read-Host "Overwrite? [y/N]"
-        if ($Overwrite -match "^[Yy]") {
-            Remove-Item -Recurse -Force $InstallDir
+        if (Test-Path $candidate) {
+            return $candidate
         }
     }
-    
-    if (-not (Test-Path $InstallDir)) {
-        Write-Host "Cloning repository to $InstallDir..."
-        git clone https://github.com/puukis/keygate.git $InstallDir
+
+    return ""
+}
+
+function Warn-IfPathMissing {
+    $binDir = Get-NpmGlobalBin
+    if (-not $binDir) { return }
+
+    $segments = $OriginalPath -split ';' | ForEach-Object { $_.Trim() }
+    if ($segments -contains $binDir) { return }
+
+    Write-WarnMsg "PATH may not include npm global bin: $binDir"
+    Write-Host "Add this to your user PATH if 'keygate' is not found: $binDir"
+}
+
+function Install-KeygateGlobal {
+    $spec = "$PackageName@$PackageVersion"
+    Write-Info "Installing $spec globally via npm"
+
+    if ($DryRun) {
+        Write-Host "[dry-run] npm install -g $spec" -ForegroundColor DarkGray
+        $script:KeygateCommand = "keygate"
+        return
     }
+
+    try {
+        npm --no-fund --no-audit install -g $spec
+    } catch {
+        Write-WarnMsg "Initial npm install failed. Retrying once..."
+        npm --no-fund --no-audit install -g $spec
+    }
+
+    $script:KeygateCommand = Resolve-KeygateCommand
+    if (-not $script:KeygateCommand) {
+        Warn-IfPathMissing
+        Write-ErrMsg "Installation completed but 'keygate' is not discoverable on PATH."
+        exit 1
+    }
+
+    Write-Ok "Installed keygate binary at: $script:KeygateCommand"
 }
 
-Set-Location $InstallDir
+function Run-CodexLogin {
+    if (-not (Is-Promptable)) {
+        return $false
+    }
 
-Write-Host "Installing dependencies..." -ForegroundColor Green
-Start-Process -FilePath "pnpm" -ArgumentList "install" -Wait
-Write-Host "Dependencies installed" -ForegroundColor Green
+    Write-Info "Starting Codex login now..."
 
-Write-Host "Building project..." -ForegroundColor Green
-Start-Process -FilePath "pnpm" -ArgumentList "build" -Wait
-Write-Host "Build complete" -ForegroundColor Green
+    try {
+        & $script:KeygateCommand auth login --provider openai-codex
+        if ($LASTEXITCODE -eq 0) {
+            Write-Ok "Codex login completed"
+            return $true
+        }
+    } catch {
+        # handled below
+    }
 
-# =============================================
-# WRITE CONFIG
-# =============================================
-
-Write-Host "Step 7: Finalizing Configuration..." -ForegroundColor Cyan
-
-$EnvContent = @"
-# Keygate Environment Variables
-LLM_PROVIDER=$LLMProvider
-LLM_MODEL=$LLMModel
-LLM_API_KEY=$ApiKeyPlain
-LLM_OLLAMA_HOST=$OLLAMA_HOST
-SPICY_MODE_ENABLED=$SpicyEnabled
-WORKSPACE_PATH=$WorkspaceDir
-DISCORD_TOKEN=$DiscordTokenPlain
-"@
-
-Set-Content -Path "$ConfigDir\.env" -Value $EnvContent
-
-$ConfigContent = @"
-{
-  "llm": {
-    "provider": "$LLMProvider",
-    "model": "$LLMModel"
-  },
-  "security": {
-    "spicyModeEnabled": $SpicyEnabled,
-    "workspacePath": "$($WorkspaceDir -replace '\\', '\\\\')",
-    "allowedBinaries": ["git", "ls", "npm", "cat", "node", "python3", "pnpm", "yarn"]
-  },
-  "server": {
-    "port": 18790
-  },
-  "discord": {
-    "prefix": "!keygate "
-  }
+    Write-WarnMsg "Codex login failed or was cancelled."
+    return $false
 }
-"@
 
-Set-Content -Path "$ConfigDir\config.json" -Value $ConfigContent
+function Write-Config {
+    param(
+        [string]$Provider,
+        [string]$Model,
+        [string]$ApiKey,
+        [string]$OllamaHost,
+        [string]$SpicyModeEnabled
+    )
 
-# =============================================
-# LAUNCHER ALIAS
-# =============================================
+    Write-Info "Writing configuration files to $ConfigDir"
 
-if (!(Test-Path $BinDir)) { New-Item -ItemType Directory -Force -Path $BinDir | Out-Null }
-$LauncherPath = "$BinDir\keygate.cmd"
-$LauncherContent = @"
-@echo off
-cd /d "$InstallDir"
-pnpm dev
-"@
+    Invoke-Step -Action {
+        New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
+        New-Item -ItemType Directory -Force -Path $WorkspaceDir | Out-Null
+    } -DryRunMessage "Create config/workspace directories"
 
-Set-Content -Path $LauncherPath -Value $LauncherContent
-Write-ColorOutput "Created 'keygate.cmd' in $BinDir" "Green"
+    if ($DryRun) {
+        return
+    }
 
-if ($env:Path -notlike "*$BinDir*") {
-    Write-ColorOutput "Note: $BinDir is not in your PATH." "Yellow"
-    Write-Host "Add it to your User Environment Variables to run 'keygate' from anywhere."
-    # Optional: Offer to add to PATH (requires registry access / persistence)
-    $AddToPath = Read-Host "Add to User PATH environment variable? (Recommended) [Y/n]"
-    if ($AddToPath -eq "" -or $AddToPath -match "^[Yy]$") {
-        try {
-            $CurrentPath = [Environment]::GetEnvironmentVariable("Path", "User")
-            if ($CurrentPath -notlike "*$BinDir*") {
-                [Environment]::SetEnvironmentVariable("Path", "$CurrentPath;$BinDir", "User")
-                Write-ColorOutput "✓ Added to User PATH (restart terminal to take effect)" "Green"
+    $envLines = @(
+        "LLM_PROVIDER=$Provider",
+        "LLM_MODEL=$Model",
+        "LLM_API_KEY=$ApiKey",
+        "LLM_OLLAMA_HOST=$OllamaHost",
+        "SPICY_MODE_ENABLED=$SpicyModeEnabled",
+        "WORKSPACE_PATH=$WorkspaceDir",
+        "PORT=18790"
+    )
+
+    Set-Content -Path "$ConfigDir\.env" -Value ($envLines -join "`n") -NoNewline
+
+    $config = [ordered]@{
+        llm = [ordered]@{
+            provider = $Provider
+            model = $Model
+        }
+        security = [ordered]@{
+            spicyModeEnabled = [bool]::Parse($SpicyModeEnabled)
+            workspacePath = $WorkspaceDir
+            allowedBinaries = @("git", "ls", "npm", "cat", "node", "python3")
+        }
+        server = [ordered]@{
+            port = 18790
+        }
+    }
+
+    $configJson = $config | ConvertTo-Json -Depth 8
+    Set-Content -Path "$ConfigDir\config.json" -Value $configJson
+
+    Write-Ok "Configuration saved"
+}
+
+function Run-Onboarding {
+    $provider = "openai"
+    $model = "gpt-4o"
+    $apiKey = ""
+    $ollamaHost = ""
+    $spicyModeEnabled = "false"
+
+    if ($NoOnboard) {
+        Write-Info "Skipping onboarding (-NoOnboard)."
+        Write-Config -Provider $provider -Model $model -ApiKey $apiKey -OllamaHost $ollamaHost -SpicyModeEnabled $spicyModeEnabled
+        return
+    }
+
+    if (-not (Is-Promptable)) {
+        Write-WarnMsg "No interactive TTY detected. Applying deterministic defaults."
+        Write-Config -Provider $provider -Model $model -ApiKey $apiKey -OllamaHost $ollamaHost -SpicyModeEnabled $spicyModeEnabled
+        return
+    }
+
+    Write-Host ""
+    Write-Host "Keygate can execute commands on your machine."
+    if (-not (Prompt-YesNo -Prompt "Continue with setup?" -DefaultYes $true)) {
+        Write-WarnMsg "Installer aborted by user."
+        exit 0
+    }
+
+    $riskAck = Prompt-Text -Prompt "Type I ACCEPT THE RISK to enable Spicy Mode (or press Enter for Safe Mode)"
+    if ($riskAck -eq "I ACCEPT THE RISK") {
+        $spicyModeEnabled = "true"
+        Write-WarnMsg "Spicy Mode enabled"
+    } else {
+        $spicyModeEnabled = "false"
+        Write-Ok "Safe Mode enabled"
+    }
+
+    while ($true) {
+        Write-Host ""
+        Write-Host "Choose provider:"
+        Write-Host "  1) OpenAI"
+        Write-Host "  2) OpenAI Codex (ChatGPT OAuth)"
+        Write-Host "  3) Google Gemini"
+        Write-Host "  4) Ollama"
+        Write-Host "  5) Skip for now"
+
+        $choice = Prompt-Text -Prompt "Enter choice" -Default "2"
+
+        switch ($choice) {
+            "1" {
+                $provider = "openai"
+                $model = Prompt-Text -Prompt "OpenAI model" -Default "gpt-4o"
+                $apiKey = Prompt-Secret -Prompt "OpenAI API key"
+                $ollamaHost = ""
+                break
             }
-        } catch {
-            Write-ColorOutput "Failed to update PATH automatically. Please add it manually." "Red"
+            "2" {
+                $provider = "openai-codex"
+                $model = Prompt-Text -Prompt "Codex model" -Default "openai-codex/gpt-5.3"
+                $apiKey = ""
+                $ollamaHost = ""
+                if (Run-CodexLogin) {
+                    break
+                }
+                Write-Info "Returning to provider selection..."
+                continue
+            }
+            "3" {
+                $provider = "gemini"
+                $model = Prompt-Text -Prompt "Gemini model" -Default "gemini-1.5-pro"
+                $apiKey = Prompt-Secret -Prompt "Gemini API key"
+                $ollamaHost = ""
+                break
+            }
+            "4" {
+                $provider = "ollama"
+                $model = Prompt-Text -Prompt "Ollama model" -Default "llama3"
+                $ollamaHost = Prompt-Text -Prompt "Ollama host" -Default "http://127.0.0.1:11434"
+                $apiKey = ""
+                break
+            }
+            "5" {
+                $provider = "openai"
+                $model = "gpt-4o"
+                $apiKey = ""
+                $ollamaHost = ""
+                break
+            }
+            default {
+                Write-WarnMsg "Invalid choice."
+                continue
+            }
         }
+
+        break
     }
+
+    Write-Config -Provider $provider -Model $model -ApiKey $apiKey -OllamaHost $ollamaHost -SpicyModeEnabled $spicyModeEnabled
 }
 
-# =============================================
-# DONE
-# =============================================
+function Finish-AndMaybeRun {
+    $chatUrl = if ($env:KEYGATE_CHAT_URL) { $env:KEYGATE_CHAT_URL } else { "http://localhost:18790" }
 
-Write-Host ""
-Write-ColorOutput "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" "Green"
-Write-ColorOutput "✅ Installation Successfully Completed!" "Green"
-Write-ColorOutput "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" "Green"
-Write-Host ""
-Write-Host "You can now start Keygate by running:"
-Write-ColorOutput "  keygate" "Cyan"
-Write-Host ""
-Write-Host "(Or by running 'pnpm dev' in the installation directory)"
-Write-Host ""
+    Write-Host ""
+    Write-Ok "Keygate installed successfully"
+    Write-Host "Command: keygate"
+    Write-Host "Chat URL: $chatUrl"
 
-$StartNow = Read-Host "Start Keygate now? [Y/n]"
-if ($StartNow -eq "" -or $StartNow -match "^[Yy]$") {
-    pnpm dev
+    $canPrompt = Is-Promptable
+    if ($NoRun -or $NoPrompt -or -not $canPrompt) {
+        Write-Host ""
+        Write-Host "Run manually when ready:"
+        Write-Host "  keygate"
+        Write-Host "Then open: $chatUrl"
+        return
+    }
+
+    if (Prompt-YesNo -Prompt "Run the Keygate web app now?" -DefaultYes $true) {
+        if ($DryRun) {
+            Write-Host "[dry-run] Start-Process $chatUrl" -ForegroundColor DarkGray
+            Write-Host "[dry-run] $script:KeygateCommand" -ForegroundColor DarkGray
+            return
+        }
+
+        try {
+            Start-Process $chatUrl | Out-Null
+        } catch {
+            Write-WarnMsg "Unable to open browser automatically."
+        }
+
+        & $script:KeygateCommand
+        return
+    }
+
+    Write-Host ""
+    Write-Host "Run manually when ready:"
+    Write-Host "  keygate"
+    Write-Host "Then open: $chatUrl"
 }
+
+Test-Prerequisites
+Install-KeygateGlobal
+Warn-IfPathMissing
+Run-Onboarding
+Finish-AndMaybeRun
