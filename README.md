@@ -18,10 +18,14 @@ Personal AI agent gateway - control your computer and online services via a sing
 ```bash
 # One-liner install (Unix)
 curl -fsSL https://raw.githubusercontent.com/puukis/keygate/main/scripts/install.sh | bash
+```
 
+```bash
 # Global npm install (cross-platform)
 npm install -g @keygate/cli
+```
 
+```bash
 # Or clone and run locally
 git clone https://github.com/puukis/keygate.git
 cd keygate
