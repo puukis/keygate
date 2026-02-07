@@ -595,6 +595,42 @@ finish_and_maybe_run() {
   echo "Then open: $chat_url"
 }
 
+run_cli_onboarding() {
+  local onboarding_args=("onboarding")
+  local help_output=""
+
+  if [[ "$NO_ONBOARD" == "1" || "$NO_PROMPT" == "1" ]]; then
+    onboarding_args+=("--defaults")
+  fi
+
+  if [[ "$NO_PROMPT" == "1" ]]; then
+    onboarding_args+=("--no-prompt")
+  fi
+
+  if [[ "$NO_RUN" == "1" ]]; then
+    onboarding_args+=("--no-run")
+  fi
+
+  if [[ "$DRY_RUN" == "1" ]]; then
+    echo -e "${DIM}[dry-run] $KEYGATE_BIN ${onboarding_args[*]}${RESET}"
+    return
+  fi
+
+  help_output="$("$KEYGATE_BIN" --help 2>&1 || true)"
+  if ! grep -q "keygate onboarding" <<<"$help_output"; then
+    log_warn "Installed CLI does not support 'keygate onboarding' yet. Falling back to legacy installer onboarding."
+    run_onboarding
+    finish_and_maybe_run
+    return
+  fi
+
+  if is_promptable; then
+    "$KEYGATE_BIN" "${onboarding_args[@]}" < /dev/tty
+  else
+    "$KEYGATE_BIN" "${onboarding_args[@]}"
+  fi
+}
+
 main() {
   parse_args "$@"
   configure_verbose
@@ -606,8 +642,7 @@ main() {
   check_prerequisites
   install_keygate_global
   warn_path_if_missing "$(npm_global_bin_dir || true)" "npm global bin"
-  run_onboarding
-  finish_and_maybe_run
+  run_cli_onboarding
 }
 
 main "$@"

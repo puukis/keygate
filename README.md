@@ -38,6 +38,9 @@ If `@puukis/cli` is not published yet, `install.sh` falls back to source install
 ### Codex OAuth Onboarding
 
 ```bash
+# Full interactive onboarding (provider, auth, safety mode, run now/later)
+keygate onboarding
+
 # Install Codex CLI if needed + run ChatGPT OAuth login + select default Codex model
 keygate onboard --auth-choice openai-codex
 
@@ -46,7 +49,7 @@ keygate auth login --provider openai-codex
 ```
 
 The `openai-codex` provider delegates auth/token storage to official Codex tooling. Keygate does not store OpenAI OAuth tokens.
-The installers run `keygate auth login --provider openai-codex` immediately when you select the Codex provider.
+The installers run `keygate onboarding`, which triggers `keygate auth login --provider openai-codex` immediately when you select the Codex provider.
 See smoke test steps in `docs/CODEX_SMOKE_TEST.md`.
 
 ## Architecture
@@ -112,7 +115,7 @@ pnpm install
 # Start all services in dev mode
 pnpm dev
 
-# CLI commands (serve/onboard/auth/install)
+# CLI commands (serve/onboarding/onboard/auth/install)
 pnpm keygate --help
 
 # Uninstall current Keygate install (global package/fallback artifacts)

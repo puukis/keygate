@@ -556,8 +556,42 @@ function Finish-AndMaybeRun {
     Write-Host "Then open: $chatUrl"
 }
 
+function Run-KeygateOnboarding {
+    $onboardingArgs = @("onboarding")
+
+    if ($NoOnboard -or $NoPrompt) {
+        $onboardingArgs += "--defaults"
+    }
+
+    if ($NoPrompt) {
+        $onboardingArgs += "--no-prompt"
+    }
+
+    if ($NoRun) {
+        $onboardingArgs += "--no-run"
+    }
+
+    if ($DryRun) {
+        Write-Host "[dry-run] $script:KeygateCommand $($onboardingArgs -join ' ')" -ForegroundColor DarkGray
+        return
+    }
+
+    $helpOutput = & $script:KeygateCommand --help 2>&1
+    $helpText = ($helpOutput | Out-String)
+    if ($helpText -notmatch 'keygate onboarding') {
+        Write-WarnMsg "Installed CLI does not support 'keygate onboarding' yet. Falling back to legacy installer onboarding."
+        Run-Onboarding
+        Finish-AndMaybeRun
+        return
+    }
+
+    & $script:KeygateCommand @onboardingArgs
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
+}
+
 Test-Prerequisites
 Install-KeygateGlobal
 Warn-IfPathMissing -BinDir (Get-NpmGlobalBin) -Label "npm global bin"
-Run-Onboarding
-Finish-AndMaybeRun
+Run-KeygateOnboarding

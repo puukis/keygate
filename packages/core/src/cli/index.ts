@@ -1,5 +1,6 @@
 import { parseArgs } from './argv.js';
 import { runOnboardCommand } from './commands/onboard.js';
+import { runOnboardingCommand } from './commands/onboarding.js';
 import { runAuthCommand } from './commands/auth.js';
 import { runInstallCommand } from './commands/install.js';
 import { runUninstallCommand } from './commands/uninstall.js';
@@ -31,6 +32,9 @@ export async function runCli(argv: string[]): Promise<boolean> {
     case 'onboard':
       await runOnboardCommand(args);
       return true;
+    case 'onboarding':
+      await runOnboardingCommand(args);
+      return true;
     case 'auth':
       await runAuthCommand(args);
       return true;
@@ -53,6 +57,7 @@ export function printHelp(): void {
 
 Usage:
   keygate serve
+  keygate onboarding [--no-prompt] [--defaults] [--no-run]
   keygate onboard --auth-choice openai-codex [--device-auth]
   keygate auth login --provider openai-codex [--device-auth]
   keygate install codex [--method npm|brew]
