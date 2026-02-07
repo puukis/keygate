@@ -35,3 +35,6 @@ test-results/
 # SQLite
 *.db
 *.db-journal
+
+# Release scripts
+scripts/bump-release.sh
