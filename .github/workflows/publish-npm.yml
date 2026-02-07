@@ -52,6 +52,7 @@ jobs:
           publish_if_needed() {
             local package_name="$1"
             local package_json="$2"
+            local package_dir="$3"
             local version
             version="$(node -p "require('./${package_json}').version")"
 
@@ -61,8 +62,8 @@ jobs:
             fi
 
             echo "Publishing ${package_name}@${version}"
-            pnpm --filter "${package_name}" publish --access public --no-git-checks
+            pnpm -C "${package_dir}" publish --access public --no-git-checks
           }
 
-          publish_if_needed "@puukis/core" "packages/core/package.json"
-          publish_if_needed "@puukis/cli" "packages/cli/package.json"
+          publish_if_needed "@puukis/core" "packages/core/package.json" "packages/core"
+          publish_if_needed "@puukis/cli" "packages/cli/package.json" "packages/cli"
