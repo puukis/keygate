@@ -7,6 +7,17 @@
   padding: 0 20px 18px;
 }
 
+.chat-readonly-banner {
+  margin-top: 16px;
+  border: 1px solid color-mix(in srgb, var(--warning) 28%, transparent);
+  background: color-mix(in srgb, var(--warning) 12%, white);
+  color: var(--warning-700);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 0.83rem;
+  font-weight: 600;
+}
+
 .messages-container {
   flex: 1;
   min-height: 0;

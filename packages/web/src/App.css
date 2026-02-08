@@ -172,6 +172,24 @@
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(245, 249, 255, 0.9));
 }
 
+.chat-session-control select {
+  min-width: 240px;
+}
+
+.session-readonly-chip {
+  align-self: center;
+  font-size: 0.72rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--warning-700);
+  border: 1px solid color-mix(in srgb, var(--warning) 28%, transparent);
+  background: color-mix(in srgb, var(--warning) 13%, white);
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 .llm-controls {
   display: flex;
   align-items: flex-end;
@@ -217,6 +235,160 @@
   padding: 6px 10px;
 }
 
+.config-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(16, 24, 40, 0.34);
+  backdrop-filter: blur(2px);
+  display: flex;
+  justify-content: flex-end;
+  padding: 14px;
+  z-index: 120;
+}
+
+.config-drawer {
+  width: min(460px, 100%);
+  height: calc(100dvh - 28px);
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(246, 250, 255, 0.98));
+  box-shadow: 0 16px 46px rgba(15, 23, 42, 0.25);
+  padding: 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.config-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.config-drawer-header h2 {
+  margin: 0;
+  font-size: 1.02rem;
+  letter-spacing: 0.01em;
+  color: var(--text-primary);
+}
+
+.config-close-btn {
+  border: 1px solid var(--border-subtle);
+  background: #fff;
+  color: var(--text-secondary);
+  border-radius: 10px;
+  padding: 7px 10px;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.config-section {
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: color-mix(in srgb, var(--surface) 92%, white);
+}
+
+.config-section h3 {
+  margin: 0;
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.config-switch-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.config-switch-row input {
+  margin-top: 2px;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--brand-700);
+}
+
+.config-switch-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--text-secondary);
+}
+
+.config-switch-copy strong {
+  font-size: 0.86rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.config-switch-copy small {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  line-height: 1.35;
+}
+
+.config-hint {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--danger-700);
+}
+
+.config-risk-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.config-risk-input {
+  width: 100%;
+  border: 1px solid color-mix(in srgb, var(--danger) 28%, transparent);
+  background: #fff;
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 0.84rem;
+  color: var(--text-primary);
+}
+
+.config-risk-input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.config-control select {
+  width: 100%;
+  max-width: none;
+}
+
+.config-text-input {
+  width: 100%;
+  max-width: none;
+  padding: 9px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border-subtle);
+  background: #ffffff;
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.config-text-input:disabled {
+  opacity: 0.7;
+}
+
+.config-note {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  line-height: 1.35;
+}
+
 @media (max-width: 1120px) {
   .app-main {
     grid-template-columns: minmax(0, 1fr);
@@ -239,6 +411,7 @@
   .header-right {
     width: 100%;
     justify-content: space-between;
+    flex-wrap: wrap;
   }
 
   .brand-block {
@@ -249,6 +422,15 @@
   .chat-toolbar {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .chat-session-control select {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .session-readonly-chip {
+    align-self: flex-start;
   }
 
   .llm-controls {
@@ -269,5 +451,17 @@
 
   .models-loading {
     align-self: flex-start;
+  }
+
+  .config-drawer-backdrop {
+    padding: 0;
+  }
+
+  .config-drawer {
+    width: 100%;
+    height: 100dvh;
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
   }
 }

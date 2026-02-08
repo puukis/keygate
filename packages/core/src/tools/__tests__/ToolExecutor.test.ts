@@ -45,19 +45,27 @@ function createChannel(
 
 describe('ToolExecutor', () => {
   it('routes managed markdown files to the device context path and skips confirmation', async () => {
-    const gateway = { emit: vi.fn() } as any;
+    const emit = vi.fn();
+    const gateway = { emit } as any;
     const executor = new ToolExecutor('safe', '/tmp/keygate-safe-workspace', ['cat'], gateway);
     executor.registerTool(writeFileTool);
 
     const { channel, requestConfirmation } = createChannel('cancel');
     const result = await executor.execute(
       { id: '1', name: 'write_file', arguments: { path: 'IDENTITY.md', content: 'x' } },
-      channel
+      channel,
+      'web:session-1'
     );
 
     expect(result.success).toBe(true);
     expect(result.output).toBe(path.join(getDefaultWorkspacePath(), 'IDENTITY.md'));
     expect(requestConfirmation).not.toHaveBeenCalled();
+    expect(emit).toHaveBeenNthCalledWith(1, 'tool:start', expect.objectContaining({
+      sessionId: 'web:session-1',
+    }));
+    expect(emit).toHaveBeenNthCalledWith(2, 'tool:end', expect.objectContaining({
+      sessionId: 'web:session-1',
+    }));
   });
 
   it('resolves regular relative paths inside configured workspace and still asks for confirmation', async () => {
@@ -69,7 +77,8 @@ describe('ToolExecutor', () => {
     const { channel, requestConfirmation } = createChannel('allow_once');
     const result = await executor.execute(
       { id: '2', name: 'write_file', arguments: { path: 'notes.txt', content: 'x' } },
-      channel
+      channel,
+      'discord:12345'
     );
 
     expect(result.success).toBe(true);
@@ -85,7 +94,8 @@ describe('ToolExecutor', () => {
     const { channel } = createChannel('allow_once');
     const result = await executor.execute(
       { id: '3', name: 'read_file', arguments: { path: '/etc/passwd' } },
-      channel
+      channel,
+      'web:session-2'
     );
 
     expect(result.success).toBe(false);
@@ -103,11 +113,13 @@ describe('ToolExecutor', () => {
 
     const firstResult = await executor.execute(
       { id: '4', name: 'write_file', arguments: { path: 'notes.txt', content: 'a' } },
-      first.channel
+      first.channel,
+      'web:session-3'
     );
     const secondResult = await executor.execute(
       { id: '5', name: 'write_file', arguments: { path: 'notes.txt', content: 'b' } },
-      second.channel
+      second.channel,
+      'web:session-3'
     );
 
     expect(firstResult.success).toBe(true);
@@ -137,7 +149,8 @@ describe('ToolExecutor', () => {
         name: 'execute_shell',
         arguments: { command: 'echo test > IDENTITY.md' },
       },
-      channel
+      channel,
+      'web:session-4'
     );
 
     expect(result.success).toBe(false);

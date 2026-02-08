@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import type { CodexReasoningEffort, KeygateConfig } from '../types.js';
 
 const DEFAULT_ALLOWED_BINARIES = ['git', 'ls', 'npm', 'cat', 'node', 'python3'];
+const DEFAULT_DISCORD_PREFIX = '!keygate ';
 
 export function getConfigHomeDir(): string {
   if (process.platform === 'win32') {
@@ -51,6 +52,10 @@ export function loadEnvironment(): void {
 export function loadConfigFromEnv(): KeygateConfig {
   const provider = normalizeProvider(process.env['LLM_PROVIDER']);
   const workspacePath = resolveWorkspacePath(process.env['WORKSPACE_PATH']);
+  const spicyModeEnabled = process.env['SPICY_MODE_ENABLED'] === 'true';
+  const spicyMaxObedienceEnabled =
+    spicyModeEnabled && process.env['SPICY_MAX_OBEDIENCE_ENABLED'] === 'true';
+  const discordPrefix = normalizeDiscordPrefix(process.env['DISCORD_PREFIX']);
 
   return {
     llm: {
@@ -66,12 +71,17 @@ export function loadConfigFromEnv(): KeygateConfig {
     },
     security: {
       mode: 'safe',
-      spicyModeEnabled: process.env['SPICY_MODE_ENABLED'] === 'true',
+      spicyModeEnabled,
+      spicyMaxObedienceEnabled,
       workspacePath,
       allowedBinaries: DEFAULT_ALLOWED_BINARIES,
     },
     server: {
       port: parseInt(process.env['PORT'] ?? '18790', 10),
+    },
+    discord: {
+      token: process.env['DISCORD_TOKEN'] ?? '',
+      prefix: discordPrefix,
     },
   };
 }
@@ -226,4 +236,32 @@ function sanitizeDeviceName(value: string): string {
   }
 
   return 'device';
+}
+
+function normalizeDiscordPrefix(value: string | undefined): string {
+  const parsed = parseDiscordPrefixes(value);
+  if (parsed.length === 0) {
+    return DEFAULT_DISCORD_PREFIX;
+  }
+
+  if (parsed.length === 1 && typeof value === 'string' && !value.includes(',')) {
+    return parsed[0]!;
+  }
+
+  return parsed.join(', ');
+}
+
+function parseDiscordPrefixes(value: string | undefined): string[] {
+  if (typeof value !== 'string') {
+    return [];
+  }
+
+  if (!value.includes(',')) {
+    return value.trim().length > 0 ? [value] : [];
+  }
+
+  return value
+    .split(',')
+    .map((prefix) => prefix.trim())
+    .filter((prefix) => prefix.length > 0);
 }

@@ -8,6 +8,8 @@ interface ChatViewProps {
   isStreaming: boolean;
   streamActivities: StreamActivity[];
   disabled: boolean;
+  inputPlaceholder: string;
+  readOnlyHint?: string;
 }
 
 const STARTER_PROMPTS = [
@@ -17,7 +19,15 @@ const STARTER_PROMPTS = [
   'Draft a concise standup update from current progress.',
 ];
 
-export function ChatView({ messages, onSendMessage, isStreaming, streamActivities, disabled }: ChatViewProps) {
+export function ChatView({
+  messages,
+  onSendMessage,
+  isStreaming,
+  streamActivities,
+  disabled,
+  inputPlaceholder,
+  readOnlyHint,
+}: ChatViewProps) {
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -58,6 +68,11 @@ export function ChatView({ messages, onSendMessage, isStreaming, streamActivitie
 
   return (
     <div className="chat-view">
+      {readOnlyHint && (
+        <div className="chat-readonly-banner">
+          {readOnlyHint}
+        </div>
+      )}
       <div className="messages-container">
         {messages.length === 0 ? (
           <div className="empty-state animate-slide-in">
@@ -161,7 +176,7 @@ export function ChatView({ messages, onSendMessage, isStreaming, streamActivitie
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={disabled ? 'Connecting...' : 'Ask Keygate anything...'}
+            placeholder={inputPlaceholder}
             disabled={disabled || isStreaming}
             rows={1}
           />

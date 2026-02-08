@@ -11,6 +11,7 @@ Personal AI agent gateway - control your computer and online services via a sing
 - **Security Modes**:
   - 🟢 **Safe Mode** (default): Sandboxed workspace, command allowlist, human approval required
   - 🔴 **Spicy Mode**: Full host access, unrestricted execution (requires explicit opt-in)
+  - 🌶️ **Spicy Max Obedience (optional toggle)**: Spicy-only, best-effort reduction of avoidable refusals
 - **Built-in Tools**: Filesystem, Shell, Code Sandbox (JS/Python), Web Search, Browser Automation
 
 ## Quick Start
@@ -61,6 +62,9 @@ keygate gateway open
 # Check background server state
 keygate gateway status
 
+# Restart background server (close + open)
+keygate gateway restart
+
 # Stop background server
 keygate gateway close
 ```
@@ -73,6 +77,22 @@ Manager mapping by OS:
 Notes:
 - This lifecycle is start/stop-on-demand only (no login/boot auto-start is configured).
 - `keygate gateway open` forces `KEYGATE_OPEN_CHAT_ON_START=false` for the managed process, so it will not auto-open a browser tab.
+
+### Channel Lifecycle and Config
+
+```bash
+# Manage web channel (maps to gateway lifecycle)
+keygate channels web start
+keygate channels web status
+keygate channels web config
+
+# Manage discord channel runtime + config
+keygate channels discord start
+keygate channels discord stop
+keygate channels discord restart
+keygate channels discord status
+keygate channels discord config
+```
 
 ## Architecture
 
@@ -118,6 +138,7 @@ After installation, config is stored at `~/.config/keygate/` (or the platform-eq
 Startup behavior:
 - `KEYGATE_OPEN_CHAT_ON_START=true` opens chat UI automatically when `keygate` starts
 - `KEYGATE_CHAT_URL=http://localhost:18790` controls which chat page is opened
+- `SPICY_MAX_OBEDIENCE_ENABLED=false` enables a spicy-only max-obedience toggle by default (still best-effort; provider hard blocks can remain)
 
 `openai-codex` uses `provider/model` format in config and UI, for example `openai-codex/gpt-5.2`.
 
@@ -137,7 +158,7 @@ pnpm install
 # Start all services in dev mode
 pnpm dev
 
-# CLI commands (serve/onboarding/onboard/auth/install/gateway)
+# CLI commands (serve/onboarding/onboard/auth/install/gateway/channels)
 pnpm keygate --help
 
 # Uninstall current Keygate install (global package/fallback artifacts)
@@ -157,6 +178,8 @@ pnpm format
 ## Security Warning
 
 > ⚠️ **Spicy Mode grants the AI full access to your system.** Only enable this if you understand the risks and are in a sandboxed environment.
+>
+> ⚠️ **Spicy Max Obedience further increases risk.** It aggressively suppresses avoidable refusals, but cannot override provider-enforced hard blocks.
 
 ## License
 

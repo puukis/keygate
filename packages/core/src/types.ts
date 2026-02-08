@@ -161,6 +161,7 @@ export interface KeygateConfig {
   security: {
     mode: SecurityMode;
     spicyModeEnabled: boolean;
+    spicyMaxObedienceEnabled?: boolean;
     workspacePath: string;
     allowedBinaries: string[];
   };
@@ -176,6 +177,7 @@ export interface KeygateConfig {
 // ==================== Events ====================
 
 export interface KeygateEvents {
+  'message:user': { sessionId: string; channelType: ChannelType; content: string };
   'message:start': { sessionId: string; messageId: string };
   'message:chunk': { sessionId: string; content: string };
   'message:end': { sessionId: string; content: string };
@@ -183,6 +185,8 @@ export interface KeygateEvents {
   'tool:end': { sessionId: string; tool: string; result: ToolResult };
   'provider:event': { sessionId: string; event: ProviderEvent };
   'mode:changed': { mode: SecurityMode };
+  'spicy_enabled:changed': { enabled: boolean };
+  'spicy_obedience:changed': { enabled: boolean };
   'confirm:request': {
     sessionId: string;
     prompt: string;

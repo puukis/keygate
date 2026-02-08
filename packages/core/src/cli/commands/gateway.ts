@@ -5,7 +5,7 @@ import { spawnSync, type SpawnSyncOptions } from 'node:child_process';
 import { getConfigDir, getConfigHomeDir } from '../../config/env.js';
 import type { ParsedArgs } from '../argv.js';
 
-export type GatewayAction = 'open' | 'close' | 'status';
+export type GatewayAction = 'open' | 'close' | 'status' | 'restart';
 export type GatewayState = 'running' | 'stopped' | 'unknown';
 
 export interface GatewayStatus {
@@ -56,7 +56,7 @@ const LINUX_UNIT_NAME = 'keygate-gateway.service';
 const MACOS_LABEL = 'dev.keygate.gateway';
 const WINDOWS_TASK_NAME = 'KeygateGateway';
 
-const GATEWAY_USAGE = 'Usage: keygate gateway <open|close|status>';
+const GATEWAY_USAGE = 'Usage: keygate gateway <open|close|status|restart>';
 
 export async function runGatewayCommand(
   args: ParsedArgs,
@@ -77,6 +77,15 @@ export async function runGatewayCommand(
   }
 
   await adapter.ensureDefinition();
+
+  if (action === 'restart') {
+    await adapter.close();
+    await adapter.open();
+    const after = await adapter.status();
+    deps.log('Gateway restart requested.');
+    printGatewayStatus(deps, after);
+    return;
+  }
 
   if (action === 'open') {
     const before = await adapter.status();
@@ -107,7 +116,7 @@ export async function runGatewayCommand(
 }
 
 export function parseGatewayAction(value: string | undefined): GatewayAction | null {
-  if (value === 'open' || value === 'close' || value === 'status') {
+  if (value === 'open' || value === 'close' || value === 'status' || value === 'restart') {
     return value;
   }
 

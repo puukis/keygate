@@ -54,6 +54,7 @@ describe('gateway command', () => {
     expect(parseGatewayAction('open')).toBe('open');
     expect(parseGatewayAction('close')).toBe('close');
     expect(parseGatewayAction('status')).toBe('status');
+    expect(parseGatewayAction('restart')).toBe('restart');
   });
 
   it('rejects invalid gateway actions', () => {
@@ -63,8 +64,57 @@ describe('gateway command', () => {
 
   it('throws usage for invalid command syntax', async () => {
     await expect(runGatewayCommand(makeArgs('gateway', 'nope'))).rejects.toThrow(
-      'Usage: keygate gateway <open|close|status>'
+      'Usage: keygate gateway <open|close|status|restart>'
     );
+  });
+
+  it('restarts by closing then opening the gateway', async () => {
+    const logs: string[] = [];
+    const calls: string[] = [];
+    let statusChecks = 0;
+    const runCommand = vi.fn((command: string, args: string[]) => {
+      const joined = `${command} ${args.join(' ')}`;
+      calls.push(joined);
+
+      if (joined === 'systemctl --help') return commandResult(0);
+      if (joined === 'systemctl --user show-environment') return commandResult(0, 'PATH=/usr/bin\n');
+      if (joined === 'systemctl --user daemon-reload') return commandResult(0);
+      if (joined === 'systemctl --user stop keygate-gateway.service') return commandResult(0);
+      if (joined === 'systemctl --user start keygate-gateway.service') return commandResult(0);
+      if (joined === 'systemctl --user is-active keygate-gateway.service') {
+        statusChecks += 1;
+        return commandResult(statusChecks >= 1 ? 0 : 3, statusChecks >= 1 ? 'active\n' : 'inactive\n');
+      }
+      if (
+        joined ===
+        'systemctl --user show keygate-gateway.service --property=ActiveState,SubState,UnitFileState --value'
+      ) {
+        return commandResult(0, 'active\nrunning\nenabled\n');
+      }
+
+      throw new Error(`Unexpected command: ${joined}`);
+    });
+
+    await runGatewayCommand(makeArgs('gateway', 'restart'), {
+      platform: 'linux',
+      configDir: '/tmp/keygate-config',
+      configHomeDir: '/tmp/config-home',
+      mkdir: vi.fn(async () => undefined),
+      writeFile: vi.fn(async () => undefined),
+      chmod: vi.fn(async () => undefined),
+      runCommand,
+      log: (line: string) => {
+        logs.push(line);
+      },
+    });
+
+    const stopIndex = calls.findIndex((value) => value === 'systemctl --user stop keygate-gateway.service');
+    const startIndex = calls.findIndex((value) => value === 'systemctl --user start keygate-gateway.service');
+
+    expect(stopIndex).toBeGreaterThan(-1);
+    expect(startIndex).toBeGreaterThan(stopIndex);
+    expect(logs.some((line) => line.includes('Gateway restart requested'))).toBe(true);
+    expect(logs.some((line) => line.includes('Gateway status: running'))).toBe(true);
   });
 
   it('selects platform adapters and rejects unsupported platforms', () => {

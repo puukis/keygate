@@ -101,6 +101,34 @@ export class KeygateDatabase {
   }
 
   /**
+   * List sessions sorted by most recently updated.
+   */
+  listSessions(limit = 200): Session[] {
+    type SessionRow = {
+      id: string;
+      channel_type: 'web' | 'discord';
+      created_at: string;
+      updated_at: string;
+    };
+
+    const stmt = this.db.prepare(`
+      SELECT id, channel_type, created_at, updated_at
+      FROM sessions
+      ORDER BY updated_at DESC
+      LIMIT ?
+    `);
+    const rows = stmt.all(limit) as SessionRow[];
+
+    return rows.map((row) => ({
+      id: row.id,
+      channelType: row.channel_type,
+      messages: this.getMessages(row.id),
+      createdAt: new Date(row.created_at),
+      updatedAt: new Date(row.updated_at),
+    }));
+  }
+
+  /**
    * Save a message to the database
    */
   saveMessage(sessionId: string, message: Message): void {

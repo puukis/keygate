@@ -2,6 +2,7 @@ import {
   Client,
   Events,
   GatewayIntentBits,
+  Partials,
   type Message as DiscordMessage,
   type TextChannel,
 } from 'discord.js';
@@ -106,6 +107,7 @@ class DiscordChannel extends BaseChannel {
           user.id === this.message.author.id,
         max: 1,
         time: 60000, // 1 minute timeout
+        errors: ['time'],
       });
 
       const reaction = collected.first();
@@ -118,6 +120,11 @@ class DiscordChannel extends BaseChannel {
       }
       return 'cancel';
     } catch {
+      try {
+        await this.message.reply('⏱️ Confirmation timed out. Please run your request again.');
+      } catch {
+        // Ignore timeout notification failures.
+      }
       return 'cancel'; // Timeout = reject
     }
   }
@@ -179,11 +186,14 @@ export async function startDiscordBot(config: KeygateConfig): Promise<Client> {
       GatewayIntentBits.GuildMessages,
       GatewayIntentBits.MessageContent,
       GatewayIntentBits.GuildMessageReactions,
+      GatewayIntentBits.DirectMessages,
+      GatewayIntentBits.DirectMessageReactions,
     ],
+    partials: [Partials.Channel, Partials.Message, Partials.Reaction, Partials.User],
   });
 
   const gateway = Gateway.getInstance(config);
-  const prefix = config.discord?.prefix ?? PREFIX;
+  const prefixes = resolveDiscordPrefixes(config.discord?.prefix ?? process.env['DISCORD_PREFIX']);
 
   client.once(Events.ClientReady, (c) => {
     console.log(`🤖 Discord bot ready! Logged in as ${c.user.tag}`);
@@ -203,9 +213,17 @@ export async function startDiscordBot(config: KeygateConfig): Promise<Client> {
   client.on(Events.MessageCreate, async (message) => {
     // Ignore bots and messages without prefix
     if (message.author.bot) return;
-    if (!message.content.startsWith(prefix)) return;
 
-    const content = message.content.slice(prefix.length).trim();
+    try {
+      await message.react('👀');
+    } catch {
+      // Ignore reaction failures (missing perms, rate limits, deleted message).
+    }
+
+    const matchedPrefix = findMatchedPrefix(message.content, prefixes);
+    if (!matchedPrefix) return;
+
+    const content = message.content.slice(matchedPrefix.length).trim();
     if (!content) return;
 
     try {
@@ -244,6 +262,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     security: {
       mode: 'safe',
       spicyModeEnabled: process.env['SPICY_MODE_ENABLED'] === 'true',
+      spicyMaxObedienceEnabled: process.env['SPICY_MAX_OBEDIENCE_ENABLED'] === 'true',
       workspacePath: process.env['WORKSPACE_PATH'] ?? '~/keygate-workspace',
       allowedBinaries: ['git', 'ls', 'npm', 'cat', 'node', 'python3'],
     },
@@ -252,9 +271,44 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     },
     discord: {
       token: process.env['DISCORD_TOKEN'] ?? '',
-      prefix: '!keygate ',
+      prefix: resolveDiscordPrefixes(process.env['DISCORD_PREFIX']).join(', '),
     },
   };
 
   startDiscordBot(config).catch(console.error);
+}
+
+function resolveDiscordPrefixes(value: string | undefined): string[] {
+  const parsed = parseDiscordPrefixes(value);
+  if (parsed.length === 0) {
+    return [PREFIX];
+  }
+
+  // Longest prefixes first to prefer more specific command matches.
+  return parsed.sort((left, right) => right.length - left.length);
+}
+
+function parseDiscordPrefixes(value: string | undefined): string[] {
+  if (typeof value !== 'string') {
+    return [];
+  }
+
+  if (!value.includes(',')) {
+    return value.trim().length > 0 ? [value] : [];
+  }
+
+  return value
+    .split(',')
+    .map((prefix) => prefix.trim())
+    .filter((prefix) => prefix.length > 0);
+}
+
+function findMatchedPrefix(content: string, prefixes: string[]): string | null {
+  for (const prefix of prefixes) {
+    if (content.startsWith(prefix)) {
+      return prefix;
+    }
+  }
+
+  return null;
 }

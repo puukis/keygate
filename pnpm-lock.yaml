@@ -28,7 +28,7 @@ importers:
     dependencies:
       '@puukis/core':
         specifier: ^0.1.1
-        version: link:../core
+        version: 0.1.5
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
@@ -126,6 +126,9 @@ importers:
       vite:
         specifier: ^6.0.0
         version: 6.4.1(@types/node@22.19.9)(tsx@4.21.0)
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@22.19.9)
 
 packages:
 
@@ -763,6 +766,9 @@ packages:
 
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
+
+  '@puukis/core@0.1.5':
+    resolution: {integrity: sha512-dHnZWd1oYx9HhuLaJBvYYOuh0J15j6fOGTNG2GenFQwak//Gi7c2sGIybDTa/PuNqXcwm97YRGjp0xrglm3NwQ==}
 
   '@rolldown/pluginutils@1.0.0-beta.27':
     resolution: {integrity: sha512-+d0F4MKMCbeVUJwG96uQ4SgAznZNSq93I3V+9NHA4OpvqG8mRCpGdKmK8l/dl02h2CCDHwW2FqilnTyDcAnqjA==}
@@ -2400,6 +2406,23 @@ snapshots:
     dependencies:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
+
+  '@puukis/core@0.1.5':
+    dependencies:
+      '@google/generative-ai': 0.21.0
+      better-sqlite3: 11.10.0
+      dotenv: 16.6.1
+      eventemitter3: 5.0.4
+      isolated-vm: 5.0.4
+      ollama: 0.6.3
+      openai: 4.104.0(ws@8.19.0)(zod@3.25.76)
+      playwright: 1.58.1
+      ws: 8.19.0
+      zod: 3.25.76
+    transitivePeerDependencies:
+      - bufferutil
+      - encoding
+      - utf-8-validate
 
   '@rolldown/pluginutils@1.0.0-beta.27': {}
 

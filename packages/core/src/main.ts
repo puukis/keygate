@@ -35,6 +35,7 @@ async function main(): Promise<void> {
   console.log(`   LLM Provider: ${config.llm.provider}`);
   console.log(`   Model: ${config.llm.model}`);
   console.log(`   Spicy Mode Enabled: ${config.security.spicyModeEnabled}`);
+  console.log(`   Spicy Max Obedience: ${config.security.spicyMaxObedienceEnabled === true}`);
   if (workspaceBootstrap.created.length > 0) {
     console.log(`   Initialized workspace files: ${workspaceBootstrap.created.join(', ')}`);
   }

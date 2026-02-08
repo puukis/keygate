@@ -79,7 +79,7 @@ export class ToolExecutor {
   /**
    * Execute a tool call with security checks
    */
-  async execute(call: ToolCall, channel: Channel): Promise<ToolResult> {
+  async execute(call: ToolCall, channel: Channel, sessionId: string): Promise<ToolResult> {
     const tool = this.toolRegistry.get(call.name);
     
     if (!tool) {
@@ -92,7 +92,7 @@ export class ToolExecutor {
 
     // Emit tool:start event
     this.gateway.emit('tool:start', {
-      sessionId: 'current', // TODO: Pass session context
+      sessionId,
       tool: call.name,
       args: call.arguments,
     });
@@ -111,7 +111,7 @@ export class ToolExecutor {
 
       // Emit tool:end event
       this.gateway.emit('tool:end', {
-        sessionId: 'current',
+        sessionId,
         tool: call.name,
         result,
       });
@@ -126,7 +126,7 @@ export class ToolExecutor {
       };
 
       this.gateway.emit('tool:end', {
-        sessionId: 'current',
+        sessionId,
         tool: call.name,
         result,
       });

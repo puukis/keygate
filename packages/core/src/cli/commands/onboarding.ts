@@ -17,6 +17,7 @@ interface OnboardingState {
   apiKey: string;
   ollamaHost: string;
   spicyModeEnabled: boolean;
+  spicyMaxObedienceEnabled: boolean;
   workspacePath: string;
   port: number;
 }
@@ -147,6 +148,7 @@ function createDefaultState(): OnboardingState {
     apiKey: '',
     ollamaHost: '',
     spicyModeEnabled: false,
+    spicyMaxObedienceEnabled: false,
     workspacePath: getDefaultWorkspacePath(),
     port: 18790,
   };
@@ -265,6 +267,7 @@ async function persistOnboardingState(state: OnboardingState): Promise<void> {
     LLM_API_KEY: state.apiKey,
     LLM_OLLAMA_HOST: state.ollamaHost,
     SPICY_MODE_ENABLED: state.spicyModeEnabled ? 'true' : 'false',
+    SPICY_MAX_OBEDIENCE_ENABLED: state.spicyMaxObedienceEnabled ? 'true' : 'false',
     WORKSPACE_PATH: workspacePath,
     PORT: String(state.port),
   });
@@ -276,6 +279,7 @@ async function persistOnboardingState(state: OnboardingState): Promise<void> {
     },
     security: {
       spicyModeEnabled: state.spicyModeEnabled,
+      spicyMaxObedienceEnabled: state.spicyMaxObedienceEnabled,
       workspacePath,
       allowedBinaries: DEFAULT_ALLOWED_BINARIES,
     },
@@ -303,6 +307,7 @@ async function finishOnboarding(
   logOk(`Provider: ${state.provider}`);
   logOk(`Model: ${state.model}`);
   logOk(`Spicy Mode Enabled: ${state.spicyModeEnabled}`);
+  logOk(`Spicy Max Obedience: ${state.spicyMaxObedienceEnabled}`);
   logInfo(`Chat URL: ${chatUrl}`);
 
   if (options.noRun || options.noPrompt || !isPromptable()) {

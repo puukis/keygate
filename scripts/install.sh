@@ -442,6 +442,7 @@ write_config_files() {
   local llm_api_key="$3"
   local llm_ollama_host="$4"
   local spicy_mode_enabled="$5"
+  local spicy_max_obedience_enabled="$6"
 
   log_info "Writing configuration files to $CONFIG_DIR"
 
@@ -458,6 +459,7 @@ LLM_MODEL=$llm_model
 LLM_API_KEY=$llm_api_key
 LLM_OLLAMA_HOST=$llm_ollama_host
 SPICY_MODE_ENABLED=$spicy_mode_enabled
+SPICY_MAX_OBEDIENCE_ENABLED=$spicy_max_obedience_enabled
 WORKSPACE_PATH=$WORKSPACE_DIR
 PORT=18790
 ENV
@@ -471,6 +473,7 @@ ENV
   },
   "security": {
     "spicyModeEnabled": $spicy_mode_enabled,
+    "spicyMaxObedienceEnabled": $spicy_max_obedience_enabled,
     "workspacePath": "$WORKSPACE_DIR",
     "allowedBinaries": ["git", "ls", "npm", "cat", "node", "python3"]
   },
@@ -489,16 +492,17 @@ run_onboarding() {
   local llm_api_key=""
   local llm_ollama_host=""
   local spicy_mode_enabled="false"
+  local spicy_max_obedience_enabled="false"
 
   if [[ "$NO_ONBOARD" == "1" ]]; then
     log_info "Skipping onboarding (--no-onboard)."
-    write_config_files "$llm_provider" "$llm_model" "$llm_api_key" "$llm_ollama_host" "$spicy_mode_enabled"
+    write_config_files "$llm_provider" "$llm_model" "$llm_api_key" "$llm_ollama_host" "$spicy_mode_enabled" "$spicy_max_obedience_enabled"
     return
   fi
 
   if ! is_promptable; then
     log_warn "No interactive TTY available. Applying deterministic defaults."
-    write_config_files "$llm_provider" "$llm_model" "$llm_api_key" "$llm_ollama_host" "$spicy_mode_enabled"
+    write_config_files "$llm_provider" "$llm_model" "$llm_api_key" "$llm_ollama_host" "$spicy_mode_enabled" "$spicy_max_obedience_enabled"
     return
   fi
 
@@ -573,7 +577,7 @@ run_onboarding() {
     esac
   done
 
-  write_config_files "$llm_provider" "$llm_model" "$llm_api_key" "$llm_ollama_host" "$spicy_mode_enabled"
+  write_config_files "$llm_provider" "$llm_model" "$llm_api_key" "$llm_ollama_host" "$spicy_mode_enabled" "$spicy_max_obedience_enabled"
 }
 
 finish_and_maybe_run() {

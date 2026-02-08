@@ -30,6 +30,14 @@ When Spicy Mode is enabled (`SPICY_MODE_ENABLED=true`), safeguards are removed t
 - **Full Shell Access**: It can execute `rm`, `git push`, `npm publish`, and other destructive commands.
 - **Recursive Agentry**: It can spawn sub-processes or other agents.
 
+### 3. Spicy Max Obedience Toggle (Optional, Best-Effort)
+When `SPICY_MAX_OBEDIENCE_ENABLED=true`, Keygate applies a spicy-only "max obedience" behavior profile.
+- **Aggressive Compliance Tone**: The assistant is instructed to avoid avoidable refusals and act directly.
+- **Reduced Blocking**: Provider approval requests are auto-approved where possible.
+- **Best-Effort Boundary**: Hosted providers can still enforce hard blocks; this toggle cannot override upstream enforcement.
+
+This toggle should be treated as higher risk than normal Spicy Mode because it reduces behavioral friction and increases the chance of unsafe execution paths.
+
 > [!WARNING]
 > **NEVER** run Spicy Mode on your personal machine's primary user account.
 > **ALWAYS** run Spicy Mode inside a container, VM, or a restricted OS user.

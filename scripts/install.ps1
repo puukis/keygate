@@ -376,7 +376,8 @@ function Write-Config {
         [string]$Model,
         [string]$ApiKey,
         [string]$OllamaHost,
-        [string]$SpicyModeEnabled
+        [string]$SpicyModeEnabled,
+        [string]$SpicyMaxObedienceEnabled
     )
 
     Write-Info "Writing configuration files to $ConfigDir"
@@ -396,6 +397,7 @@ function Write-Config {
         "LLM_API_KEY=$ApiKey",
         "LLM_OLLAMA_HOST=$OllamaHost",
         "SPICY_MODE_ENABLED=$SpicyModeEnabled",
+        "SPICY_MAX_OBEDIENCE_ENABLED=$SpicyMaxObedienceEnabled",
         "WORKSPACE_PATH=$WorkspaceDir",
         "PORT=18790"
     )
@@ -409,6 +411,7 @@ function Write-Config {
         }
         security = [ordered]@{
             spicyModeEnabled = [bool]::Parse($SpicyModeEnabled)
+            spicyMaxObedienceEnabled = [bool]::Parse($SpicyMaxObedienceEnabled)
             workspacePath = $WorkspaceDir
             allowedBinaries = @("git", "ls", "npm", "cat", "node", "python3")
         }
@@ -429,16 +432,17 @@ function Run-Onboarding {
     $apiKey = ""
     $ollamaHost = ""
     $spicyModeEnabled = "false"
+    $spicyMaxObedienceEnabled = "false"
 
     if ($NoOnboard) {
         Write-Info "Skipping onboarding (-NoOnboard)."
-        Write-Config -Provider $provider -Model $model -ApiKey $apiKey -OllamaHost $ollamaHost -SpicyModeEnabled $spicyModeEnabled
+        Write-Config -Provider $provider -Model $model -ApiKey $apiKey -OllamaHost $ollamaHost -SpicyModeEnabled $spicyModeEnabled -SpicyMaxObedienceEnabled $spicyMaxObedienceEnabled
         return
     }
 
     if (-not (Is-Promptable)) {
         Write-WarnMsg "No interactive TTY detected. Applying deterministic defaults."
-        Write-Config -Provider $provider -Model $model -ApiKey $apiKey -OllamaHost $ollamaHost -SpicyModeEnabled $spicyModeEnabled
+        Write-Config -Provider $provider -Model $model -ApiKey $apiKey -OllamaHost $ollamaHost -SpicyModeEnabled $spicyModeEnabled -SpicyMaxObedienceEnabled $spicyMaxObedienceEnabled
         return
     }
 
@@ -518,7 +522,7 @@ function Run-Onboarding {
         break
     }
 
-    Write-Config -Provider $provider -Model $model -ApiKey $apiKey -OllamaHost $ollamaHost -SpicyModeEnabled $spicyModeEnabled
+    Write-Config -Provider $provider -Model $model -ApiKey $apiKey -OllamaHost $ollamaHost -SpicyModeEnabled $spicyModeEnabled -SpicyMaxObedienceEnabled $spicyMaxObedienceEnabled
 }
 
 function Finish-AndMaybeRun {

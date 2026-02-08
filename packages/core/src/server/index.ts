@@ -6,22 +6,40 @@ import { promises as fs } from 'node:fs';
 import { Gateway } from '../gateway/index.js';
 import { normalizeWebMessage, BaseChannel } from '../pipeline/index.js';
 import { allBuiltinTools } from '../tools/index.js';
+import { updateEnvFile } from '../config/env.js';
 import type {
+  ChannelType,
   CodexReasoningEffort,
   ConfirmationDecision,
   ConfirmationDetails,
   KeygateConfig,
+  Session,
   SecurityMode,
 } from '../types.js';
 import 'dotenv/config';
 
 interface WSMessage {
-  type: 'message' | 'confirm_response' | 'set_mode' | 'clear_session' | 'get_models' | 'set_model';
+  type:
+    | 'message'
+    | 'get_session_snapshot'
+    | 'confirm_response'
+    | 'set_mode'
+    | 'enable_spicy_mode'
+    | 'set_spicy_obedience'
+    | 'set_discord_config'
+    | 'clear_session'
+    | 'get_models'
+    | 'set_model';
   sessionId?: string;
   content?: string;
   decision?: ConfirmationDecision;
   confirmed?: boolean;
   mode?: SecurityMode;
+  enabled?: boolean;
+  riskAck?: string;
+  prefix?: string;
+  token?: string;
+  clearToken?: boolean;
   provider?: KeygateConfig['llm']['provider'];
   model?: string;
   reasoningEffort?: CodexReasoningEffort;
@@ -32,6 +50,25 @@ interface StartWebServerOptions {
   staticAssetsDir?: string;
 }
 
+interface DiscordConfigView {
+  configured: boolean;
+  prefix: string;
+}
+
+interface SessionSnapshotMessageView {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+interface SessionSnapshotEntryView {
+  sessionId: string;
+  channelType: ChannelType;
+  updatedAt: string;
+  messages: SessionSnapshotMessageView[];
+}
+
+const DEFAULT_DISCORD_PREFIX = '!keygate ';
+
 /**
  * WebSocket Channel adapter
  */
@@ -39,7 +76,16 @@ class WebSocketChannel extends BaseChannel {
   type = 'web' as const;
   private ws: WebSocket;
   private sessionId: string;
-  private pendingConfirmation: ((decision: ConfirmationDecision) => void) | null = null;
+  private pendingConfirmation:
+    | {
+      resolve: (decision: ConfirmationDecision) => void;
+    }
+    | null = null;
+  private confirmationQueue: Array<{
+    prompt: string;
+    details?: ConfirmationDetails;
+    resolve: (decision: ConfirmationDecision) => void;
+  }> = [];
 
   constructor(ws: WebSocket, sessionId: string) {
     super();
@@ -71,29 +117,58 @@ class WebSocketChannel extends BaseChannel {
 
   async requestConfirmation(prompt: string, details?: ConfirmationDetails): Promise<ConfirmationDecision> {
     return new Promise((resolve) => {
-      this.pendingConfirmation = resolve;
-      this.ws.send(JSON.stringify({
-        type: 'confirm_request',
-        sessionId: this.sessionId,
-        prompt,
-        details,
-      }));
-
-      // Timeout after 60 seconds
-      setTimeout(() => {
-        if (this.pendingConfirmation) {
-          this.pendingConfirmation('cancel');
-          this.pendingConfirmation = null;
-        }
-      }, 60000);
+      this.confirmationQueue.push({ prompt, details, resolve });
+      this.flushConfirmationQueue();
     });
   }
 
   handleConfirmResponse(decision: ConfirmationDecision): void {
-    if (this.pendingConfirmation) {
-      this.pendingConfirmation(decision);
-      this.pendingConfirmation = null;
+    if (!this.pendingConfirmation) {
+      return;
     }
+
+    const pending = this.pendingConfirmation;
+    this.pendingConfirmation = null;
+    pending.resolve(decision);
+    this.flushConfirmationQueue();
+  }
+
+  handleDisconnect(): void {
+    if (this.pendingConfirmation) {
+      const pending = this.pendingConfirmation;
+      this.pendingConfirmation = null;
+      pending.resolve('cancel');
+    }
+
+    for (const confirmation of this.confirmationQueue) {
+      confirmation.resolve('cancel');
+    }
+    this.confirmationQueue = [];
+  }
+
+  private flushConfirmationQueue(): void {
+    if (this.pendingConfirmation) {
+      return;
+    }
+
+    const next = this.confirmationQueue.shift();
+    if (!next) {
+      return;
+    }
+
+    if (this.ws.readyState !== WebSocket.OPEN) {
+      next.resolve('cancel');
+      this.flushConfirmationQueue();
+      return;
+    }
+
+    this.pendingConfirmation = { resolve: next.resolve };
+    this.ws.send(JSON.stringify({
+      type: 'confirm_request',
+      sessionId: this.sessionId,
+      prompt: next.prompt,
+      details: next.details,
+    }));
   }
 }
 
@@ -126,12 +201,7 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
     // Simple REST endpoints
     if (url.pathname === '/api/status') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        status: 'ok',
-        mode: gateway.getSecurityMode(),
-        spicyEnabled: config.security.spicyModeEnabled,
-        llm: gateway.getLLMState(),
-      }));
+      res.end(JSON.stringify(buildStatusPayload(gateway, config)));
       return;
     }
 
@@ -152,17 +222,13 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
     const channel = new WebSocketChannel(ws, sessionId);
     channels.set(sessionId, channel);
     const llmState = gateway.getLLMState();
+    const webSessionId = `web:${sessionId}`;
 
     console.log(`Client connected: ${sessionId}`);
 
     // Send initial state
-    ws.send(JSON.stringify({
-      type: 'connected',
-      sessionId,
-      mode: gateway.getSecurityMode(),
-      spicyEnabled: config.security.spicyModeEnabled,
-      llm: llmState,
-    }));
+    ws.send(JSON.stringify(buildConnectedPayload(sessionId, gateway, llmState, config)));
+    ws.send(JSON.stringify(buildSessionSnapshotPayload(gateway, webSessionId)));
 
     void sendModels(ws, gateway, llmState.provider);
 
@@ -186,6 +252,11 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
             ws.send(JSON.stringify({ type: 'message_received', sessionId }));
 
             await gateway.processMessage(normalized);
+            break;
+          }
+
+          case 'get_session_snapshot': {
+            ws.send(JSON.stringify(buildSessionSnapshotPayload(gateway, webSessionId)));
             break;
           }
 
@@ -213,8 +284,81 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
             break;
           }
 
+          case 'enable_spicy_mode': {
+            const ack = typeof msg.riskAck === 'string' ? msg.riskAck.trim() : '';
+            if (ack !== 'I ACCEPT THE RISK') {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: 'To enable spicy mode, type I ACCEPT THE RISK exactly.',
+              }));
+              break;
+            }
+
+            try {
+              await applySpicyModeEnable(gateway);
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Failed to enable spicy mode',
+              }));
+            }
+            break;
+          }
+
+          case 'set_spicy_obedience': {
+            if (typeof msg.enabled !== 'boolean') {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: 'Enabled flag is required',
+              }));
+              break;
+            }
+
+            try {
+              await applySpicyObedienceUpdate(gateway, msg.enabled);
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Failed to set spicy obedience toggle',
+              }));
+            }
+            break;
+          }
+
+          case 'set_discord_config': {
+            if (typeof msg.prefix !== 'string') {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: 'Discord prefix is required',
+              }));
+              break;
+            }
+
+            try {
+              const discord = await applyDiscordConfigUpdate(
+                config,
+                {
+                  prefix: msg.prefix,
+                  token: typeof msg.token === 'string' ? msg.token : undefined,
+                  clearToken: msg.clearToken === true,
+                }
+              );
+
+              ws.send(JSON.stringify({
+                type: 'discord_config_updated',
+                discord,
+              }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Failed to save Discord configuration',
+              }));
+            }
+            break;
+          }
+
           case 'clear_session': {
-            gateway.clearSession(`web:${sessionId}`);
+            gateway.clearSession(webSessionId);
             ws.send(JSON.stringify({ type: 'session_cleared', sessionId }));
             break;
           }
@@ -283,12 +427,25 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
     });
 
     ws.on('close', () => {
+      channel.handleDisconnect();
       console.log(`Client disconnected: ${sessionId}`);
       channels.delete(sessionId);
     });
   });
 
   // Forward gateway events to all connected clients
+  gateway.on('message:user', (event) => {
+    broadcast(wss, buildSessionUserMessagePayload(event));
+  });
+
+  gateway.on('message:chunk', (event) => {
+    broadcast(wss, buildSessionChunkPayload(event));
+  });
+
+  gateway.on('message:end', (event) => {
+    broadcast(wss, buildSessionMessageEndPayload(event));
+  });
+
   gateway.on('tool:start', (event) => {
     broadcast(wss, { type: 'tool_start', ...event });
   });
@@ -299,6 +456,14 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
 
   gateway.on('mode:changed', (event) => {
     broadcast(wss, { type: 'mode_changed', ...event });
+  });
+
+  gateway.on('spicy_enabled:changed', (event) => {
+    broadcast(wss, { type: 'spicy_enabled_changed', ...event });
+  });
+
+  gateway.on('spicy_obedience:changed', (event) => {
+    broadcast(wss, { type: 'spicy_obedience_changed', ...event });
   });
 
   gateway.on('provider:event', (event) => {
@@ -326,6 +491,208 @@ function broadcast(wss: WebSocketServer, data: object): void {
 }
 
 export { WebSocketChannel };
+
+export function buildStatusPayload(gateway: Gateway, config: KeygateConfig): Record<string, unknown> {
+  return {
+    status: 'ok',
+    mode: gateway.getSecurityMode(),
+    spicyEnabled: gateway.getSpicyModeEnabled(),
+    spicyObedienceEnabled: gateway.getSpicyMaxObedienceEnabled(),
+    llm: gateway.getLLMState(),
+    discord: buildDiscordConfigView(config),
+  };
+}
+
+export function buildConnectedPayload(
+  sessionId: string,
+  gateway: Gateway,
+  llmState: ReturnType<Gateway['getLLMState']>,
+  config: KeygateConfig
+): Record<string, unknown> {
+  return {
+    type: 'connected',
+    sessionId,
+    mode: gateway.getSecurityMode(),
+    spicyEnabled: gateway.getSpicyModeEnabled(),
+    spicyObedienceEnabled: gateway.getSpicyMaxObedienceEnabled(),
+    llm: llmState,
+    discord: buildDiscordConfigView(config),
+  };
+}
+
+export function buildSessionSnapshotPayload(
+  gateway: Gateway,
+  webSessionId: string
+): Record<string, unknown> {
+  const sessions = gateway.listSessions();
+  const visibleSessions = sessions.filter((session) => (
+    session.id === webSessionId || session.channelType === 'discord'
+  ));
+
+  if (!visibleSessions.some((session) => session.id === webSessionId)) {
+    visibleSessions.push({
+      id: webSessionId,
+      channelType: 'web',
+      messages: [],
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+  }
+
+  const serialized = visibleSessions
+    .sort((left, right) => {
+      if (left.id === webSessionId && right.id !== webSessionId) {
+        return -1;
+      }
+      if (right.id === webSessionId && left.id !== webSessionId) {
+        return 1;
+      }
+      return right.updatedAt.getTime() - left.updatedAt.getTime();
+    })
+    .map((session) => serializeSessionSnapshotEntry(session));
+
+  return {
+    type: 'session_snapshot',
+    sessions: serialized,
+  };
+}
+
+export function buildSessionUserMessagePayload(event: {
+  sessionId: string;
+  channelType: ChannelType;
+  content: string;
+}): Record<string, unknown> {
+  return {
+    type: 'session_user_message',
+    sessionId: event.sessionId,
+    channelType: event.channelType,
+    content: event.content,
+  };
+}
+
+export function buildSessionChunkPayload(event: {
+  sessionId: string;
+  content: string;
+}): Record<string, unknown> {
+  return {
+    type: 'session_chunk',
+    sessionId: event.sessionId,
+    content: event.content,
+  };
+}
+
+export function buildSessionMessageEndPayload(event: {
+  sessionId: string;
+  content: string;
+}): Record<string, unknown> {
+  return {
+    type: 'session_message_end',
+    sessionId: event.sessionId,
+    content: event.content,
+  };
+}
+
+export async function applySpicyModeEnable(
+  gateway: Gateway,
+  persistEnvUpdate: typeof updateEnvFile = updateEnvFile
+): Promise<void> {
+  const previous = gateway.getSpicyModeEnabled();
+  if (previous) {
+    return;
+  }
+
+  gateway.setSpicyModeEnabled(true);
+  try {
+    await persistEnvUpdate({
+      SPICY_MODE_ENABLED: 'true',
+    });
+  } catch (error) {
+    gateway.setSpicyModeEnabled(previous);
+    throw error;
+  }
+}
+
+export async function applySpicyObedienceUpdate(
+  gateway: Gateway,
+  enabled: boolean,
+  persistEnvUpdate: typeof updateEnvFile = updateEnvFile
+): Promise<void> {
+  const previous = gateway.getSpicyMaxObedienceEnabled();
+
+  gateway.setSpicyMaxObedienceEnabled(enabled);
+  try {
+    await persistEnvUpdate({
+      SPICY_MAX_OBEDIENCE_ENABLED: enabled ? 'true' : 'false',
+    });
+  } catch (error) {
+    gateway.setSpicyMaxObedienceEnabled(previous);
+    throw error;
+  }
+}
+
+export async function applyDiscordConfigUpdate(
+  config: KeygateConfig,
+  update: {
+    prefix: string;
+    token?: string;
+    clearToken?: boolean;
+  },
+  persistEnvUpdate: typeof updateEnvFile = updateEnvFile
+): Promise<DiscordConfigView> {
+  const prefix = normalizeDiscordPrefix(update.prefix, false);
+  if (prefix.length === 0) {
+    throw new Error('Discord prefix list cannot be empty.');
+  }
+
+  const currentToken = config.discord?.token ?? process.env['DISCORD_TOKEN'] ?? '';
+  const hasTokenUpdate = typeof update.token === 'string' && update.token.trim().length > 0;
+  const shouldClearToken = update.clearToken === true;
+  const nextToken = shouldClearToken
+    ? ''
+    : hasTokenUpdate
+      ? update.token!.trim()
+      : currentToken;
+
+  const envUpdates: Record<string, string> = {
+    DISCORD_PREFIX: prefix,
+  };
+
+  if (hasTokenUpdate || shouldClearToken) {
+    envUpdates['DISCORD_TOKEN'] = nextToken;
+  }
+
+  await persistEnvUpdate(envUpdates);
+
+  const existingDiscord = config.discord ?? { token: currentToken, prefix };
+  existingDiscord.prefix = prefix;
+  if (hasTokenUpdate || shouldClearToken) {
+    existingDiscord.token = nextToken;
+  }
+  config.discord = existingDiscord;
+
+  process.env['DISCORD_PREFIX'] = prefix;
+  if (hasTokenUpdate || shouldClearToken) {
+    process.env['DISCORD_TOKEN'] = nextToken;
+  }
+
+  return buildDiscordConfigView(config);
+}
+
+function serializeSessionSnapshotEntry(session: Session): SessionSnapshotEntryView {
+  return {
+    sessionId: session.id,
+    channelType: session.channelType,
+    updatedAt: session.updatedAt.toISOString(),
+    messages: session.messages
+      .filter((message): message is Session['messages'][number] & { role: 'user' | 'assistant' } => (
+        message.role === 'user' || message.role === 'assistant'
+      ))
+      .map((message) => ({
+        role: message.role,
+        content: message.content,
+      })),
+  };
+}
 
 async function sendModels(
   ws: WebSocket,
@@ -377,6 +744,44 @@ function normalizeCodexReasoningEffort(value: unknown): CodexReasoningEffort | u
     default:
       return undefined;
   }
+}
+
+function buildDiscordConfigView(config: KeygateConfig): DiscordConfigView {
+  const token = (config.discord?.token ?? process.env['DISCORD_TOKEN'] ?? '').trim();
+  const prefix = normalizeDiscordPrefix(config.discord?.prefix ?? process.env['DISCORD_PREFIX']);
+
+  return {
+    configured: token.length > 0,
+    prefix,
+  };
+}
+
+function normalizeDiscordPrefix(value: string | undefined, fallbackToDefault = true): string {
+  const parsed = parseDiscordPrefixes(value);
+  if (parsed.length === 0) {
+    return fallbackToDefault ? DEFAULT_DISCORD_PREFIX : '';
+  }
+
+  if (parsed.length === 1 && typeof value === 'string' && !value.includes(',')) {
+    return parsed[0]!;
+  }
+
+  return parsed.join(', ');
+}
+
+function parseDiscordPrefixes(value: string | undefined): string[] {
+  if (typeof value !== 'string') {
+    return [];
+  }
+
+  if (!value.includes(',')) {
+    return value.trim().length > 0 ? [value] : [];
+  }
+
+  return value
+    .split(',')
+    .map((prefix) => prefix.trim())
+    .filter((prefix) => prefix.length > 0);
 }
 
 async function serveStaticAsset(

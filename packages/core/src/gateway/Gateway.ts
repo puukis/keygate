@@ -39,6 +39,9 @@ export class Gateway extends EventEmitter<KeygateEvents> {
     super();
     this.config = config;
     this.securityMode = config.security.mode;
+    if (!this.config.security.spicyModeEnabled) {
+      this.config.security.spicyMaxObedienceEnabled = false;
+    }
 
     // Initialize database
     this.db = new Database();
@@ -91,6 +94,15 @@ export class Gateway extends EventEmitter<KeygateEvents> {
         content: message.content,
       });
       session.updatedAt = new Date();
+      this.emit('message:user', {
+        sessionId: message.sessionId,
+        channelType: message.channelType,
+        content: message.content,
+      });
+      this.persistSessionSnapshot(session, {
+        role: 'user',
+        content: message.content,
+      });
 
       // Emit start event
       this.emit('message:start', {
@@ -124,6 +136,10 @@ export class Gateway extends EventEmitter<KeygateEvents> {
           content: finalResponse,
         });
         session.updatedAt = new Date();
+        this.persistSessionSnapshot(session, {
+          role: 'assistant',
+          content: finalResponse,
+        });
 
         // Emit end event
         this.emit('message:end', {
@@ -141,6 +157,10 @@ export class Gateway extends EventEmitter<KeygateEvents> {
           content: errorResponse,
         });
         session.updatedAt = new Date();
+        this.persistSessionSnapshot(session, {
+          role: 'assistant',
+          content: errorResponse,
+        });
 
         this.emit('message:end', {
           sessionId: message.sessionId,
@@ -168,7 +188,7 @@ export class Gateway extends EventEmitter<KeygateEvents> {
   private getOrCreateSession(message: NormalizedMessage): Session {
     let session = this.sessions.get(message.sessionId);
     if (!session) {
-      session = {
+      session = this.db.getSession(message.sessionId) ?? {
         id: message.sessionId,
         channelType: message.channelType,
         messages: [],
@@ -188,10 +208,54 @@ export class Gateway extends EventEmitter<KeygateEvents> {
   }
 
   /**
+   * List all in-memory sessions sorted by most recently updated.
+   */
+  listSessions(): Session[] {
+    const merged = new Map<string, Session>();
+    for (const session of this.sessions.values()) {
+      merged.set(session.id, {
+        ...session,
+        messages: session.messages.map((message) => ({ ...message })),
+        createdAt: new Date(session.createdAt),
+        updatedAt: new Date(session.updatedAt),
+      });
+    }
+
+    for (const session of this.db.listSessions()) {
+      const existing = merged.get(session.id);
+      if (!existing || existing.updatedAt.getTime() < session.updatedAt.getTime()) {
+        merged.set(session.id, {
+          ...session,
+          messages: session.messages.map((message) => ({ ...message })),
+          createdAt: new Date(session.createdAt),
+          updatedAt: new Date(session.updatedAt),
+        });
+      }
+    }
+
+    return Array.from(merged.values())
+      .map((session) => ({
+        ...session,
+        messages: session.messages.map((message) => ({ ...message })),
+        createdAt: new Date(session.createdAt),
+        updatedAt: new Date(session.updatedAt),
+      }))
+      .sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime());
+  }
+
+  /**
    * Get current security mode
    */
   getSecurityMode(): SecurityMode {
     return this.securityMode;
+  }
+
+  getSpicyModeEnabled(): boolean {
+    return this.config.security.spicyModeEnabled;
+  }
+
+  getSpicyMaxObedienceEnabled(): boolean {
+    return this.config.security.spicyMaxObedienceEnabled === true;
   }
 
   getLLMState(): {
@@ -268,6 +332,34 @@ export class Gateway extends EventEmitter<KeygateEvents> {
     this.emit('mode:changed', { mode });
   }
 
+  setSpicyModeEnabled(enabled: boolean): void {
+    if (enabled === this.config.security.spicyModeEnabled) {
+      return;
+    }
+
+    if (!enabled && this.securityMode === 'spicy') {
+      throw new Error('Cannot disable spicy mode while spicy mode is active.');
+    }
+
+    this.config.security.spicyModeEnabled = enabled;
+    if (!enabled) {
+      this.config.security.spicyMaxObedienceEnabled = false;
+    }
+
+    this.emit('spicy_enabled:changed', { enabled });
+  }
+
+  setSpicyMaxObedienceEnabled(enabled: boolean): void {
+    if (enabled && !this.config.security.spicyModeEnabled) {
+      throw new Error(
+        'Spicy max-obedience is unavailable because spicy mode is not enabled. Re-run installer and accept the risk.'
+      );
+    }
+
+    this.config.security.spicyMaxObedienceEnabled = enabled;
+    this.emit('spicy_obedience:changed', { enabled });
+  }
+
   /**
    * Clear a session's message history
    */
@@ -276,6 +368,30 @@ export class Gateway extends EventEmitter<KeygateEvents> {
     if (session) {
       session.messages = [];
       session.updatedAt = new Date();
+      this.persistSessionSnapshot(session);
+    }
+
+    try {
+      this.db.clearSession(sessionId);
+    } catch (error) {
+      console.error('Failed to clear persisted session messages:', error);
+    }
+  }
+
+  private persistSessionSnapshot(
+    session: Session,
+    message?: Pick<Session['messages'][number], 'role' | 'content'>
+  ): void {
+    try {
+      this.db.saveSession(session);
+      if (message) {
+        this.db.saveMessage(session.id, {
+          role: message.role,
+          content: message.content,
+        });
+      }
+    } catch (error) {
+      console.error('Failed to persist session state:', error);
     }
   }
 }
