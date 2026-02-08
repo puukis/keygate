@@ -1,5 +1,5 @@
 # Keygate Environment Variables (example)
-# Copy to ~/.config/keygate/.env and fill in values
+# Copy to ~/.config/keygate/.keygate and fill in values
 
 # LLM Provider: 'openai', 'gemini', 'ollama', or 'openai-codex'
 LLM_PROVIDER=openai

@@ -1,7 +1,7 @@
 import { ensureCodexInstalled, getCodexInstallHelp } from '../codexInstall.js';
 import { getFlagString, hasFlag, type ParsedArgs } from '../argv.js';
 import { runAuthCommand } from './auth.js';
-import { updateEnvFile } from '../../config/env.js';
+import { updateKeygateFile } from '../../config/env.js';
 
 export async function runOnboardCommand(args: ParsedArgs): Promise<void> {
   const authChoice = getFlagString(args.flags, 'auth-choice', 'openai-codex');
@@ -30,7 +30,7 @@ export async function runOnboardCommand(args: ParsedArgs): Promise<void> {
   console.log(`Codex ready (${installResult.version ?? 'unknown version'})`);
 
   if (hasFlag(args.flags, 'skip-login')) {
-    await updateEnvFile({
+    await updateKeygateFile({
       LLM_PROVIDER: 'openai-codex',
       LLM_MODEL: 'openai-codex/gpt-5.3',
       LLM_API_KEY: '',

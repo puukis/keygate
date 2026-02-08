@@ -402,7 +402,7 @@ function Write-Config {
         "PORT=18790"
     )
 
-    Set-Content -Path "$ConfigDir\.env" -Value ($envLines -join "`n") -NoNewline
+    Set-Content -Path "$ConfigDir\.keygate" -Value ($envLines -join "`n") -NoNewline
 
     $config = [ordered]@{
         llm = [ordered]@{

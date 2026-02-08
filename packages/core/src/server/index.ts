@@ -6,7 +6,7 @@ import { promises as fs } from 'node:fs';
 import { Gateway } from '../gateway/index.js';
 import { normalizeWebMessage, BaseChannel } from '../pipeline/index.js';
 import { allBuiltinTools } from '../tools/index.js';
-import { updateEnvFile } from '../config/env.js';
+import { updateKeygateFile } from '../config/env.js';
 import type {
   ChannelType,
   CodexReasoningEffort,
@@ -16,7 +16,6 @@ import type {
   Session,
   SecurityMode,
 } from '../types.js';
-import 'dotenv/config';
 
 interface WSMessage {
   type:
@@ -594,7 +593,7 @@ export function buildSessionMessageEndPayload(event: {
 
 export async function applySpicyModeEnable(
   gateway: Gateway,
-  persistEnvUpdate: typeof updateEnvFile = updateEnvFile
+  persistConfigUpdate: typeof updateKeygateFile = updateKeygateFile
 ): Promise<void> {
   const previous = gateway.getSpicyModeEnabled();
   if (previous) {
@@ -603,7 +602,7 @@ export async function applySpicyModeEnable(
 
   gateway.setSpicyModeEnabled(true);
   try {
-    await persistEnvUpdate({
+    await persistConfigUpdate({
       SPICY_MODE_ENABLED: 'true',
     });
   } catch (error) {
@@ -615,13 +614,13 @@ export async function applySpicyModeEnable(
 export async function applySpicyObedienceUpdate(
   gateway: Gateway,
   enabled: boolean,
-  persistEnvUpdate: typeof updateEnvFile = updateEnvFile
+  persistConfigUpdate: typeof updateKeygateFile = updateKeygateFile
 ): Promise<void> {
   const previous = gateway.getSpicyMaxObedienceEnabled();
 
   gateway.setSpicyMaxObedienceEnabled(enabled);
   try {
-    await persistEnvUpdate({
+    await persistConfigUpdate({
       SPICY_MAX_OBEDIENCE_ENABLED: enabled ? 'true' : 'false',
     });
   } catch (error) {
@@ -637,7 +636,7 @@ export async function applyDiscordConfigUpdate(
     token?: string;
     clearToken?: boolean;
   },
-  persistEnvUpdate: typeof updateEnvFile = updateEnvFile
+  persistConfigUpdate: typeof updateKeygateFile = updateKeygateFile
 ): Promise<DiscordConfigView> {
   const prefix = normalizeDiscordPrefix(update.prefix, false);
   if (prefix.length === 0) {
@@ -661,7 +660,7 @@ export async function applyDiscordConfigUpdate(
     envUpdates['DISCORD_TOKEN'] = nextToken;
   }
 
-  await persistEnvUpdate(envUpdates);
+  await persistConfigUpdate(envUpdates);
 
   const existingDiscord = config.discord ?? { token: currentToken, prefix };
   existingDiscord.prefix = prefix;

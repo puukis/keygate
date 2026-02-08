@@ -1,9 +1,39 @@
+import path from 'node:path';
+import dotenv from 'dotenv';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { loadConfigFromEnv } from '../env.js';
+import { getKeygateFilePath, loadConfigFromEnv, loadEnvironment } from '../env.js';
 
 describe('loadConfigFromEnv', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it('resolves the config file path to .keygate', () => {
+    if (process.platform === 'win32') {
+      vi.stubEnv('APPDATA', path.join('C:\\', 'Users', 'tester', 'AppData', 'Roaming'));
+      expect(getKeygateFilePath()).toBe(path.join('C:\\', 'Users', 'tester', 'AppData', 'Roaming', 'keygate', '.keygate'));
+      return;
+    }
+
+    vi.stubEnv('XDG_CONFIG_HOME', '/tmp/keygate-xdg');
+    expect(getKeygateFilePath()).toBe('/tmp/keygate-xdg/keygate/.keygate');
+  });
+
+  it('loads only .keygate files from config dir and cwd', () => {
+    const configSpy = vi.spyOn(dotenv, 'config').mockReturnValue({} as any);
+
+    if (process.platform === 'win32') {
+      vi.stubEnv('APPDATA', path.join('C:\\', 'Users', 'tester', 'AppData', 'Roaming'));
+    } else {
+      vi.stubEnv('XDG_CONFIG_HOME', '/tmp/keygate-xdg');
+    }
+
+    loadEnvironment();
+
+    expect(configSpy).toHaveBeenCalledTimes(2);
+    expect(configSpy).toHaveBeenNthCalledWith(1, { path: getKeygateFilePath() });
+    expect(configSpy).toHaveBeenNthCalledWith(2, { path: path.resolve(process.cwd(), '.keygate') });
   });
 
   it('defaults spicy max obedience to false when unset', () => {

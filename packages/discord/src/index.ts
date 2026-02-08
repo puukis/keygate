@@ -10,19 +10,13 @@ import {
   Gateway,
   normalizeDiscordMessage,
   BaseChannel,
+  loadEnvironment,
   type ConfirmationDetails,
   type ConfirmationDecision,
   type KeygateConfig,
 } from '@puukis/core';
-import path from 'node:path';
-import os from 'node:os';
-import dotenv from 'dotenv';
 
-// Try to load from ~/.config/keygate/.env first
-const configDir = path.join(os.homedir(), '.config', 'keygate');
-dotenv.config({ path: path.join(configDir, '.env') });
-// Fallback to default behavior (CWD)
-dotenv.config();
+loadEnvironment();
 
 const PREFIX = '!keygate ';
 

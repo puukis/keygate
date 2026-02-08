@@ -453,7 +453,7 @@ write_config_files() {
     return
   fi
 
-  cat > "$CONFIG_DIR/.env" <<ENV
+  cat > "$CONFIG_DIR/.keygate" <<ENV
 LLM_PROVIDER=$llm_provider
 LLM_MODEL=$llm_model
 LLM_API_KEY=$llm_api_key
@@ -463,7 +463,7 @@ SPICY_MAX_OBEDIENCE_ENABLED=$spicy_max_obedience_enabled
 WORKSPACE_PATH=$WORKSPACE_DIR
 PORT=18790
 ENV
-  chmod 600 "$CONFIG_DIR/.env"
+  chmod 600 "$CONFIG_DIR/.keygate"
 
   cat > "$CONFIG_DIR/config.json" <<JSON
 {

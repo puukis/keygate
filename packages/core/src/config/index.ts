@@ -4,8 +4,8 @@ export {
   getDefaultWorkspacePath,
   getDeviceId,
   getDefaultModelForProvider,
-  getEnvFilePath,
+  getKeygateFilePath,
   loadConfigFromEnv,
   loadEnvironment,
-  updateEnvFile,
+  updateKeygateFile,
 } from './env.js';

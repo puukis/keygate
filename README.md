@@ -133,7 +133,7 @@ keygate channels discord config
 
 After installation, config is stored at `~/.config/keygate/` (or the platform-equivalent config directory):
 - `config.json` - LLM provider, model, security settings
-- `.env` - API keys
+- `.keygate` - API keys
 
 Startup behavior:
 - `KEYGATE_OPEN_CHAT_ON_START=true` opens chat UI automatically when `keygate` starts

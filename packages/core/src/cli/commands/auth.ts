@@ -1,7 +1,7 @@
 import { OpenAICodexProvider } from '../../llm/OpenAICodexProvider.js';
 import { ensureCodexInstalled, getCodexInstallHelp } from '../codexInstall.js';
 import { getFlagString, hasFlag, type ParsedArgs } from '../argv.js';
-import { loadConfigFromEnv, updateEnvFile } from '../../config/env.js';
+import { loadConfigFromEnv, updateKeygateFile } from '../../config/env.js';
 import type { ProviderModelOption } from '../../types.js';
 
 export async function runAuthCommand(args: ParsedArgs): Promise<void> {
@@ -49,7 +49,7 @@ export async function runAuthCommand(args: ParsedArgs): Promise<void> {
       // Keep configured model if model/list is unavailable in this environment.
     }
 
-    await updateEnvFile({
+    await updateKeygateFile({
       LLM_PROVIDER: 'openai-codex',
       LLM_MODEL: selectedModel,
       LLM_API_KEY: '',

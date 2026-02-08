@@ -40,13 +40,13 @@ export function getLegacyWorkspacePath(): string {
   return path.join(os.homedir(), 'keygate-workspace');
 }
 
-export function getEnvFilePath(): string {
-  return path.join(getConfigDir(), '.env');
+export function getKeygateFilePath(): string {
+  return path.join(getConfigDir(), '.keygate');
 }
 
 export function loadEnvironment(): void {
-  dotenv.config({ path: getEnvFilePath() });
-  dotenv.config();
+  dotenv.config({ path: getKeygateFilePath() });
+  dotenv.config({ path: path.resolve(process.cwd(), '.keygate') });
 }
 
 export function loadConfigFromEnv(): KeygateConfig {
@@ -116,14 +116,14 @@ function expandHomePath(value: string): string {
   return value;
 }
 
-export async function updateEnvFile(updates: Record<string, string>): Promise<void> {
-  const envPath = getEnvFilePath();
+export async function updateKeygateFile(updates: Record<string, string>): Promise<void> {
+  const keygatePath = getKeygateFilePath();
 
-  await fs.mkdir(path.dirname(envPath), { recursive: true });
+  await fs.mkdir(path.dirname(keygatePath), { recursive: true });
 
   let content = '';
   try {
-    content = await fs.readFile(envPath, 'utf8');
+    content = await fs.readFile(keygatePath, 'utf8');
   } catch {
     content = '';
   }
@@ -158,7 +158,7 @@ export async function updateEnvFile(updates: Record<string, string>): Promise<vo
     .filter((line, index, array) => !(index === array.length - 1 && line === ''))
     .join('\n');
 
-  await fs.writeFile(envPath, `${normalized}\n`, 'utf8');
+  await fs.writeFile(keygatePath, `${normalized}\n`, 'utf8');
 }
 
 function normalizeProvider(value: string | undefined): KeygateConfig['llm']['provider'] {

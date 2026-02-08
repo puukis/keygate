@@ -6,7 +6,7 @@ import * as readline from 'node:readline';
 import { createInterface } from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import { getFlagString, hasFlag, type ParsedArgs } from '../argv.js';
-import { getConfigDir, getDefaultWorkspacePath, updateEnvFile } from '../../config/env.js';
+import { getConfigDir, getDefaultWorkspacePath, updateKeygateFile } from '../../config/env.js';
 import { runAuthCommand } from './auth.js';
 
 type ProviderChoice = 'openai' | 'openai-codex' | 'gemini' | 'ollama';
@@ -261,7 +261,7 @@ async function persistOnboardingState(state: OnboardingState): Promise<void> {
   await fs.mkdir(configDir, { recursive: true });
   await fs.mkdir(workspacePath, { recursive: true });
 
-  await updateEnvFile({
+  await updateKeygateFile({
     LLM_PROVIDER: state.provider,
     LLM_MODEL: state.model,
     LLM_API_KEY: state.apiKey,

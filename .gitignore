@@ -1,6 +1,6 @@
 # Environment
-.env
-.env.local
+.keygate
+.keygate.local
 *.local
 
 # Dependencies

@@ -9,7 +9,7 @@ keygate onboard --auth-choice openai-codex
 Expected:
 - Detects `codex` in PATH or auto-installs with `npm i -g @openai/codex` (macOS fallback: `brew install --cask codex`).
 - Runs ChatGPT OAuth login through Codex app-server.
-- Writes provider config in `~/.config/keygate/.env`:
+- Writes provider config in `~/.config/keygate/.keygate`:
   - `LLM_PROVIDER=openai-codex`
   - `LLM_MODEL=openai-codex/<default-from-model-list>`
 

@@ -54,7 +54,7 @@ Run Keygate inside a minimal Docker container. This limits the blast radius of a
 ```bash
 docker run -it \
   -v $(pwd)/workspace:/app/workspace \
-  --env-file .env \
+  --env-file .keygate \
   keygate:latest
 ```
 
