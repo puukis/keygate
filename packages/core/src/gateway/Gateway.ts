@@ -10,6 +10,7 @@ import type {
 } from '../types.js';
 import { LaneQueue } from './LaneQueue.js';
 import { Brain } from '../brain/Brain.js';
+import { formatCapabilitiesAndLimitsForReadability } from '../brain/assistantOutputFormatter.js';
 import { ToolExecutor } from '../tools/ToolExecutor.js';
 import { Database } from '../db/index.js';
 import { createLLMProvider } from '../llm/index.js';
@@ -128,7 +129,7 @@ export class Gateway extends EventEmitter<KeygateEvents> {
         };
 
         await message.channel.sendStream(captureStream());
-        const finalResponse = response || '(No response)';
+        const finalResponse = formatCapabilitiesAndLimitsForReadability(response || '(No response)');
 
         // Add assistant response to history
         session.messages.push({

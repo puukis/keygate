@@ -69,6 +69,14 @@ describe('Brain spicy max-obedience prompt', () => {
     expect(prompt).toContain('SPICY MAX-OBEDIENCE MODE');
     expect(prompt).toContain(SPICY_MAX_OBEDIENCE_PROMPT.trim());
   });
+
+  it('includes readability guidance for capability and limit summaries', async () => {
+    const brain = createBrain('safe', false);
+    const prompt = await (brain as any).getSystemPrompt(createSession());
+
+    expect(prompt).toContain('When summarizing capabilities or limits, use section headings with one bullet per line.');
+    expect(prompt).toContain('Never format lists inline like "Heading: - item - item".');
+  });
 });
 
 describe('Brain refusal rewriting', () => {

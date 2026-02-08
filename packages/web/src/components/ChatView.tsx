@@ -1,5 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import type { Message, StreamActivity } from '../App';
+import { parseMessageSegments } from './messageContent';
 import './ChatView.css';
 
 interface ChatViewProps {
@@ -29,11 +32,21 @@ export function ChatView({
   readOnlyHint,
 }: ChatViewProps) {
   const [input, setInput] = useState('');
+  const [copiedCodeBlockId, setCopiedCodeBlockId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const copyResetTimeoutRef = useRef<number | null>(null);
   const hasStreamingMessage = messages.some((msg) => msg.id === 'streaming');
   const visibleActivities = streamActivities.slice(-4).reverse();
   const currentActivity = visibleActivities[0];
+
+  useEffect(() => {
+    return () => {
+      if (copyResetTimeoutRef.current !== null) {
+        window.clearTimeout(copyResetTimeoutRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -64,6 +77,23 @@ export function ChatView({
 
     setInput(prompt);
     inputRef.current?.focus();
+  };
+
+  const handleCopyCode = async (blockId: string, code: string) => {
+    const copied = await copyTextToClipboard(code);
+    if (!copied) {
+      return;
+    }
+
+    setCopiedCodeBlockId(blockId);
+    if (copyResetTimeoutRef.current !== null) {
+      window.clearTimeout(copyResetTimeoutRef.current);
+    }
+
+    copyResetTimeoutRef.current = window.setTimeout(() => {
+      setCopiedCodeBlockId(null);
+      copyResetTimeoutRef.current = null;
+    }, 1500);
   };
 
   return (
@@ -115,7 +145,52 @@ export function ChatView({
                     </span>
                   </div>
                   <div className="message-bubble">
-                    {msg.content}
+                    <div className="message-rendered">
+                      {parseMessageSegments(msg.content).map((segment, segmentIndex) => {
+                        const key = `${msg.id}:${segmentIndex}`;
+                        if (segment.type === 'text') {
+                          if (segment.content.length === 0) {
+                            return null;
+                          }
+
+                          return (
+                            <div key={key} className="message-text">
+                              <ReactMarkdown
+                                remarkPlugins={[remarkGfm]}
+                                components={{
+                                  a: ({ node: _node, ...props }) => (
+                                    <a {...props} target="_blank" rel="noreferrer noopener" />
+                                  ),
+                                }}
+                              >
+                                {segment.content}
+                              </ReactMarkdown>
+                            </div>
+                          );
+                        }
+
+                        const blockId = `${msg.id}:code:${segmentIndex}`;
+                        return (
+                          <div key={key} className="code-block">
+                            <div className="code-block-header">
+                              <span className="code-block-language">
+                                {segment.language ?? 'text'}
+                              </span>
+                              <button
+                                type="button"
+                                className="code-copy-btn"
+                                onClick={() => handleCopyCode(blockId, segment.content)}
+                              >
+                                {copiedCodeBlockId === blockId ? 'Copied' : 'Copy code'}
+                              </button>
+                            </div>
+                            <pre>
+                              <code>{segment.content}</code>
+                            </pre>
+                          </div>
+                        );
+                      })}
+                    </div>
                     {msg.id === 'streaming' && (
                       <span className="cursor-blink">|</span>
                     )}
@@ -196,4 +271,38 @@ export function ChatView({
       </form>
     </div>
   );
+}
+
+async function copyTextToClipboard(text: string): Promise<boolean> {
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Fallback below.
+    }
+  }
+
+  if (typeof document === 'undefined') {
+    return false;
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  document.body.appendChild(textarea);
+  textarea.select();
+
+  let copied = false;
+  try {
+    copied = document.execCommand('copy');
+  } catch {
+    copied = false;
+  } finally {
+    document.body.removeChild(textarea);
+  }
+
+  return copied;
 }

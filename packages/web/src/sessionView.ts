@@ -281,9 +281,9 @@ export function reduceSessionChatState(state: SessionChatState, event: SessionCh
       const prevMessages = state.messagesBySession[event.sessionId] ?? [];
       const last = prevMessages[prevMessages.length - 1];
       const fromStreamBuffer = state.streamBuffersBySession[event.sessionId]?.trim() ?? '';
-      const finalizedContent = fromStreamBuffer.length > 0
-        ? fromStreamBuffer
-        : (event.content.trim().length > 0 ? event.content : '(No response)');
+      const finalizedContent = event.content.trim().length > 0
+        ? event.content
+        : (fromStreamBuffer.length > 0 ? fromStreamBuffer : '(No response)');
 
       const nextMessages =
         last?.id === 'streaming' && last.role === 'assistant'

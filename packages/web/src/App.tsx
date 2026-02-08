@@ -207,6 +207,30 @@ function firstString(...values: unknown[]): string | undefined {
   return undefined;
 }
 
+function firstRawString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === 'string') {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function firstNonEmptyRawString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value !== 'string') {
+      continue;
+    }
+
+    if (value.trim().length > 0) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
 function parseDiscordConfig(value: unknown): DiscordConfigState | undefined {
   const payload = asRecord(value);
   if (!payload) {
@@ -500,7 +524,7 @@ function parseSessionSnapshotEntries(value: unknown): SessionSnapshotEntry[] {
         }
 
         const roleValue = firstString(messageRecord['role']);
-        const content = firstString(messageRecord['content']) ?? '';
+        const content = firstRawString(messageRecord['content']) ?? '';
 
         if (roleValue !== 'user' && roleValue !== 'assistant') {
           return [];
@@ -668,7 +692,7 @@ function App() {
       case 'session_user_message': {
         const sessionId = firstString(data['sessionId']);
         const channelType = firstString(data['channelType']);
-        const content = firstString(data['content']);
+        const content = firstNonEmptyRawString(data['content']);
         if (!sessionId || !content || (channelType !== 'web' && channelType !== 'discord')) {
           break;
         }
@@ -686,7 +710,7 @@ function App() {
 
       case 'session_chunk': {
         const sessionId = firstString(data['sessionId']);
-        const content = firstString(data['content']) ?? '';
+        const content = firstRawString(data['content']) ?? '';
         if (!sessionId) {
           break;
         }
@@ -706,7 +730,7 @@ function App() {
 
       case 'session_message_end': {
         const sessionId = firstString(data['sessionId']);
-        const content = firstString(data['content']) ?? '';
+        const content = firstRawString(data['content']) ?? '';
         if (!sessionId) {
           break;
         }
