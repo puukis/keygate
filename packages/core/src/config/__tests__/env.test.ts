@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { promises as fs } from 'node:fs';
 import dotenv from 'dotenv';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getKeygateFilePath, loadConfigFromEnv, loadEnvironment } from '../env.js';
@@ -82,6 +83,11 @@ describe('loadConfigFromEnv', () => {
     expect(config.browser.traceRetentionDays).toBe(7);
     expect(config.browser.mcpPlaywrightVersion).toBe('0.0.64');
     expect(config.browser.artifactsPath).toContain('.keygate-browser-runs');
+    expect(config.skills?.load.watch).toBe(true);
+    expect(config.skills?.load.watchDebounceMs).toBe(250);
+    expect(config.skills?.load.extraDirs).toEqual([]);
+    expect(Array.isArray(config.skills?.load.pluginDirs)).toBe(true);
+    expect(config.skills?.install.nodeManager).toBe('npm');
   });
 
   it('parses browser policy values from environment', () => {
@@ -104,5 +110,50 @@ describe('loadConfigFromEnv', () => {
     ]);
     expect(config.browser.traceRetentionDays).toBe(14);
     expect(config.browser.mcpPlaywrightVersion).toBe('0.0.99');
+  });
+
+  it('reads persisted skills config from config.json', async () => {
+    if (process.platform === 'win32') {
+      vi.stubEnv('APPDATA', path.join('C:\\', 'Users', 'tester', 'AppData', 'Roaming'));
+    } else {
+      const configHome = await fs.mkdtemp('/tmp/keygate-skills-config-');
+      vi.stubEnv('XDG_CONFIG_HOME', configHome);
+    }
+
+    const configDir = path.join(path.dirname(getKeygateFilePath()));
+    await fs.mkdir(configDir, { recursive: true });
+    await fs.writeFile(
+      path.join(configDir, 'config.json'),
+      JSON.stringify({
+        skills: {
+          load: {
+            watch: false,
+            watchDebounceMs: 777,
+            extraDirs: ['/tmp/skills-extra'],
+            pluginDirs: ['/tmp/keygate-plugins'],
+          },
+          allowBundled: ['repo-triage'],
+          install: { nodeManager: 'pnpm' },
+          entries: {
+            'repo-triage': {
+              enabled: true,
+              apiKey: 'abc',
+              env: { TEST_ENV: '1' },
+              config: { endpoint: 'x' },
+            },
+          },
+        },
+      }),
+      'utf8'
+    );
+
+    const config = loadConfigFromEnv();
+    expect(config.skills?.load.watch).toBe(false);
+    expect(config.skills?.load.watchDebounceMs).toBe(777);
+    expect(config.skills?.load.extraDirs).toEqual(['/tmp/skills-extra']);
+    expect(config.skills?.load.pluginDirs).toEqual(['/tmp/keygate-plugins']);
+    expect(config.skills?.allowBundled).toEqual(['repo-triage']);
+    expect(config.skills?.install.nodeManager).toBe('pnpm');
+    expect(config.skills?.entries['repo-triage']?.env?.['TEST_ENV']).toBe('1');
   });
 });

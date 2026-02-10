@@ -1,6 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import dotenv from 'dotenv';
 import type { BrowserDomainPolicy, CodexReasoningEffort, KeygateConfig } from '../types.js';
 
@@ -9,6 +10,9 @@ const DEFAULT_DISCORD_PREFIX = '!keygate ';
 const DEFAULT_BROWSER_TRACE_RETENTION_DAYS = 7;
 const DEFAULT_MCP_PLAYWRIGHT_VERSION = '0.0.64';
 const DEFAULT_BROWSER_ARTIFACTS_DIRNAME = '.keygate-browser-runs';
+const DEFAULT_SKILLS_WATCH = true;
+const DEFAULT_SKILLS_WATCH_DEBOUNCE_MS = 250;
+const DEFAULT_SKILLS_NODE_MANAGER: 'npm' | 'pnpm' | 'yarn' | 'bun' = 'npm';
 
 export function getConfigHomeDir(): string {
   if (process.platform === 'win32') {
@@ -53,6 +57,7 @@ export function loadEnvironment(): void {
 }
 
 export function loadConfigFromEnv(): KeygateConfig {
+  const persistedSkillsConfig = loadPersistedSkillsConfig();
   const provider = normalizeProvider(process.env['LLM_PROVIDER']);
   const workspacePath = resolveWorkspacePath(process.env['WORKSPACE_PATH']);
   const spicyModeEnabled = process.env['SPICY_MODE_ENABLED'] === 'true';
@@ -104,6 +109,7 @@ export function loadConfigFromEnv(): KeygateConfig {
       token: process.env['DISCORD_TOKEN'] ?? '',
       prefix: discordPrefix,
     },
+    skills: persistedSkillsConfig,
   };
 }
 
@@ -331,4 +337,154 @@ function parseDiscordPrefixes(value: string | undefined): string[] {
     .split(',')
     .map((prefix) => prefix.trim())
     .filter((prefix) => prefix.length > 0);
+}
+
+function loadPersistedSkillsConfig(): NonNullable<KeygateConfig['skills']> {
+  const defaults = buildDefaultSkillsConfig();
+  const configPath = path.join(getConfigDir(), 'config.json');
+
+  let parsed: Record<string, unknown> | null = null;
+  try {
+    parsed = JSON.parse(readFileSync(configPath, 'utf8')) as Record<string, unknown>;
+  } catch {
+    parsed = null;
+  }
+
+  if (!parsed || typeof parsed !== 'object') {
+    return defaults;
+  }
+
+  const skills = parsed['skills'];
+  if (!skills || typeof skills !== 'object') {
+    return defaults;
+  }
+
+  const asSkills = skills as Record<string, unknown>;
+  const load = asSkills['load'];
+  const entries = asSkills['entries'];
+  const install = asSkills['install'];
+
+  const watch = typeof (load as Record<string, unknown> | undefined)?.['watch'] === 'boolean'
+    ? Boolean((load as Record<string, unknown>)['watch'])
+    : defaults.load.watch;
+
+  const watchDebounceMs = parsePositiveInteger(
+    String((load as Record<string, unknown> | undefined)?.['watchDebounceMs'] ?? ''),
+    defaults.load.watchDebounceMs
+  );
+
+  const extraDirs = normalizeStringArray((load as Record<string, unknown> | undefined)?.['extraDirs']);
+  const pluginDirsCandidate = normalizeStringArray((load as Record<string, unknown> | undefined)?.['pluginDirs']);
+  const pluginDirs = pluginDirsCandidate.length > 0 ? pluginDirsCandidate : defaults.load.pluginDirs;
+
+  const allowBundled = normalizeStringArray(asSkills['allowBundled']);
+  const nodeManager = normalizeNodeManager((install as Record<string, unknown> | undefined)?.['nodeManager']);
+
+  return {
+    load: {
+      watch,
+      watchDebounceMs,
+      extraDirs,
+      pluginDirs,
+    },
+    entries: normalizeSkillEntries(entries),
+    allowBundled: allowBundled.length > 0 ? allowBundled : undefined,
+    install: {
+      nodeManager,
+    },
+  };
+}
+
+function buildDefaultSkillsConfig(): NonNullable<KeygateConfig['skills']> {
+  return {
+    load: {
+      watch: DEFAULT_SKILLS_WATCH,
+      watchDebounceMs: DEFAULT_SKILLS_WATCH_DEBOUNCE_MS,
+      extraDirs: [],
+      pluginDirs: [path.join(getConfigDir(), 'plugins')],
+    },
+    entries: {},
+    install: {
+      nodeManager: DEFAULT_SKILLS_NODE_MANAGER,
+    },
+  };
+}
+
+function normalizeNodeManager(value: unknown): 'npm' | 'pnpm' | 'yarn' | 'bun' {
+  if (typeof value !== 'string') {
+    return DEFAULT_SKILLS_NODE_MANAGER;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  switch (normalized) {
+    case 'npm':
+    case 'pnpm':
+    case 'yarn':
+    case 'bun':
+      return normalized;
+    default:
+      return DEFAULT_SKILLS_NODE_MANAGER;
+  }
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .filter((entry): entry is string => typeof entry === 'string')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
+function normalizeSkillEntries(value: unknown): Record<string, NonNullable<KeygateConfig['skills']>['entries'][string]> {
+  if (!value || typeof value !== 'object') {
+    return {};
+  }
+
+  const source = value as Record<string, unknown>;
+  const result: Record<string, NonNullable<KeygateConfig['skills']>['entries'][string]> = {};
+
+  for (const [key, rawEntry] of Object.entries(source)) {
+    if (!rawEntry || typeof rawEntry !== 'object') {
+      continue;
+    }
+
+    const entry = rawEntry as Record<string, unknown>;
+    const normalizedEnv = normalizeEnvMap(entry['env']);
+    const normalizedConfig = normalizeConfigBag(entry['config']);
+
+    result[key] = {
+      enabled: typeof entry['enabled'] === 'boolean' ? entry['enabled'] : undefined,
+      apiKey: typeof entry['apiKey'] === 'string' ? entry['apiKey'] : undefined,
+      env: Object.keys(normalizedEnv).length > 0 ? normalizedEnv : undefined,
+      config: Object.keys(normalizedConfig).length > 0 ? normalizedConfig : undefined,
+    };
+  }
+
+  return result;
+}
+
+function normalizeEnvMap(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object') {
+    return {};
+  }
+
+  const output: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof raw === 'string') {
+      output[key] = raw;
+    }
+  }
+
+  return output;
+}
+
+function normalizeConfigBag(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object') {
+    return {};
+  }
+
+  return value as Record<string, unknown>;
 }

@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import type { Tool, ToolResult } from '../../types.js';
+import { buildToolProcessEnv } from '../../runtime/index.js';
 
 /**
  * Execute JavaScript code in isolation using Node's subprocess
@@ -49,6 +50,7 @@ __result.then(r => {
         const proc = spawn('node', [tmpFile], {
           timeout: 30000, // 30 second timeout
           cwd: tmpDir,
+          env: buildToolProcessEnv(),
         });
 
         let stdout = '';
@@ -131,6 +133,7 @@ export const runPythonTool: Tool = {
         const proc = spawn('python3', [tmpFile], {
           timeout: 30000,
           cwd: tmpDir,
+          env: buildToolProcessEnv(),
         });
 
         let stdout = '';

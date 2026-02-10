@@ -1,4 +1,5 @@
 import type { Channel, ChannelType, NormalizedMessage } from '../types.js';
+import { randomUUID } from 'node:crypto';
 
 /**
  * Create a normalized message from Discord
@@ -31,7 +32,7 @@ export function normalizeWebMessage(
   channel: Channel
 ): NormalizedMessage {
   return {
-    id: crypto.randomUUID(),
+    id: randomUUID(),
     sessionId: `web:${sessionId}`,
     channelType: 'web',
     channel,
@@ -51,7 +52,7 @@ export function normalizeTerminalMessage(
   channel: Channel
 ): NormalizedMessage {
   return {
-    id: crypto.randomUUID(),
+    id: randomUUID(),
     sessionId: `terminal:${sessionId}`,
     channelType: 'terminal',
     channel,

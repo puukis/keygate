@@ -17,7 +17,7 @@
   ],
   "scripts": {
     "dev": "tsx watch src/main.ts",
-    "build": "tsc",
+    "build": "tsc && node ./scripts/copyBundledSkills.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },

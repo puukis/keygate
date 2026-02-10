@@ -430,8 +430,10 @@ class KeygateTui {
 
   private async submitPrompt(content: string, allowCommands: boolean): Promise<void> {
     if (allowCommands && content.startsWith('/')) {
-      await this.handleSlashCommand(content);
-      return;
+      const handled = await this.handleSlashCommand(content);
+      if (handled) {
+        return;
+      }
     }
 
     if (this.waitingForResponse) {
@@ -462,11 +464,11 @@ class KeygateTui {
     }
   }
 
-  private async handleSlashCommand(command: string): Promise<void> {
+  private async handleSlashCommand(command: string): Promise<boolean> {
     const normalized = command.trim().toLowerCase();
     if (normalized === '/exit' || normalized === '/quit') {
       this.requestExit();
-      return;
+      return true;
     }
 
     if (normalized === '/help') {
@@ -480,19 +482,19 @@ class KeygateTui {
         '- type `{` and press Enter to start',
         '- type `}` on its own line to send',
       ].join('\n'));
-      return;
+      return true;
     }
 
     if (normalized === '/new') {
       if (this.waitingForResponse) {
         this.addSystemMessage('Cannot start a new session while a response is in progress.');
-        return;
+        return true;
       }
       this.startNewSession();
-      return;
+      return true;
     }
 
-    this.addSystemMessage(`Unknown command: ${command}. Use /help.`);
+    return false;
   }
 
   private startNewSession(): void {

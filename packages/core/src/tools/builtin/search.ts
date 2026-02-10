@@ -1,4 +1,5 @@
 import type { Tool, ToolResult } from '../../types.js';
+import { getEnvValue } from '../../runtime/index.js';
 
 // Note: This is a placeholder implementation. In production, you'd use
 // Tavily API (https://tavily.com/) or SerpAPI for real web search.
@@ -30,7 +31,7 @@ export const webSearchTool: Tool = {
     const numResults = (args['numResults'] as number) ?? 5;
     
     // Check for Tavily API key
-    const tavilyKey = process.env['TAVILY_API_KEY'];
+    const tavilyKey = getEnvValue('TAVILY_API_KEY');
     
     if (!tavilyKey) {
       return {

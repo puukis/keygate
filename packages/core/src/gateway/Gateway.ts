@@ -1,4 +1,5 @@
 import { EventEmitter } from 'eventemitter3';
+import { randomUUID } from 'node:crypto';
 import type {
   CodexReasoningEffort,
   KeygateConfig,
@@ -14,6 +15,7 @@ import { formatCapabilitiesAndLimitsForReadability } from '../brain/assistantOut
 import { ToolExecutor } from '../tools/ToolExecutor.js';
 import { Database } from '../db/index.js';
 import { createLLMProvider } from '../llm/index.js';
+import { SkillsManager } from '../skills/index.js';
 
 /**
  * Gateway - The central hub of Keygate
@@ -35,6 +37,7 @@ export class Gateway extends EventEmitter<KeygateEvents> {
   public readonly toolExecutor: ToolExecutor;
   public readonly db: Database;
   public readonly config: KeygateConfig;
+  public readonly skills: SkillsManager;
 
   private constructor(config: KeygateConfig) {
     super();
@@ -57,6 +60,8 @@ export class Gateway extends EventEmitter<KeygateEvents> {
 
     // Initialize brain with LLM provider
     this.brain = new Brain(config, this.toolExecutor, this);
+    this.skills = new SkillsManager({ config });
+    void this.skills.ensureReady();
   }
 
   /**
@@ -76,6 +81,7 @@ export class Gateway extends EventEmitter<KeygateEvents> {
    * Reset the singleton (for testing)
    */
   static reset(): void {
+    Gateway.instance?.skills.stop();
     Gateway.instance = null;
   }
 
@@ -88,6 +94,12 @@ export class Gateway extends EventEmitter<KeygateEvents> {
     await queue.enqueue(async () => {
       // Get or create session
       const session = this.getOrCreateSession(message);
+      const slashResolution = isReservedTerminalSlashCommand(message.content, message.channelType)
+        ? { kind: 'none' as const }
+        : await this.skills.resolveSlashCommand(message.sessionId, message.content);
+      const explicitSkillInvocation = slashResolution.kind === 'prompt'
+        ? slashResolution.invocation
+        : undefined;
       
       // Add user message to history
       session.messages.push({
@@ -112,9 +124,16 @@ export class Gateway extends EventEmitter<KeygateEvents> {
       });
 
       try {
+        if (slashResolution.kind === 'dispatch') {
+          await this.handleSlashToolDispatch(message, session, slashResolution);
+          return;
+        }
+
         // Stream response back to the channel while accumulating final text.
         let response = '';
-        const stream = this.brain.runStream(session, message.channel);
+        const stream = this.brain.runStream(session, message.channel, {
+          explicitSkillInvocation,
+        });
         const gateway = this;
 
         const captureStream = async function* (): AsyncIterable<string> {
@@ -168,6 +187,55 @@ export class Gateway extends EventEmitter<KeygateEvents> {
           content: errorResponse,
         });
       }
+    });
+  }
+
+  getSkillsStatus(sessionId = 'default'): { loadedCount: number; eligibleCount: number; snapshotVersion: string } {
+    return this.skills.getStatusSync(sessionId);
+  }
+
+  private async handleSlashToolDispatch(
+    message: NormalizedMessage,
+    session: Session,
+    slashResolution: {
+      kind: 'dispatch';
+      toolName: string;
+      args: Record<string, string>;
+      envOverlay: Record<string, string>;
+    }
+  ): Promise<void> {
+    const toolCall = {
+      id: randomUUID(),
+      name: slashResolution.toolName,
+      arguments: slashResolution.args,
+    };
+
+    const result = await this.toolExecutor.execute(
+      toolCall,
+      message.channel,
+      message.sessionId,
+      slashResolution.envOverlay
+    );
+
+    const finalResponse = formatCapabilitiesAndLimitsForReadability(
+      result.success ? result.output : `Error: ${result.error ?? 'Unknown error'}`
+    );
+
+    await message.channel.send(finalResponse);
+
+    session.messages.push({
+      role: 'assistant',
+      content: finalResponse,
+    });
+    session.updatedAt = new Date();
+    this.persistSessionSnapshot(session, {
+      role: 'assistant',
+      content: finalResponse,
+    });
+
+    this.emit('message:end', {
+      sessionId: message.sessionId,
+      content: finalResponse,
     });
   }
 
@@ -395,6 +463,15 @@ export class Gateway extends EventEmitter<KeygateEvents> {
       console.error('Failed to persist session state:', error);
     }
   }
+}
+
+function isReservedTerminalSlashCommand(content: string, channelType: Session['channelType']): boolean {
+  if (channelType !== 'terminal') {
+    return false;
+  }
+
+  const normalized = content.trim().toLowerCase();
+  return normalized === '/help' || normalized === '/new' || normalized === '/exit' || normalized === '/quit';
 }
 
 function getDefaultModelForProvider(provider: KeygateConfig['llm']['provider']): string {

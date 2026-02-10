@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import type { Tool, ToolResult } from '../../types.js';
+import { buildToolProcessEnv } from '../../runtime/index.js';
 
 /**
  * Execute a shell command
@@ -36,6 +37,7 @@ export const shellTool: Tool = {
       const proc = spawn(binary, cmdArgs, {
         cwd,
         shell: false,
+        env: buildToolProcessEnv(),
         timeout: 60000, // 60 second timeout
       });
 

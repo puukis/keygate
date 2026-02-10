@@ -69,6 +69,7 @@ export class OpenAICodexProvider implements LLMProvider {
   private selectedCodexModelId: string | null = null;
   private cachedModels: CodexModel[] | null = null;
   private sessionThreadIds = new Map<string, string>();
+  private sessionThreadContextHashes = new Map<string, string>();
   private allowAlwaysApprovalSignatures = new Set<string>();
 
   constructor(model: string, options: OpenAICodexProviderOptions = {}) {
@@ -94,6 +95,7 @@ export class OpenAICodexProvider implements LLMProvider {
 
     this.client.on('exit', () => {
       this.sessionThreadIds.clear();
+      this.sessionThreadContextHashes.clear();
       this.allowAlwaysApprovalSignatures.clear();
     });
   }
@@ -124,8 +126,14 @@ export class OpenAICodexProvider implements LLMProvider {
     );
 
     const sessionId = options?.sessionId ?? 'default';
+    const contextHash = options?.contextHash ?? '';
+    const previousContextHash = this.sessionThreadContextHashes.get(sessionId);
+    if (previousContextHash !== undefined && previousContextHash !== contextHash) {
+      this.sessionThreadIds.delete(sessionId);
+    }
     const hadThread = this.sessionThreadIds.has(sessionId);
     const threadId = await this.ensureThread(sessionId, options);
+    this.sessionThreadContextHashes.set(sessionId, contextHash);
     const prompt = buildTurnPrompt(messages, {
       includeSystemContext: !hadThread,
       sessionId,
@@ -269,6 +277,7 @@ export class OpenAICodexProvider implements LLMProvider {
     this.selectedProviderModelId = model;
     this.selectedCodexModelId = null;
     this.sessionThreadIds.clear();
+    this.sessionThreadContextHashes.clear();
   }
 
   async login(options: LoginOptions = {}): Promise<void> {
@@ -330,6 +339,8 @@ export class OpenAICodexProvider implements LLMProvider {
   }
 
   async dispose(): Promise<void> {
+    this.sessionThreadIds.clear();
+    this.sessionThreadContextHashes.clear();
     await this.client.stop();
   }
 

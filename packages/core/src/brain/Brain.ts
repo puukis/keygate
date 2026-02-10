@@ -12,6 +12,7 @@ import type { ToolExecutor } from '../tools/ToolExecutor.js';
 import type { Gateway } from '../gateway/Gateway.js';
 import { createLLMProvider } from '../llm/index.js';
 import { getDefaultWorkspacePath } from '../config/env.js';
+import type { SkillTurnContext } from '../skills/index.js';
 import {
   loadAgentWorkspaceState,
   type WorkspaceContextFile,
@@ -78,12 +79,22 @@ export class Brain {
   /**
    * Run the agent loop for a session
    */
-  async run(session: Session, channel: Channel): Promise<string> {
+  async run(
+    session: Session,
+    channel: Channel,
+    options: { explicitSkillInvocation?: { name: string; commandName: string; rawArgs: string } } = {}
+  ): Promise<string> {
     if (await this.shouldSendDeterministicBootstrap(session)) {
       return FIRST_CHAT_BOOTSTRAP_MESSAGE;
     }
 
-    const systemPrompt = await this.getSystemPrompt(session);
+    const latestUserPrompt = getLatestUserMessageContent(session.messages);
+    const skillTurnContext = await this.gateway.skills.buildTurnContext(
+      session.id,
+      latestUserPrompt,
+      options.explicitSkillInvocation
+    );
+    const systemPrompt = await this.getSystemPrompt(session, skillTurnContext);
 
     // Build messages with system prompt
     const messages: Message[] = [
@@ -102,7 +113,7 @@ export class Brain {
       // Call LLM with tools
       const response = await this.llm.chat(messages, {
         tools,
-        ...this.buildProviderOptions(session.id, channel),
+        ...this.buildProviderOptions(session.id, channel, skillTurnContext.contextHash),
       });
 
       // If no tool calls, return the response content
@@ -119,7 +130,12 @@ export class Brain {
 
       // Execute each tool call
       for (const toolCall of response.toolCalls) {
-        const result = await this.executeToolCall(toolCall, channel, session.id);
+        const result = await this.executeToolCall(
+          toolCall,
+          channel,
+          session.id,
+          skillTurnContext.envOverlay
+        );
         
         // Add tool result to messages
         messages.push({
@@ -138,13 +154,23 @@ export class Brain {
   /**
    * Run the agent loop with streaming response
    */
-  async *runStream(session: Session, channel: Channel): AsyncIterable<string> {
+  async *runStream(
+    session: Session,
+    channel: Channel,
+    options: { explicitSkillInvocation?: { name: string; commandName: string; rawArgs: string } } = {}
+  ): AsyncIterable<string> {
     if (await this.shouldSendDeterministicBootstrap(session)) {
       yield FIRST_CHAT_BOOTSTRAP_MESSAGE;
       return;
     }
 
-    const systemPrompt = await this.getSystemPrompt(session);
+    const latestUserPrompt = getLatestUserMessageContent(session.messages);
+    const skillTurnContext = await this.gateway.skills.buildTurnContext(
+      session.id,
+      latestUserPrompt,
+      options.explicitSkillInvocation
+    );
+    const systemPrompt = await this.getSystemPrompt(session, skillTurnContext);
 
     const messages: Message[] = [
       { role: 'system', content: systemPrompt },
@@ -164,7 +190,7 @@ export class Brain {
       
       for await (const chunk of this.llm.stream(messages, {
         tools,
-        ...this.buildProviderOptions(session.id, channel),
+        ...this.buildProviderOptions(session.id, channel, skillTurnContext.contextHash),
       })) {
         if (chunk.content) {
           fullContent += chunk.content;
@@ -196,7 +222,12 @@ export class Brain {
         for (const toolCall of pendingToolCalls) {
           yield `\n\n🔧 Executing: ${toolCall.name}...\n`;
           
-          const result = await this.executeToolCall(toolCall, channel, session.id);
+          const result = await this.executeToolCall(
+            toolCall,
+            channel,
+            session.id,
+            skillTurnContext.envOverlay
+          );
           
           yield result.success 
             ? `✅ ${result.output}\n`
@@ -220,8 +251,13 @@ export class Brain {
   /**
    * Execute a single tool call
    */
-  private async executeToolCall(toolCall: ToolCall, channel: Channel, sessionId: string) {
-    return this.toolExecutor.execute(toolCall, channel, sessionId);
+  private async executeToolCall(
+    toolCall: ToolCall,
+    channel: Channel,
+    sessionId: string,
+    envOverlay: Record<string, string>
+  ) {
+    return this.toolExecutor.execute(toolCall, channel, sessionId, envOverlay);
   }
 
   private async shouldSendDeterministicBootstrap(session: Session): Promise<boolean> {
@@ -273,7 +309,7 @@ export class Brain {
     return getFallbackModels(this.config.llm.provider, this.config.llm.model);
   }
 
-  private buildProviderOptions(sessionId: string, channel: Channel) {
+  private buildProviderOptions(sessionId: string, channel: Channel, contextHash?: string) {
     const executionWorkspace = this.toolExecutor.getWorkspacePath();
     const continuityWorkspace = getDefaultWorkspacePath();
     const isCodexProvider = this.llm.name === 'openai-codex';
@@ -289,6 +325,7 @@ export class Brain {
     return {
       sessionId,
       cwd: executionWorkspace,
+      contextHash,
       securityMode: this.gateway.getSecurityMode(),
       approvalPolicy: spicyMaxObedience ? 'never' : undefined,
       sandboxPolicy: safeModeCodexSandbox,
@@ -309,7 +346,7 @@ export class Brain {
   /**
    * Get the system prompt with current context
    */
-  private async getSystemPrompt(session: Session): Promise<string> {
+  private async getSystemPrompt(session: Session, skillContext?: SkillTurnContext): Promise<string> {
     const mode = this.gateway.getSecurityMode();
     const spicyMaxObedience = this.isSpicyMaxObedienceActive();
     const workspace = this.toolExecutor.getWorkspacePath();
@@ -391,8 +428,20 @@ ${continuityPathGuidance}`;
     const contextSection = contextBlocks
       ? `\n\nWORKSPACE SNAPSHOT (READ-ONLY CONTEXT FOR THIS TURN)\n${contextBlocks}`
       : '';
+    const effectiveSkillContext = skillContext ?? {
+      snapshotVersion: 'empty',
+      contextHash: 'empty',
+      loadedCount: 0,
+      eligibleCount: 0,
+      eligibleForPrompt: [],
+      activeSkills: [],
+      skillListXml: '',
+      activeSkillsPrompt: '',
+      envOverlay: {},
+    };
+    const skillSection = buildSkillPromptSection(effectiveSkillContext);
 
-    return BASE_SYSTEM_PROMPT + modeInfo + workspaceFiles + bootstrapRules + contextSection;
+    return BASE_SYSTEM_PROMPT + modeInfo + workspaceFiles + bootstrapRules + contextSection + skillSection;
   }
 
   private isSpicyMaxObedienceActive(): boolean {
@@ -427,6 +476,24 @@ function formatContextBlock(label: string, file: WorkspaceContextFile): string |
 
   return `### ${label}
 ${file.content}`;
+}
+
+function buildSkillPromptSection(skillContext: SkillTurnContext): string {
+  const blocks: string[] = [];
+
+  if (skillContext.skillListXml.trim().length > 0) {
+    blocks.push(`AVAILABLE SKILLS (XML)\n${skillContext.skillListXml}`);
+  }
+
+  if (skillContext.activeSkillsPrompt.trim().length > 0) {
+    blocks.push(skillContext.activeSkillsPrompt);
+  }
+
+  if (blocks.length === 0) {
+    return '';
+  }
+
+  return `\n\n${blocks.join('\n\n')}`;
 }
 
 function getFallbackModels(

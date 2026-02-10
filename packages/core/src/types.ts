@@ -4,6 +4,18 @@ export type SecurityMode = 'safe' | 'spicy';
 export type ChannelType = 'web' | 'discord' | 'terminal';
 export type CodexReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 export type BrowserDomainPolicy = 'none' | 'allowlist' | 'blocklist';
+export type SkillSourceType = 'workspace' | 'global' | 'plugin' | 'bundled' | 'extra';
+export type SkillEligibilityReason =
+  | 'eligible'
+  | 'disabled'
+  | 'bundled_not_allowed'
+  | 'os_mismatch'
+  | 'missing_bins'
+  | 'missing_any_bins'
+  | 'missing_env'
+  | 'missing_config';
+export type SkillCommandDispatch = 'tool';
+export type SkillCommandArgMode = 'raw';
 
 // ==================== Messages ====================
 
@@ -102,6 +114,7 @@ export interface ChatOptions {
   maxTokens?: number;
   sessionId?: string;
   cwd?: string;
+  contextHash?: string;
   securityMode?: SecurityMode;
   approvalPolicy?: string;
   sandboxPolicy?: Record<string, unknown>;
@@ -177,10 +190,87 @@ export interface KeygateConfig {
     mcpPlaywrightVersion: string;
     artifactsPath: string;
   };
+  skills?: {
+    load: {
+      watch: boolean;
+      watchDebounceMs: number;
+      extraDirs: string[];
+      pluginDirs: string[];
+    };
+    entries: Record<string, SkillEntryConfig>;
+    allowBundled?: string[];
+    install: {
+      nodeManager: 'npm' | 'pnpm' | 'yarn' | 'bun';
+    };
+  };
   discord?: {
     token: string;
     prefix: string;
   };
+}
+
+export interface SkillEntryConfig {
+  enabled?: boolean;
+  apiKey?: string;
+  env?: Record<string, string>;
+  config?: Record<string, unknown>;
+}
+
+export interface SkillMetadataKeygate {
+  always?: boolean;
+  emoji?: string;
+  homepage?: string;
+  os?: Array<'darwin' | 'linux' | 'win32'>;
+  requires?: {
+    bins?: string[];
+    anyBins?: string[];
+    env?: string[];
+    config?: string[];
+  };
+  primaryEnv?: string;
+  install?: Array<Record<string, unknown>>;
+  skillKey?: string;
+}
+
+export interface SkillFrontmatter {
+  name: string;
+  description: string;
+  homepage?: string;
+  ['user-invocable']?: boolean;
+  ['disable-model-invocation']?: boolean;
+  ['command-dispatch']?: SkillCommandDispatch;
+  ['command-tool']?: string;
+  ['command-arg-mode']?: SkillCommandArgMode;
+  metadata?: string;
+}
+
+export interface SkillDefinition {
+  name: string;
+  description: string;
+  location: string;
+  sourceType: SkillSourceType;
+  body: string;
+  homepage?: string;
+  userInvocable: boolean;
+  disableModelInvocation: boolean;
+  commandDispatch?: SkillCommandDispatch;
+  commandTool?: string;
+  commandArgMode: SkillCommandArgMode;
+  metadata?: SkillMetadataKeygate;
+}
+
+export interface SkillRuntimeEntry {
+  skill: SkillDefinition;
+  eligible: boolean;
+  reason: SkillEligibilityReason;
+  envOverlay: Record<string, string>;
+}
+
+export interface SkillRuntimeSnapshot {
+  snapshotVersion: string;
+  loaded: SkillDefinition[];
+  entries: SkillRuntimeEntry[];
+  eligible: SkillDefinition[];
 }
 
 // ==================== Events ====================

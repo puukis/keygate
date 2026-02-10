@@ -621,6 +621,9 @@ function broadcast(wss: WebSocketServer, data: object): void {
 export { WebSocketChannel };
 
 export function buildStatusPayload(gateway: Gateway, config: KeygateConfig): Record<string, unknown> {
+  const skills = typeof (gateway as Partial<Gateway>).getSkillsStatus === 'function'
+    ? gateway.getSkillsStatus()
+    : { loadedCount: 0, eligibleCount: 0, snapshotVersion: 'empty' };
   return {
     status: 'ok',
     mode: gateway.getSecurityMode(),
@@ -629,6 +632,7 @@ export function buildStatusPayload(gateway: Gateway, config: KeygateConfig): Rec
     llm: gateway.getLLMState(),
     discord: buildDiscordConfigView(config),
     browser: buildBrowserConfigViewFromConfig(config),
+    skills,
   };
 }
 
@@ -638,6 +642,9 @@ export function buildConnectedPayload(
   llmState: ReturnType<Gateway['getLLMState']>,
   config: KeygateConfig
 ): Record<string, unknown> {
+  const skills = typeof (gateway as Partial<Gateway>).getSkillsStatus === 'function'
+    ? gateway.getSkillsStatus(`web:${sessionId}`)
+    : { loadedCount: 0, eligibleCount: 0, snapshotVersion: 'empty' };
   return {
     type: 'connected',
     sessionId,
@@ -647,6 +654,7 @@ export function buildConnectedPayload(
     llm: llmState,
     discord: buildDiscordConfigView(config),
     browser: buildBrowserConfigViewFromConfig(config),
+    skills,
   };
 }
 

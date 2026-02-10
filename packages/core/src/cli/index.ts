@@ -9,6 +9,7 @@ import { runGatewayCommand } from './commands/gateway.js';
 import { runChannelsCommand } from './commands/channels.js';
 import { runMcpCommand } from './commands/mcp.js';
 import { runTuiCommand } from './commands/tui.js';
+import { runSkillsCommand } from './commands/skills.js';
 
 export async function runCli(argv: string[]): Promise<boolean> {
   if (argv.length === 0) {
@@ -63,6 +64,9 @@ export async function runCli(argv: string[]): Promise<boolean> {
     case 'tui':
       await runTuiCommand(args);
       return true;
+    case 'skills':
+      await runSkillsCommand(args);
+      return true;
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -83,6 +87,7 @@ Usage:
   keygate gateway <open|close|status|restart>
   keygate channels <web|discord> <start|stop|restart|status|config>
   keygate mcp browser <install|status|remove|update>
+  keygate skills <list|doctor|validate|where|install|update|remove>
 
 Notes:
   - openai-codex uses ChatGPT OAuth through Codex app-server.

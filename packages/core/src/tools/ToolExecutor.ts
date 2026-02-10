@@ -11,6 +11,7 @@ import type {
 } from '../types.js';
 import type { Gateway } from '../gateway/Gateway.js';
 import { getDefaultWorkspacePath } from '../config/env.js';
+import { withEnvOverlay } from '../runtime/index.js';
 
 const MANAGED_CONTEXT_FILES = new Set([
   'soul.md',
@@ -79,7 +80,12 @@ export class ToolExecutor {
   /**
    * Execute a tool call with security checks
    */
-  async execute(call: ToolCall, channel: Channel, sessionId: string): Promise<ToolResult> {
+  async execute(
+    call: ToolCall,
+    channel: Channel,
+    sessionId: string,
+    envOverlay: Record<string, string> = {}
+  ): Promise<ToolResult> {
     const tool = this.toolRegistry.get(call.name);
     
     if (!tool) {
@@ -106,8 +112,8 @@ export class ToolExecutor {
         await this.applySafetyChecks(tool, call, channel);
       }
 
-      // Execute the tool
-      const result = await tool.handler(call.arguments);
+      // Execute the tool with turn-scoped env overlay (no global env mutation).
+      const result = await withEnvOverlay(envOverlay, () => tool.handler(call.arguments));
 
       // Emit tool:end event
       this.gateway.emit('tool:end', {
