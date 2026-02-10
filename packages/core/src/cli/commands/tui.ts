@@ -307,6 +307,18 @@ class KeygateTui {
       return;
     }
 
+    if (key?.name === 'up') {
+      this.transcriptScrollOffset += 1;
+      this.render();
+      return;
+    }
+
+    if (key?.name === 'down') {
+      this.transcriptScrollOffset = Math.max(0, this.transcriptScrollOffset - 1);
+      this.render();
+      return;
+    }
+
     if (key?.name === 'pageup') {
       this.transcriptScrollOffset += 5;
       this.render();
@@ -321,6 +333,12 @@ class KeygateTui {
 
     if (key?.name === 'end') {
       this.transcriptScrollOffset = 0;
+      this.render();
+      return;
+    }
+
+    if (key?.name === 'home') {
+      this.transcriptScrollOffset = Number.MAX_SAFE_INTEGER;
       this.render();
       return;
     }
@@ -520,45 +538,28 @@ class KeygateTui {
     }
 
     const rows = Math.max(20, this.stdout.rows ?? 28);
-    const frameWidth = Math.max(MIN_FRAME_WIDTH, Math.min(120, this.stdout.columns ?? 100));
-    const headerBody = [
-      `Provider: ${this.llmState.provider}   Model: ${this.llmState.model}`,
-      `Mode: ${this.mode}   Session: ${this.activeSessionId}   State: ${this.waitingForResponse ? 'busy' : 'idle'}`,
+    const width = Math.max(MIN_FRAME_WIDTH, this.stdout.columns ?? 100);
+    const title = `Keygate TUI - ${this.llmState.provider}/${this.llmState.model}`;
+    const sessionLine = `session ${this.activeSessionId} | mode ${this.mode} | ${this.waitingForResponse ? 'assistant replying' : 'idle'}`;
+    const scrollLine = this.transcriptScrollOffset > 0
+      ? `scroll offset: +${this.transcriptScrollOffset} lines from latest`
+      : 'scroll offset: live tail';
+
+    const topLines = [
+      `${ACCENT}${BOLD}${truncateText(title, width)}${RESET}`,
+      truncateText(sessionLine, width),
+      `${MUTED}${truncateText(scrollLine, width)}${RESET}`,
+      '',
     ];
-    const headerPanel = renderPanel('Keygate Terminal Chat', headerBody, frameWidth);
 
-    const activityBody = buildActivityBody(this.activities, rows < 24 ? 1 : 2);
-    const activityPanel = renderPanel('Live Activity', activityBody, frameWidth);
+    const bottomLines = this.buildBottomLines(width);
+    const transcriptHeight = Math.max(1, rows - topLines.length - bottomLines.length);
+    const transcriptLines = this.buildTranscriptBody(width, transcriptHeight);
 
-    const composerBody = buildComposerBody({
-      draft: this.draft,
-      multilineMode: this.multilineMode,
-      multilineLines: this.multilineLines,
-      waitingForResponse: this.waitingForResponse,
-      pendingConfirmation: this.pendingConfirmation,
-      width: frameWidth - 4,
-      compact: rows < 24,
-    });
-    const composerPanel = renderPanel('Composer', composerBody, frameWidth);
-
-    const reserved = headerPanel.length + activityPanel.length + composerPanel.length + 1;
-    const transcriptBodyHeight = Math.max(1, rows - reserved - 3);
-    const transcriptBody = this.buildTranscriptBody(frameWidth - 4, transcriptBodyHeight);
-    const transcriptPanel = renderPanel(
-      this.transcriptScrollOffset > 0
-        ? `Conversation (scroll +${this.transcriptScrollOffset})`
-        : 'Conversation',
-      transcriptBody,
-      frameWidth
-    );
-
-    const legend = `${ACCENT_DIM}PgUp/PgDn scroll • End jump bottom • Enter send • Esc clear line • Ctrl+C /exit quit${RESET}`;
     const lines = [
-      ...headerPanel,
-      ...transcriptPanel,
-      ...activityPanel,
-      ...composerPanel,
-      legend,
+      ...topLines,
+      ...transcriptLines,
+      ...bottomLines,
     ];
 
     const trimmed = lines.slice(0, rows);
@@ -571,7 +572,44 @@ class KeygateTui {
     this.stdout.write(`${trimmed.join('\n')}\n`);
   }
 
+  private buildBottomLines(width: number): string[] {
+    const separator = `${ACCENT_DIM}${'─'.repeat(width)}${RESET}`;
+    const latestActivity = this.buildLatestActivityLine(width);
+
+    if (this.pendingConfirmation) {
+      const prompt = toPlainSingleLine(this.pendingConfirmation.details?.summary ?? this.pendingConfirmation.prompt);
+      return [
+        separator,
+        truncateText(`confirm: ${prompt}`, width),
+        `${WARN}${truncateText('y allow once • a allow always • n cancel', width)}${RESET}`,
+        `${ACCENT_DIM}${truncateText('scroll: ↑/↓ line • PgUp/PgDn page • Home oldest • End latest • Ctrl+C exit', width)}${RESET}`,
+      ];
+    }
+
+    const inputLine = this.multilineMode
+      ? `[multiline ${this.multilineLines.length}] > ${this.draft}`
+      : `${this.waitingForResponse ? '[busy] ' : ''}> ${this.draft}`;
+
+    return [
+      separator,
+      latestActivity,
+      truncateText(inputLine, width),
+      `${ACCENT_DIM}${truncateText('scroll: ↑/↓ line • PgUp/PgDn page • Home oldest • End latest • Ctrl+L redraw • Ctrl+C exit', width)}${RESET}`,
+    ];
+  }
+
+  private buildLatestActivityLine(width: number): string {
+    if (this.activities.length === 0) {
+      return `${MUTED}${truncateText('activity: none yet', width)}${RESET}`;
+    }
+
+    const latest = this.activities[this.activities.length - 1]!;
+    const detail = latest.detail ? ` - ${toPlainSingleLine(latest.detail)}` : '';
+    return truncateText(`activity ${formatTime(latest.timestamp)} ${latest.status}${detail}`, width);
+  }
+
   private buildTranscriptBody(contentWidth: number, bodyHeight: number): string[] {
+    const width = Math.max(20, contentWidth);
     const lines: string[] = [];
 
     if (this.session.messages.length === 0 && this.session.streamBuffer.length === 0) {
@@ -581,21 +619,21 @@ class KeygateTui {
     for (const message of this.session.messages) {
       const roleLabel =
         message.role === 'user'
-          ? `${INFO}You${RESET}`
+          ? `${INFO}you${RESET}`
           : message.role === 'assistant'
-            ? `${SUCCESS}Keygate${RESET}`
-            : `${WARN}System${RESET}`;
+            ? `${SUCCESS}keygate${RESET}`
+            : `${WARN}system${RESET}`;
 
-      lines.push(`${BOLD}[${formatTime(message.timestamp)}] ${roleLabel}${RESET}`);
-      for (const wrapped of wrapText(message.content, Math.max(8, contentWidth - 2))) {
+      lines.push(`${BOLD}${formatTime(message.timestamp)} ${roleLabel}${RESET}`);
+      for (const wrapped of wrapText(message.content, Math.max(8, width - 2))) {
         lines.push(`  ${wrapped}`);
       }
       lines.push('');
     }
 
     if (this.session.streamBuffer.length > 0) {
-      lines.push(`${BOLD}[${formatTime(this.session.streamStartedAt ?? new Date())}] ${SUCCESS}Keygate (typing)${RESET}`);
-      for (const wrapped of wrapText(this.session.streamBuffer, Math.max(8, contentWidth - 2))) {
+      lines.push(`${BOLD}${formatTime(this.session.streamStartedAt ?? new Date())} ${SUCCESS}keygate (typing)${RESET}`);
+      for (const wrapped of wrapText(this.session.streamBuffer, Math.max(8, width - 2))) {
         lines.push(`  ${wrapped}`);
       }
     }
@@ -617,74 +655,6 @@ class KeygateTui {
 
     return visible;
   }
-}
-
-interface ComposerBodyInput {
-  draft: string;
-  multilineMode: boolean;
-  multilineLines: string[];
-  waitingForResponse: boolean;
-  pendingConfirmation: PendingConfirmationState | null;
-  width: number;
-  compact: boolean;
-}
-
-function buildComposerBody(inputState: ComposerBodyInput): string[] {
-  if (inputState.pendingConfirmation) {
-    const prompt = inputState.pendingConfirmation.details?.summary ?? inputState.pendingConfirmation.prompt;
-    const wrappedPrompt = wrapText(prompt, Math.max(8, inputState.width));
-    const lines = wrappedPrompt.slice(0, inputState.compact ? 1 : 2);
-    lines.push(`${WARN}Approve: y=once • a=always • n=cancel${RESET}`);
-    return lines;
-  }
-
-  if (inputState.multilineMode) {
-    const currentLine = `> ${inputState.draft}`;
-    const lines = [
-      `Multiline mode: ${inputState.multilineLines.length} buffered lines (finish with \`}\`)`,
-      ...wrapText(currentLine, Math.max(8, inputState.width)).slice(0, inputState.compact ? 1 : 2),
-    ];
-    return lines;
-  }
-
-  const prefix = inputState.waitingForResponse ? '[busy] > ' : '> ';
-  const lines = wrapText(`${prefix}${inputState.draft}`, Math.max(8, inputState.width)).slice(0, inputState.compact ? 1 : 2);
-  if (lines.length === 0) {
-    lines.push('> ');
-  }
-  return lines;
-}
-
-function buildActivityBody(entries: ActivityEntry[], maxLines: number): string[] {
-  if (entries.length === 0) {
-    return [`${MUTED}No activity yet.${RESET}`];
-  }
-
-  const recent = entries.slice(-maxLines);
-  return recent.map((entry) => {
-    const base = `${formatTime(entry.timestamp)} ${entry.status}`;
-    if (!entry.detail) {
-      return base;
-    }
-    return `${base} - ${entry.detail}`;
-  });
-}
-
-function renderPanel(title: string, bodyLines: string[], width: number): string[] {
-  const panelWidth = width;
-  const innerWidth = panelWidth - 2;
-  const contentWidth = innerWidth - 2;
-  const lines: string[] = [];
-
-  lines.push(`${ACCENT}┌${'─'.repeat(innerWidth)}┐${RESET}`);
-  lines.push(`${ACCENT}│${RESET} ${BOLD}${padText(title, contentWidth)}${RESET} ${ACCENT}│${RESET}`);
-
-  for (const line of bodyLines) {
-    lines.push(`${ACCENT}│${RESET} ${padText(truncateText(line, contentWidth), contentWidth)} ${ACCENT}│${RESET}`);
-  }
-
-  lines.push(`${ACCENT}└${'─'.repeat(innerWidth)}┘${RESET}`);
-  return lines;
 }
 
 function sanitizeMessageContent(value: string): string {
@@ -738,14 +708,10 @@ function truncateText(value: string, maxLength: number): string {
   return `${chars.slice(0, maxLength - 1).join('')}…`;
 }
 
-function padText(value: string, maxLength: number): string {
-  const plain = stripAnsi(value);
-  const chars = Array.from(plain);
-  if (chars.length >= maxLength) {
-    return chars.slice(0, maxLength).join('');
-  }
-
-  return `${plain}${' '.repeat(maxLength - chars.length)}`;
+function toPlainSingleLine(value: string): string {
+  return sanitizeMessageContent(stripAnsi(value))
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function stripAnsi(value: string): string {
