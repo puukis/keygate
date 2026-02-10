@@ -1,4 +1,4 @@
-export type SessionChannelType = 'web' | 'discord';
+export type SessionChannelType = 'web' | 'discord' | 'terminal';
 
 export interface SessionMessage {
   id: string;
@@ -89,7 +89,15 @@ export interface SessionOption {
 }
 
 function inferChannelType(sessionId: string): SessionChannelType {
-  return sessionId.startsWith('discord:') ? 'discord' : 'web';
+  if (sessionId.startsWith('discord:')) {
+    return 'discord';
+  }
+
+  if (sessionId.startsWith('terminal:')) {
+    return 'terminal';
+  }
+
+  return 'web';
 }
 
 function buildMessageId(
@@ -348,8 +356,8 @@ export function buildSessionOptions(
     } satisfies SessionOption]
     : [];
 
-  const discordEntries = Object.entries(metaBySession)
-    .filter(([sessionId, meta]) => meta.channelType === 'discord' && sessionId !== mainSessionId)
+  const readOnlyEntries = Object.entries(metaBySession)
+    .filter(([sessionId]) => sessionId !== mainSessionId)
     .sort((left, right) => {
       const timeDiff = right[1].updatedAt.getTime() - left[1].updatedAt.getTime();
       if (timeDiff !== 0) {
@@ -358,15 +366,25 @@ export function buildSessionOptions(
       return left[0].localeCompare(right[0]);
     });
 
-  const discordOptions = discordEntries.map(([sessionId, meta], index) => ({
+  let discordIndex = 0;
+  let terminalIndex = 0;
+  const readOnlyOptions = readOnlyEntries.map(([sessionId, meta]) => {
+    const label = meta.channelType === 'discord'
+      ? `discord:agent-${++discordIndex}`
+      : meta.channelType === 'terminal'
+        ? `terminal:agent-${++terminalIndex}`
+        : `web:agent`;
+
+    return ({
     sessionId,
-    label: `discord:agent-${index + 1}`,
+    label,
     channelType: meta.channelType,
     updatedAt: meta.updatedAt,
     readOnly: true,
-  } satisfies SessionOption));
+    } satisfies SessionOption);
+  });
 
-  return [...mainOption, ...discordOptions];
+  return [...mainOption, ...readOnlyOptions];
 }
 
 export function isSessionReadOnly(selectedSessionId: string | null, mainSessionId: string | null): boolean {

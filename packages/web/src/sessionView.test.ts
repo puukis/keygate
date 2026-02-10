@@ -65,4 +65,14 @@ describe('reduceSessionChatState session_message_end', () => {
     expect(messages).toHaveLength(1);
     expect(messages[0]?.content).toBe('streamed fallback text');
   });
+
+  it('infers terminal channel type from terminal-prefixed session id', () => {
+    const state = reduceSessionChatState(EMPTY_SESSION_CHAT_STATE, {
+      type: 'session_clear',
+      sessionId: 'terminal:alpha',
+      updatedAt: new Date('2026-02-08T11:00:00.000Z'),
+    });
+
+    expect(state.metaBySession['terminal:alpha']?.channelType).toBe('terminal');
+  });
 });

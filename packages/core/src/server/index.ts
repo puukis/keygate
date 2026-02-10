@@ -656,7 +656,7 @@ export function buildSessionSnapshotPayload(
 ): Record<string, unknown> {
   const sessions = gateway.listSessions();
   const visibleSessions = sessions.filter((session) => (
-    session.id === webSessionId || session.channelType === 'discord'
+    session.id === webSessionId || session.channelType === 'discord' || session.channelType === 'terminal'
   ));
 
   if (!visibleSessions.some((session) => session.id === webSessionId)) {

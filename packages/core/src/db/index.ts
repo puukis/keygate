@@ -79,7 +79,7 @@ export class KeygateDatabase {
   getSession(sessionId: string): Session | null {
     type SessionRow = {
       id: string;
-      channel_type: 'web' | 'discord';
+      channel_type: 'web' | 'discord' | 'terminal';
       created_at: string;
       updated_at: string;
     };
@@ -106,7 +106,7 @@ export class KeygateDatabase {
   listSessions(limit = 200): Session[] {
     type SessionRow = {
       id: string;
-      channel_type: 'web' | 'discord';
+      channel_type: 'web' | 'discord' | 'terminal';
       created_at: string;
       updated_at: string;
     };

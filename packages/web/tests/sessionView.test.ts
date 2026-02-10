@@ -29,10 +29,27 @@ describe('buildSessionOptions', () => {
       'discord:a',
     ]);
   });
+
+  it('includes terminal sessions as read-only entries', () => {
+    const options = buildSessionOptions('web:main', {
+      'web:main': { channelType: 'web', updatedAt: asDate('2026-02-08T12:00:00.000Z') },
+      'terminal:a': { channelType: 'terminal', updatedAt: asDate('2026-02-08T12:03:00.000Z') },
+      'discord:b': { channelType: 'discord', updatedAt: asDate('2026-02-08T12:04:00.000Z') },
+      'terminal:c': { channelType: 'terminal', updatedAt: asDate('2026-02-08T12:01:00.000Z') },
+    });
+
+    expect(options.map((option) => option.label)).toEqual([
+      'main:agent',
+      'discord:agent-1',
+      'terminal:agent-1',
+      'terminal:agent-2',
+    ]);
+    expect(options.map((option) => option.readOnly)).toEqual([false, true, true, true]);
+  });
 });
 
 describe('reduceSessionChatState snapshot + streaming flow', () => {
-  it('hydrates snapshot sessions and updates stream chunk/end deterministically', () => {
+  it('hydrates snapshot sessions and uses final message_end content when present', () => {
     const snapshotState = reduceSessionChatState(EMPTY_SESSION_CHAT_STATE, {
       type: 'session_snapshot',
       sessions: [
@@ -74,7 +91,7 @@ describe('reduceSessionChatState snapshot + streaming flow', () => {
 
     expect(endedState.streamingBySession['web:main']).toBe(false);
     expect(endedState.messagesBySession['web:main']?.at(-1)?.id).not.toBe('streaming');
-    expect(endedState.messagesBySession['web:main']?.at(-1)?.content).toBe('partial');
+    expect(endedState.messagesBySession['web:main']?.at(-1)?.content).toBe('ignored because stream buffer exists');
   });
 
   it('appends user messages with channel metadata', () => {

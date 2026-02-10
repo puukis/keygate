@@ -8,6 +8,7 @@ import { runUpdateCommand } from './commands/update.js';
 import { runGatewayCommand } from './commands/gateway.js';
 import { runChannelsCommand } from './commands/channels.js';
 import { runMcpCommand } from './commands/mcp.js';
+import { runTuiCommand } from './commands/tui.js';
 
 export async function runCli(argv: string[]): Promise<boolean> {
   if (argv.length === 0) {
@@ -59,6 +60,9 @@ export async function runCli(argv: string[]): Promise<boolean> {
     case 'mcp':
       await runMcpCommand(args);
       return true;
+    case 'tui':
+      await runTuiCommand(args);
+      return true;
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -69,6 +73,7 @@ export function printHelp(): void {
 
 Usage:
   keygate serve
+  keygate tui
   keygate onboarding [--no-prompt] [--defaults] [--no-run]
   keygate onboard --auth-choice openai-codex [--device-auth]
   keygate auth login --provider openai-codex [--device-auth]

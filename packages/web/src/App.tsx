@@ -596,7 +596,15 @@ function isImportantProviderEvent(method: string, params?: Record<string, unknow
 }
 
 function getChannelTypeForSession(sessionId: string): SessionChannelType {
-  return sessionId.startsWith('discord:') ? 'discord' : 'web';
+  if (sessionId.startsWith('discord:')) {
+    return 'discord';
+  }
+
+  if (sessionId.startsWith('terminal:')) {
+    return 'terminal';
+  }
+
+  return 'web';
 }
 
 function normalizeWebSessionId(value: string): string {
@@ -619,7 +627,7 @@ function parseSessionSnapshotEntries(value: unknown): SessionSnapshotEntry[] {
     const updatedAtRaw = firstString(record['updatedAt']);
     const messagesRaw = record['messages'];
 
-    if (!sessionId || (channelTypeRaw !== 'web' && channelTypeRaw !== 'discord')) {
+    if (!sessionId || (channelTypeRaw !== 'web' && channelTypeRaw !== 'discord' && channelTypeRaw !== 'terminal')) {
       return [];
     }
 
@@ -828,7 +836,7 @@ function App() {
         const sessionId = firstString(data['sessionId']);
         const channelType = firstString(data['channelType']);
         const content = firstNonEmptyRawString(data['content']);
-        if (!sessionId || !content || (channelType !== 'web' && channelType !== 'discord')) {
+        if (!sessionId || !content || (channelType !== 'web' && channelType !== 'discord' && channelType !== 'terminal')) {
           break;
         }
 
@@ -1543,11 +1551,26 @@ function App() {
 
   const canClearMainSession = connected && !!mainSessionId && selectedSessionId === mainSessionId && !activeIsStreaming;
 
+  const activeReadOnlyChannel = activeIsReadOnly && activeSessionId
+    ? getChannelTypeForSession(activeSessionId)
+    : null;
+  const readOnlyTarget = activeReadOnlyChannel === 'discord'
+    ? 'Discord'
+    : activeReadOnlyChannel === 'terminal'
+      ? 'Terminal TUI'
+      : 'the original channel';
+  const readOnlyHintText = `Read-only here. Reply in ${readOnlyTarget}.`;
+  const readOnlyChipText = activeReadOnlyChannel === 'discord'
+    ? 'Read-only (Discord)'
+    : activeReadOnlyChannel === 'terminal'
+      ? 'Read-only (Terminal)'
+      : 'Read-only';
+
   const composerDisabled = isComposerDisabled(connected, activeIsStreaming, activeSessionId, mainSessionId);
   const composerPlaceholder = !connected
     ? 'Connecting...'
     : activeIsReadOnly
-      ? 'Read-only here. Reply in Discord.'
+      ? readOnlyHintText
       : 'Ask Keygate anything...';
 
   return (
@@ -1606,7 +1629,7 @@ function App() {
               </select>
             </label>
             {activeIsReadOnly && (
-              <span className="session-readonly-chip">Read-only (Discord)</span>
+              <span className="session-readonly-chip">{readOnlyChipText}</span>
             )}
           </div>
 
@@ -1617,7 +1640,7 @@ function App() {
             streamActivities={activeStreamActivities}
             disabled={composerDisabled}
             inputPlaceholder={composerPlaceholder}
-            readOnlyHint={activeIsReadOnly ? 'Read-only here. Reply in Discord.' : undefined}
+            readOnlyHint={activeIsReadOnly ? readOnlyHintText : undefined}
           />
         </section>
 

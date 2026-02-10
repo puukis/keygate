@@ -1,7 +1,7 @@
 // Core types for Keygate
 
 export type SecurityMode = 'safe' | 'spicy';
-export type ChannelType = 'web' | 'discord';
+export type ChannelType = 'web' | 'discord' | 'terminal';
 export type CodexReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 export type BrowserDomainPolicy = 'none' | 'allowlist' | 'blocklist';
 

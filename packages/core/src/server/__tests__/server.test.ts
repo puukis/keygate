@@ -89,7 +89,7 @@ describe('server spicy obedience payloads', () => {
 });
 
 describe('session snapshot payload', () => {
-  it('always includes current web session and all discord sessions', () => {
+  it('always includes current web session and all read-only channel sessions', () => {
     const gateway = {
       listSessions: () => [
         {
@@ -106,6 +106,13 @@ describe('session snapshot payload', () => {
           createdAt: new Date('2026-02-08T11:00:00.000Z'),
           updatedAt: new Date('2026-02-08T11:05:00.000Z'),
         },
+        {
+          id: 'terminal:alpha',
+          channelType: 'terminal' as const,
+          messages: [{ role: 'assistant' as const, content: 'terminal latest' }],
+          createdAt: new Date('2026-02-08T11:06:00.000Z'),
+          updatedAt: new Date('2026-02-08T11:07:00.000Z'),
+        },
       ],
     } as any;
 
@@ -115,6 +122,7 @@ describe('session snapshot payload', () => {
     expect(payload['type']).toBe('session_snapshot');
     expect(sessions.map((session) => session['sessionId'])).toEqual([
       'web:current',
+      'terminal:alpha',
       'discord:alpha',
     ]);
   });

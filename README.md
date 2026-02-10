@@ -53,6 +53,20 @@ The `openai-codex` provider delegates auth/token storage to official Codex tooli
 The installers run `keygate onboarding`, which triggers `keygate auth login --provider openai-codex` immediately when you select the Codex provider.
 See smoke test steps in `docs/CODEX_SMOKE_TEST.md`.
 
+### Terminal Chat (Full-Screen TUI)
+
+```bash
+keygate tui
+```
+
+Inside TUI:
+- `/help` shows command help
+- `/new` starts a fresh terminal session
+- `/exit` or `/quit` leaves TUI
+- Multiline prompt mode: type `{` and finish with `}` on its own line
+
+Terminal sessions are persisted and appear in the web UI session list as read-only entries.
+
 ### Background Gateway Lifecycle
 
 ```bash
@@ -158,7 +172,7 @@ pnpm install
 # Start all services in dev mode
 pnpm dev
 
-# CLI commands (serve/onboarding/onboard/auth/install/gateway/channels)
+# CLI commands (serve/tui/onboarding/onboard/auth/install/gateway/channels)
 pnpm keygate --help
 
 # Uninstall current Keygate install (global package/fallback artifacts)

@@ -42,6 +42,26 @@ export function normalizeWebMessage(
 }
 
 /**
+ * Create a normalized message from Terminal UI
+ */
+export function normalizeTerminalMessage(
+  sessionId: string,
+  userId: string,
+  content: string,
+  channel: Channel
+): NormalizedMessage {
+  return {
+    id: crypto.randomUUID(),
+    sessionId: `terminal:${sessionId}`,
+    channelType: 'terminal',
+    channel,
+    userId,
+    content,
+    timestamp: new Date(),
+  };
+}
+
+/**
  * Abstract channel implementation helper
  */
 export abstract class BaseChannel implements Channel {
