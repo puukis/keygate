@@ -7,6 +7,7 @@ import { runUninstallCommand } from './commands/uninstall.js';
 import { runUpdateCommand } from './commands/update.js';
 import { runGatewayCommand } from './commands/gateway.js';
 import { runChannelsCommand } from './commands/channels.js';
+import { runMcpCommand } from './commands/mcp.js';
 
 export async function runCli(argv: string[]): Promise<boolean> {
   if (argv.length === 0) {
@@ -55,6 +56,9 @@ export async function runCli(argv: string[]): Promise<boolean> {
     case 'channels':
       await runChannelsCommand(args);
       return true;
+    case 'mcp':
+      await runMcpCommand(args);
+      return true;
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -73,6 +77,7 @@ Usage:
   keygate update [--check-only]
   keygate gateway <open|close|status|restart>
   keygate channels <web|discord> <start|stop|restart|status|config>
+  keygate mcp browser <install|status|remove|update>
 
 Notes:
   - openai-codex uses ChatGPT OAuth through Codex app-server.

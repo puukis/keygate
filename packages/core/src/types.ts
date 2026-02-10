@@ -3,6 +3,7 @@
 export type SecurityMode = 'safe' | 'spicy';
 export type ChannelType = 'web' | 'discord';
 export type CodexReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
+export type BrowserDomainPolicy = 'none' | 'allowlist' | 'blocklist';
 
 // ==================== Messages ====================
 
@@ -167,6 +168,14 @@ export interface KeygateConfig {
   };
   server: {
     port: number;
+  };
+  browser: {
+    domainPolicy: BrowserDomainPolicy;
+    domainAllowlist: string[];
+    domainBlocklist: string[];
+    traceRetentionDays: number;
+    mcpPlaywrightVersion: string;
+    artifactsPath: string;
   };
   discord?: {
     token: string;

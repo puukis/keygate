@@ -4,13 +4,17 @@ import {
   GatewayIntentBits,
   Partials,
   type Message as DiscordMessage,
-  type TextChannel,
 } from 'discord.js';
 import {
   Gateway,
   normalizeDiscordMessage,
   BaseChannel,
+  getBrowserScreenshotAllowedRoots,
+  isPathWithinRoot,
+  loadConfigFromEnv,
   loadEnvironment,
+  resolveSessionScreenshotByFilename,
+  sanitizeBrowserScreenshotFilename,
   type ConfirmationDetails,
   type ConfirmationDecision,
   type KeygateConfig,
@@ -19,6 +23,9 @@ import {
 loadEnvironment();
 
 const PREFIX = '!keygate ';
+const SCREENSHOT_FILENAME_GLOBAL_PATTERN = /session-[A-Za-z0-9:_-]+-step-\d+\.png/gi;
+const DISCORD_MAX_ATTACHMENTS_PER_MESSAGE = 10;
+type SendableChannel = { send: (...args: any[]) => Promise<unknown> };
 
 /**
  * Discord Channel adapter implementing the Channel interface
@@ -27,26 +34,31 @@ class DiscordChannel extends BaseChannel {
   type = 'discord' as const;
   private message: DiscordMessage;
   private replyMessage: DiscordMessage | null = null;
+  private artifactsRoot: string;
 
-  constructor(message: DiscordMessage) {
+  constructor(message: DiscordMessage, artifactsRoot: string) {
     super();
     this.message = message;
+    this.artifactsRoot = artifactsRoot;
   }
 
 
   async send(content: string): Promise<void> {
+    const sendableChannel = this.getSendableChannel();
+
     // Discord has a 2000 char limit, split if needed
     const chunks = this.splitMessage(content);
     for (const chunk of chunks) {
       if (this.replyMessage) {
-        // Check if channel is a text-based channel with send method
-        if ('send' in this.message.channel) {
-          await this.message.channel.send(chunk);
+        if (sendableChannel) {
+          await sendableChannel.send(chunk);
         }
       } else {
         this.replyMessage = await this.message.reply(chunk);
       }
     }
+
+    await this.sendScreenshotAttachments(content);
   }
 
   async sendStream(stream: AsyncIterable<string>): Promise<void> {
@@ -69,6 +81,7 @@ class DiscordChannel extends BaseChannel {
 
     // Final update
     await this.updateReply(buffer || '(No response)');
+    await this.sendScreenshotAttachments(buffer);
   }
 
   async requestConfirmation(prompt: string, details?: ConfirmationDetails): Promise<ConfirmationDecision> {
@@ -162,6 +175,87 @@ class DiscordChannel extends BaseChannel {
 
     return chunks;
   }
+
+  private getSendableChannel(): SendableChannel | null {
+    const channel = this.message.channel as { send?: (...args: any[]) => Promise<unknown> } | null;
+    if (!channel || typeof channel.send !== 'function') {
+      return null;
+    }
+    return channel as SendableChannel;
+  }
+
+  private extractScreenshotFilenames(content: string): string[] {
+    const filenames: string[] = [];
+    const seen = new Set<string>();
+
+    let match: RegExpExecArray | null = null;
+    SCREENSHOT_FILENAME_GLOBAL_PATTERN.lastIndex = 0;
+
+    while ((match = SCREENSHOT_FILENAME_GLOBAL_PATTERN.exec(content)) !== null) {
+      const candidate = match[0] ?? '';
+      const filename = sanitizeBrowserScreenshotFilename(candidate);
+      if (!filename) {
+        continue;
+      }
+
+      const key = filename.toLowerCase();
+      if (seen.has(key)) {
+        continue;
+      }
+
+      seen.add(key);
+      filenames.push(filename);
+    }
+
+    return filenames;
+  }
+
+  private async sendScreenshotAttachments(content: string): Promise<void> {
+    const sendableChannel = this.getSendableChannel();
+    if (!sendableChannel) {
+      return;
+    }
+
+    const filenames = this.extractScreenshotFilenames(content);
+    if (filenames.length === 0) {
+      return;
+    }
+
+    const [artifactsRoot, workspaceRoot] = getBrowserScreenshotAllowedRoots(this.artifactsRoot);
+    const files: Array<{ attachment: string; name: string }> = [];
+
+    for (const filename of filenames) {
+      const resolvedPath = await resolveSessionScreenshotByFilename(this.artifactsRoot, filename);
+      if (!resolvedPath) {
+        continue;
+      }
+
+      if (
+        !isPathWithinRoot(artifactsRoot, resolvedPath) &&
+        !isPathWithinRoot(workspaceRoot, resolvedPath)
+      ) {
+        continue;
+      }
+
+      files.push({ attachment: resolvedPath, name: filename });
+    }
+
+    if (files.length === 0) {
+      return;
+    }
+
+    for (let i = 0; i < files.length; i += DISCORD_MAX_ATTACHMENTS_PER_MESSAGE) {
+      const chunk = files.slice(i, i + DISCORD_MAX_ATTACHMENTS_PER_MESSAGE);
+      const label = chunk.length === 1
+        ? `Attached browser screenshot: \`${chunk[0]!.name}\``
+        : `Attached browser screenshots: ${chunk.map((file) => `\`${file.name}\``).join(', ')}`;
+
+      await sendableChannel.send({
+        content: label,
+        files: chunk,
+      });
+    }
+  }
 }
 
 /**
@@ -169,6 +263,7 @@ class DiscordChannel extends BaseChannel {
  */
 export async function startDiscordBot(config: KeygateConfig): Promise<Client> {
   const token = config.discord?.token ?? process.env['DISCORD_TOKEN'];
+  const browserArtifactsRoot = config.browser.artifactsPath;
   
   if (!token) {
     throw new Error('Discord token not configured. Set DISCORD_TOKEN or provide in config.');
@@ -221,7 +316,7 @@ export async function startDiscordBot(config: KeygateConfig): Promise<Client> {
     if (!content) return;
 
     try {
-      const channel = new DiscordChannel(message);
+      const channel = new DiscordChannel(message, browserArtifactsRoot);
       const normalized = normalizeDiscordMessage(
         message.id,
         message.channelId,
@@ -243,31 +338,7 @@ export async function startDiscordBot(config: KeygateConfig): Promise<Client> {
 
 // CLI entry point
 if (import.meta.url === `file://${process.argv[1]}`) {
-  // TODO: Load config from file
-  const config: KeygateConfig = {
-    llm: {
-      provider: (process.env['LLM_PROVIDER'] as 'openai' | 'gemini' | 'ollama' | 'openai-codex') ?? 'openai',
-      model: process.env['LLM_MODEL'] ?? 'gpt-4o',
-      apiKey: process.env['LLM_API_KEY'] ?? '',
-      ollama: {
-        host: process.env['LLM_OLLAMA_HOST'] ?? 'http://127.0.0.1:11434',
-      },
-    },
-    security: {
-      mode: 'safe',
-      spicyModeEnabled: process.env['SPICY_MODE_ENABLED'] === 'true',
-      spicyMaxObedienceEnabled: process.env['SPICY_MAX_OBEDIENCE_ENABLED'] === 'true',
-      workspacePath: process.env['WORKSPACE_PATH'] ?? '~/keygate-workspace',
-      allowedBinaries: ['git', 'ls', 'npm', 'cat', 'node', 'python3'],
-    },
-    server: {
-      port: 18790,
-    },
-    discord: {
-      token: process.env['DISCORD_TOKEN'] ?? '',
-      prefix: resolveDiscordPrefixes(process.env['DISCORD_PREFIX']).join(', '),
-    },
-  };
+  const config = loadConfigFromEnv();
 
   startDiscordBot(config).catch(console.error);
 }

@@ -7,7 +7,9 @@ import { Gateway } from '../gateway/index.js';
 import { normalizeWebMessage, BaseChannel } from '../pipeline/index.js';
 import { allBuiltinTools } from '../tools/index.js';
 import { updateKeygateFile } from '../config/env.js';
+import { MCPBrowserManager, type MCPBrowserStatus } from '../codex/mcpBrowserManager.js';
 import type {
+  BrowserDomainPolicy,
   ChannelType,
   CodexReasoningEffort,
   ConfirmationDecision,
@@ -28,7 +30,11 @@ interface WSMessage {
     | 'set_discord_config'
     | 'clear_session'
     | 'get_models'
-    | 'set_model';
+    | 'set_model'
+    | 'get_mcp_browser_status'
+    | 'setup_mcp_browser'
+    | 'remove_mcp_browser'
+    | 'set_browser_policy';
   sessionId?: string;
   content?: string;
   decision?: ConfirmationDecision;
@@ -42,6 +48,11 @@ interface WSMessage {
   provider?: KeygateConfig['llm']['provider'];
   model?: string;
   reasoningEffort?: CodexReasoningEffort;
+  domainPolicy?: BrowserDomainPolicy;
+  domainAllowlist?: string[] | string;
+  domainBlocklist?: string[] | string;
+  traceRetentionDays?: number;
+  mcpPlaywrightVersion?: string;
 }
 
 interface StartWebServerOptions {
@@ -52,6 +63,27 @@ interface StartWebServerOptions {
 interface DiscordConfigView {
   configured: boolean;
   prefix: string;
+}
+
+interface BrowserConfigView {
+  installed: boolean;
+  healthy: boolean;
+  serverName: string;
+  configuredVersion: string | null;
+  desiredVersion: string;
+  domainPolicy: BrowserDomainPolicy;
+  domainAllowlist: string[];
+  domainBlocklist: string[];
+  traceRetentionDays: number;
+  artifactsPath: string;
+  command: string | null;
+  args: string[];
+  warning?: string;
+}
+
+export interface BrowserStatusTracker {
+  hasBaseline: boolean;
+  signature: string | null;
 }
 
 interface SessionSnapshotMessageView {
@@ -67,6 +99,7 @@ interface SessionSnapshotEntryView {
 }
 
 const DEFAULT_DISCORD_PREFIX = '!keygate ';
+const BROWSER_RETENTION_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 /**
  * WebSocket Channel adapter
@@ -177,7 +210,32 @@ class WebSocketChannel extends BaseChannel {
 export function startWebServer(config: KeygateConfig, options: StartWebServerOptions = {}): void {
   const gateway = Gateway.getInstance(config);
   const staticAssetsDir = options.staticAssetsDir;
+  const mcpBrowserManager = new MCPBrowserManager(config);
+  const browserStatusTracker: BrowserStatusTracker = {
+    hasBaseline: false,
+    signature: null,
+  };
+
+  void mcpBrowserManager.cleanupArtifacts().catch((error) => {
+    console.warn('Failed initial browser artifact cleanup:', error);
+  });
+
+  void mcpBrowserManager.status()
+    .then((status) => {
+      browserStatusTracker.signature = buildBrowserStatusSignature(status);
+      browserStatusTracker.hasBaseline = true;
+    })
+    .catch((error) => {
+      console.warn('Failed initial MCP browser status check:', error);
+    });
+
+  const browserCleanupInterval = setInterval(() => {
+    void mcpBrowserManager.cleanupArtifacts().catch((error) => {
+      console.warn('Failed periodic browser artifact cleanup:', error);
+    });
+  }, BROWSER_RETENTION_CLEANUP_INTERVAL_MS);
   
+
   // Register all built-in tools
   for (const tool of allBuiltinTools) {
     gateway.toolExecutor.registerTool(tool);
@@ -201,6 +259,16 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
     if (url.pathname === '/api/status') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(buildStatusPayload(gateway, config)));
+      return;
+    }
+
+    if (url.pathname === '/api/browser/latest') {
+      void serveLatestBrowserScreenshot(res, req.method, url, config.browser.artifactsPath);
+      return;
+    }
+
+    if (url.pathname === '/api/browser/image') {
+      void serveBrowserScreenshotByFilename(res, req.method, url, config.browser.artifactsPath);
       return;
     }
 
@@ -230,6 +298,7 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
     ws.send(JSON.stringify(buildSessionSnapshotPayload(gateway, webSessionId)));
 
     void sendModels(ws, gateway, llmState.provider);
+    void sendMcpBrowserStatus(ws, gateway, mcpBrowserManager, browserStatusTracker);
 
     ws.on('message', async (data) => {
       try {
@@ -415,6 +484,62 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
             }
             break;
           }
+
+          case 'get_mcp_browser_status': {
+            await sendMcpBrowserStatus(ws, gateway, mcpBrowserManager, browserStatusTracker);
+            break;
+          }
+
+          case 'setup_mcp_browser': {
+            try {
+              await mcpBrowserManager.setup();
+              await sendMcpBrowserStatus(ws, gateway, mcpBrowserManager, browserStatusTracker);
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Failed to install MCP browser server',
+              }));
+            }
+            break;
+          }
+
+          case 'remove_mcp_browser': {
+            try {
+              await mcpBrowserManager.remove();
+              await sendMcpBrowserStatus(ws, gateway, mcpBrowserManager, browserStatusTracker);
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Failed to remove MCP browser server',
+              }));
+            }
+            break;
+          }
+
+          case 'set_browser_policy': {
+            try {
+              await applyBrowserPolicyUpdate(config, {
+                domainPolicy: msg.domainPolicy,
+                domainAllowlist: msg.domainAllowlist,
+                domainBlocklist: msg.domainBlocklist,
+                traceRetentionDays: msg.traceRetentionDays,
+                mcpPlaywrightVersion: msg.mcpPlaywrightVersion,
+              });
+
+              const browserStatus = await mcpBrowserManager.status();
+              if (browserStatus.installed) {
+                await mcpBrowserManager.setup();
+              }
+
+              await sendMcpBrowserStatus(ws, gateway, mcpBrowserManager, browserStatusTracker);
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Failed to update browser policy',
+              }));
+            }
+            break;
+          }
         }
       } catch (error) {
         console.error('WebSocket message error:', error);
@@ -478,6 +603,10 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
       });
     }
   });
+
+  server.on('close', () => {
+    clearInterval(browserCleanupInterval);
+  });
 }
 
 function broadcast(wss: WebSocketServer, data: object): void {
@@ -499,6 +628,7 @@ export function buildStatusPayload(gateway: Gateway, config: KeygateConfig): Rec
     spicyObedienceEnabled: gateway.getSpicyMaxObedienceEnabled(),
     llm: gateway.getLLMState(),
     discord: buildDiscordConfigView(config),
+    browser: buildBrowserConfigViewFromConfig(config),
   };
 }
 
@@ -516,6 +646,7 @@ export function buildConnectedPayload(
     spicyObedienceEnabled: gateway.getSpicyMaxObedienceEnabled(),
     llm: llmState,
     discord: buildDiscordConfigView(config),
+    browser: buildBrowserConfigViewFromConfig(config),
   };
 }
 
@@ -677,6 +808,150 @@ export async function applyDiscordConfigUpdate(
   return buildDiscordConfigView(config);
 }
 
+export async function applyBrowserPolicyUpdate(
+  config: KeygateConfig,
+  update: {
+    domainPolicy?: BrowserDomainPolicy;
+    domainAllowlist?: string[] | string;
+    domainBlocklist?: string[] | string;
+    traceRetentionDays?: number;
+    mcpPlaywrightVersion?: string;
+  },
+  persistConfigUpdate: typeof updateKeygateFile = updateKeygateFile
+): Promise<BrowserConfigView> {
+  const nextDomainPolicy = normalizeBrowserDomainPolicy(update.domainPolicy ?? config.browser.domainPolicy);
+  const nextAllowlist = update.domainAllowlist === undefined
+    ? [...config.browser.domainAllowlist]
+    : parseBrowserOrigins(update.domainAllowlist);
+  const nextBlocklist = update.domainBlocklist === undefined
+    ? [...config.browser.domainBlocklist]
+    : parseBrowserOrigins(update.domainBlocklist);
+  const nextRetentionDays = parseTraceRetentionDays(update.traceRetentionDays, config.browser.traceRetentionDays);
+  const nextPlaywrightVersion = normalizePlaywrightVersion(update.mcpPlaywrightVersion, config.browser.mcpPlaywrightVersion);
+
+  if (nextDomainPolicy === 'allowlist' && nextAllowlist.length === 0) {
+    throw new Error('Allowlist policy requires at least one allowed origin.');
+  }
+
+  if (nextDomainPolicy === 'blocklist' && nextBlocklist.length === 0) {
+    throw new Error('Blocklist policy requires at least one blocked origin.');
+  }
+
+  await persistConfigUpdate({
+    BROWSER_DOMAIN_POLICY: nextDomainPolicy,
+    BROWSER_DOMAIN_ALLOWLIST: nextAllowlist.join(', '),
+    BROWSER_DOMAIN_BLOCKLIST: nextBlocklist.join(', '),
+    BROWSER_TRACE_RETENTION_DAYS: String(nextRetentionDays),
+    MCP_PLAYWRIGHT_VERSION: nextPlaywrightVersion,
+  });
+
+  config.browser.domainPolicy = nextDomainPolicy;
+  config.browser.domainAllowlist = nextAllowlist;
+  config.browser.domainBlocklist = nextBlocklist;
+  config.browser.traceRetentionDays = nextRetentionDays;
+  config.browser.mcpPlaywrightVersion = nextPlaywrightVersion;
+
+  process.env['BROWSER_DOMAIN_POLICY'] = nextDomainPolicy;
+  process.env['BROWSER_DOMAIN_ALLOWLIST'] = nextAllowlist.join(', ');
+  process.env['BROWSER_DOMAIN_BLOCKLIST'] = nextBlocklist.join(', ');
+  process.env['BROWSER_TRACE_RETENTION_DAYS'] = String(nextRetentionDays);
+  process.env['MCP_PLAYWRIGHT_VERSION'] = nextPlaywrightVersion;
+
+  return buildBrowserConfigViewFromConfig(config);
+}
+
+function parseBrowserOrigins(value: string[] | string): string[] {
+  if (Array.isArray(value)) {
+    return Array.from(new Set(
+      value
+        .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+        .filter((entry) => entry.length > 0)
+    ));
+  }
+
+  return Array.from(new Set(
+    value
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0)
+  ));
+}
+
+function normalizeBrowserDomainPolicy(value: unknown): BrowserDomainPolicy {
+  if (typeof value !== 'string') {
+    return 'none';
+  }
+
+  switch (value.trim().toLowerCase()) {
+    case 'allowlist':
+      return 'allowlist';
+    case 'blocklist':
+      return 'blocklist';
+    default:
+      return 'none';
+  }
+}
+
+function parseTraceRetentionDays(value: unknown, fallback: number): number {
+  const parsed = typeof value === 'number'
+    ? value
+    : Number.parseInt(typeof value === 'string' ? value : '', 10);
+
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return fallback;
+  }
+
+  return Math.floor(parsed);
+}
+
+function normalizePlaywrightVersion(value: unknown, fallback: string): string {
+  if (typeof value !== 'string') {
+    return fallback;
+  }
+
+  const normalized = value.trim();
+  if (!normalized) {
+    return fallback;
+  }
+
+  return normalized;
+}
+
+function buildBrowserConfigViewFromConfig(config: KeygateConfig): BrowserConfigView {
+  return {
+    installed: false,
+    healthy: false,
+    serverName: 'playwright',
+    configuredVersion: null,
+    desiredVersion: config.browser.mcpPlaywrightVersion,
+    domainPolicy: config.browser.domainPolicy,
+    domainAllowlist: [...config.browser.domainAllowlist],
+    domainBlocklist: [...config.browser.domainBlocklist],
+    traceRetentionDays: config.browser.traceRetentionDays,
+    artifactsPath: path.resolve(config.browser.artifactsPath),
+    command: null,
+    args: [],
+  };
+}
+
+function toBrowserConfigView(status: MCPBrowserStatus): BrowserConfigView {
+  return {
+    installed: status.installed,
+    healthy: status.healthy,
+    serverName: status.serverName,
+    configuredVersion: status.configuredVersion,
+    desiredVersion: status.desiredVersion,
+    domainPolicy: status.domainPolicy,
+    domainAllowlist: [...status.domainAllowlist],
+    domainBlocklist: [...status.domainBlocklist],
+    traceRetentionDays: status.traceRetentionDays,
+    artifactsPath: status.artifactsPath,
+    command: status.command,
+    args: [...status.args],
+    warning: status.warning,
+  };
+}
+
 function serializeSessionSnapshotEntry(session: Session): SessionSnapshotEntryView {
   return {
     sessionId: session.id,
@@ -715,6 +990,72 @@ async function sendModels(
   }
 }
 
+
+export async function sendMcpBrowserStatus(
+  ws: WebSocket,
+  gateway: Gateway,
+  manager: MCPBrowserManager,
+  tracker: BrowserStatusTracker
+): Promise<void> {
+  const status = await manager.status();
+  await maybeRefreshCodexProviderForBrowserStatusChange(gateway, status, tracker);
+
+  ws.send(JSON.stringify({
+    type: 'mcp_browser_status',
+    browser: toBrowserConfigView(status),
+  }));
+}
+
+export function buildBrowserStatusSignature(status: MCPBrowserStatus): string {
+  const command = status.command ?? '';
+  const args = status.args.join('\u001f');
+  return [
+    status.installed ? '1' : '0',
+    status.healthy ? '1' : '0',
+    status.configuredVersion ?? '',
+    status.desiredVersion,
+    command,
+    args,
+  ].join('|');
+}
+
+export async function maybeRefreshCodexProviderForBrowserStatusChange(
+  gateway: Gateway,
+  status: MCPBrowserStatus,
+  tracker: BrowserStatusTracker
+): Promise<void> {
+  const nextSignature = buildBrowserStatusSignature(status);
+
+  if (!tracker.hasBaseline) {
+    tracker.signature = nextSignature;
+    tracker.hasBaseline = true;
+    return;
+  }
+
+  if (tracker.signature === nextSignature) {
+    return;
+  }
+
+  tracker.signature = nextSignature;
+  await refreshCodexProviderContext(gateway);
+}
+
+async function refreshCodexProviderContext(gateway: Gateway): Promise<void> {
+  const llmState = gateway.getLLMState();
+  if (llmState.provider !== 'openai-codex') {
+    return;
+  }
+
+  try {
+    await gateway.setLLMSelection(
+      llmState.provider,
+      llmState.model,
+      llmState.reasoningEffort
+    );
+  } catch (error) {
+    console.warn('Failed to refresh Codex provider context after MCP browser change:', error);
+  }
+}
 function isCodexInstalled(): boolean {
   const result = spawnSync('codex', ['--version'], {
     stdio: 'pipe',
@@ -783,6 +1124,311 @@ function parseDiscordPrefixes(value: string | undefined): string[] {
     .filter((prefix) => prefix.length > 0);
 }
 
+
+async function serveLatestBrowserScreenshot(
+  res: import('node:http').ServerResponse,
+  method: string | undefined,
+  url: URL,
+  artifactsRoot: string
+): Promise<void> {
+  if (method && !['GET', 'HEAD'].includes(method)) {
+    res.writeHead(405, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Method not allowed' }));
+    return;
+  }
+
+  const sessionId = sanitizeBrowserSessionId(url.searchParams.get('sessionId'));
+  if (!sessionId) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Valid sessionId query parameter is required.' }));
+    return;
+  }
+
+  const latestScreenshot = await resolveLatestSessionScreenshot(artifactsRoot, sessionId);
+  if (!latestScreenshot) {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'No screenshot found for session.' }));
+    return;
+  }
+
+  const allowedRoots = getBrowserScreenshotAllowedRoots(artifactsRoot);
+  if (!allowedRoots.some((rootDir) => isPathWithinRoot(rootDir, latestScreenshot))) {
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Screenshot path is outside the allowed root.' }));
+    return;
+  }
+
+  const contentType = getContentType(latestScreenshot);
+  res.writeHead(200, {
+    'Content-Type': contentType,
+    'Cache-Control': 'no-cache',
+  });
+
+  if (method === 'HEAD') {
+    res.end();
+    return;
+  }
+
+  const content = await fs.readFile(latestScreenshot);
+  res.end(content);
+}
+
+async function serveBrowserScreenshotByFilename(
+  res: import('node:http').ServerResponse,
+  method: string | undefined,
+  url: URL,
+  artifactsRoot: string
+): Promise<void> {
+  if (method && !['GET', 'HEAD'].includes(method)) {
+    res.writeHead(405, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Method not allowed' }));
+    return;
+  }
+
+  const filename = sanitizeBrowserScreenshotFilename(url.searchParams.get('filename'));
+  if (!filename) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Valid filename query parameter is required.' }));
+    return;
+  }
+
+  const screenshot = await resolveSessionScreenshotByFilename(artifactsRoot, filename);
+  if (!screenshot) {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Screenshot not found.' }));
+    return;
+  }
+
+  const allowedRoots = getBrowserScreenshotAllowedRoots(artifactsRoot);
+  if (!allowedRoots.some((rootDir) => isPathWithinRoot(rootDir, screenshot))) {
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Screenshot path is outside the allowed root.' }));
+    return;
+  }
+
+  const contentType = getContentType(screenshot);
+  res.writeHead(200, {
+    'Content-Type': contentType,
+    'Cache-Control': 'no-cache',
+  });
+
+  if (method === 'HEAD') {
+    res.end();
+    return;
+  }
+
+  const content = await fs.readFile(screenshot);
+  res.end(content);
+}
+
+export function sanitizeBrowserSessionId(value: string | null): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (!/^[A-Za-z0-9:_-]+$/.test(trimmed)) {
+    return null;
+  }
+
+  return trimmed;
+}
+
+export function sanitizeBrowserScreenshotFilename(value: string | null): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (!/^session-[A-Za-z0-9:_-]+-step-\d+\.png$/i.test(trimmed)) {
+    return null;
+  }
+
+  if (trimmed.includes('/') || trimmed.includes('\\')) {
+    return null;
+  }
+
+  return trimmed;
+}
+
+export async function resolveLatestSessionScreenshot(
+  artifactsRoot: string,
+  sessionId: string
+): Promise<string | null> {
+  const [resolvedArtifactsRoot, resolvedWorkspaceRoot] = getBrowserScreenshotAllowedRoots(artifactsRoot);
+  const prefix = `session-${sessionId}-step-`;
+
+  let bestPath: string | null = null;
+  let bestMtime = 0;
+
+  async function considerCandidate(fullPath: string, filename: string): Promise<void> {
+    if (!filename.toLowerCase().endsWith('.png')) {
+      return;
+    }
+
+    if (!filename.startsWith(prefix)) {
+      return;
+    }
+
+    try {
+      const stat = await fs.stat(fullPath);
+      if (stat.mtimeMs > bestMtime) {
+        bestMtime = stat.mtimeMs;
+        bestPath = fullPath;
+      }
+    } catch {
+      // Ignore unreadable files.
+    }
+  }
+
+  async function walkArtifacts(dir: string): Promise<void> {
+    let entries: import('node:fs').Dirent[] = [];
+
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.resolve(path.join(dir, entry.name));
+      if (!isPathWithinRoot(resolvedArtifactsRoot, fullPath)) {
+        continue;
+      }
+
+      if (entry.isDirectory()) {
+        await walkArtifacts(fullPath);
+        continue;
+      }
+
+      if (!entry.isFile()) {
+        continue;
+      }
+
+      await considerCandidate(fullPath, entry.name);
+    }
+  }
+
+  async function scanWorkspaceRoot(): Promise<void> {
+    let entries: import('node:fs').Dirent[] = [];
+
+    try {
+      entries = await fs.readdir(resolvedWorkspaceRoot, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isFile()) {
+        continue;
+      }
+
+      const fullPath = path.resolve(path.join(resolvedWorkspaceRoot, entry.name));
+      if (!isPathWithinRoot(resolvedWorkspaceRoot, fullPath)) {
+        continue;
+      }
+
+      await considerCandidate(fullPath, entry.name);
+    }
+  }
+
+  await walkArtifacts(resolvedArtifactsRoot);
+  await scanWorkspaceRoot();
+  return bestPath;
+}
+
+export async function resolveSessionScreenshotByFilename(
+  artifactsRoot: string,
+  filename: string
+): Promise<string | null> {
+  const [resolvedArtifactsRoot, resolvedWorkspaceRoot] = getBrowserScreenshotAllowedRoots(artifactsRoot);
+
+  let bestPath: string | null = null;
+  let bestMtime = 0;
+  const targetName = filename.toLowerCase();
+
+  async function considerCandidate(fullPath: string, candidateName: string): Promise<void> {
+    if (candidateName.toLowerCase() !== targetName) {
+      return;
+    }
+
+    try {
+      const stat = await fs.stat(fullPath);
+      if (stat.mtimeMs > bestMtime) {
+        bestMtime = stat.mtimeMs;
+        bestPath = fullPath;
+      }
+    } catch {
+      // Ignore unreadable files.
+    }
+  }
+
+  async function walkArtifacts(dir: string): Promise<void> {
+    let entries: import('node:fs').Dirent[] = [];
+
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.resolve(path.join(dir, entry.name));
+      if (!isPathWithinRoot(resolvedArtifactsRoot, fullPath)) {
+        continue;
+      }
+
+      if (entry.isDirectory()) {
+        await walkArtifacts(fullPath);
+        continue;
+      }
+
+      if (!entry.isFile()) {
+        continue;
+      }
+
+      await considerCandidate(fullPath, entry.name);
+    }
+  }
+
+  async function scanWorkspaceRoot(): Promise<void> {
+    const fullPath = path.resolve(path.join(resolvedWorkspaceRoot, filename));
+    if (!isPathWithinRoot(resolvedWorkspaceRoot, fullPath)) {
+      return;
+    }
+
+    await considerCandidate(fullPath, path.basename(fullPath));
+  }
+
+  await walkArtifacts(resolvedArtifactsRoot);
+  await scanWorkspaceRoot();
+  return bestPath;
+}
+
+export function getBrowserScreenshotAllowedRoots(artifactsRoot: string): [string, string] {
+  const resolvedArtifactsRoot = path.resolve(artifactsRoot);
+  const resolvedWorkspaceRoot = path.resolve(path.join(resolvedArtifactsRoot, '..'));
+  return [resolvedArtifactsRoot, resolvedWorkspaceRoot];
+}
+
+export function isPathWithinRoot(rootDir: string, targetPath: string): boolean {
+  const resolvedRoot = path.resolve(rootDir);
+  const resolvedTarget = path.resolve(targetPath);
+
+  if (resolvedTarget === resolvedRoot) {
+    return true;
+  }
+
+  return resolvedTarget.startsWith(`${resolvedRoot}${path.sep}`);
+}
 async function serveStaticAsset(
   res: import('node:http').ServerResponse,
   staticAssetsDir: string,

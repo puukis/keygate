@@ -2,10 +2,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import dotenv from 'dotenv';
-import type { CodexReasoningEffort, KeygateConfig } from '../types.js';
+import type { BrowserDomainPolicy, CodexReasoningEffort, KeygateConfig } from '../types.js';
 
 const DEFAULT_ALLOWED_BINARIES = ['git', 'ls', 'npm', 'cat', 'node', 'python3'];
 const DEFAULT_DISCORD_PREFIX = '!keygate ';
+const DEFAULT_BROWSER_TRACE_RETENTION_DAYS = 7;
+const DEFAULT_MCP_PLAYWRIGHT_VERSION = '0.0.64';
+const DEFAULT_BROWSER_ARTIFACTS_DIRNAME = '.keygate-browser-runs';
 
 export function getConfigHomeDir(): string {
   if (process.platform === 'win32') {
@@ -57,6 +60,16 @@ export function loadConfigFromEnv(): KeygateConfig {
     spicyModeEnabled && process.env['SPICY_MAX_OBEDIENCE_ENABLED'] === 'true';
   const discordPrefix = normalizeDiscordPrefix(process.env['DISCORD_PREFIX']);
 
+  const domainPolicy = normalizeBrowserDomainPolicy(process.env['BROWSER_DOMAIN_POLICY']);
+  const domainAllowlist = parseDomainList(process.env['BROWSER_DOMAIN_ALLOWLIST']);
+  const domainBlocklist = parseDomainList(process.env['BROWSER_DOMAIN_BLOCKLIST']);
+  const traceRetentionDays = parsePositiveInteger(
+    process.env['BROWSER_TRACE_RETENTION_DAYS'],
+    DEFAULT_BROWSER_TRACE_RETENTION_DAYS
+  );
+  const mcpPlaywrightVersion = normalizeMcpPlaywrightVersion(process.env['MCP_PLAYWRIGHT_VERSION']);
+  const artifactsPath = resolveBrowserArtifactsPath(workspacePath);
+
   return {
     llm: {
       provider,
@@ -78,6 +91,14 @@ export function loadConfigFromEnv(): KeygateConfig {
     },
     server: {
       port: parseInt(process.env['PORT'] ?? '18790', 10),
+    },
+    browser: {
+      domainPolicy,
+      domainAllowlist,
+      domainBlocklist,
+      traceRetentionDays,
+      mcpPlaywrightVersion,
+      artifactsPath,
     },
     discord: {
       token: process.env['DISCORD_TOKEN'] ?? '',
@@ -102,6 +123,11 @@ function resolveWorkspacePath(value: string | undefined): string {
   }
 
   return expanded;
+}
+
+function resolveBrowserArtifactsPath(workspacePath: string): string {
+  const resolvedWorkspace = path.resolve(expandHomePath(workspacePath));
+  return path.join(resolvedWorkspace, DEFAULT_BROWSER_ARTIFACTS_DIRNAME);
 }
 
 function expandHomePath(value: string): string {
@@ -193,6 +219,47 @@ function normalizeCodexReasoningEffort(value: string | undefined): CodexReasonin
     default:
       return undefined;
   }
+}
+
+function normalizeBrowserDomainPolicy(value: string | undefined): BrowserDomainPolicy {
+  switch (value?.trim().toLowerCase()) {
+    case 'allowlist':
+      return 'allowlist';
+    case 'blocklist':
+      return 'blocklist';
+    case 'none':
+    default:
+      return 'none';
+  }
+}
+
+function parseDomainList(value: string | undefined): string[] {
+  if (typeof value !== 'string') {
+    return [];
+  }
+
+  return value
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0);
+}
+
+function parsePositiveInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? '', 10);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return fallback;
+  }
+
+  return parsed;
+}
+
+function normalizeMcpPlaywrightVersion(value: string | undefined): string {
+  const normalized = value?.trim();
+  if (!normalized) {
+    return DEFAULT_MCP_PLAYWRIGHT_VERSION;
+  }
+
+  return normalized;
 }
 
 export function getDefaultModelForProvider(provider: KeygateConfig['llm']['provider']): string {

@@ -72,4 +72,37 @@ describe('loadConfigFromEnv', () => {
 
     expect(config.discord?.prefix).toBe('1, 2, 3, 4');
   });
+
+  it('applies default browser config values when env is unset', () => {
+    const config = loadConfigFromEnv();
+
+    expect(config.browser.domainPolicy).toBe('none');
+    expect(config.browser.domainAllowlist).toEqual([]);
+    expect(config.browser.domainBlocklist).toEqual([]);
+    expect(config.browser.traceRetentionDays).toBe(7);
+    expect(config.browser.mcpPlaywrightVersion).toBe('0.0.64');
+    expect(config.browser.artifactsPath).toContain('.keygate-browser-runs');
+  });
+
+  it('parses browser policy values from environment', () => {
+    vi.stubEnv('BROWSER_DOMAIN_POLICY', 'allowlist');
+    vi.stubEnv('BROWSER_DOMAIN_ALLOWLIST', 'https://example.com, https://docs.example.com');
+    vi.stubEnv('BROWSER_DOMAIN_BLOCKLIST', 'https://evil.com, , https://ads.example');
+    vi.stubEnv('BROWSER_TRACE_RETENTION_DAYS', '14');
+    vi.stubEnv('MCP_PLAYWRIGHT_VERSION', '0.0.99');
+
+    const config = loadConfigFromEnv();
+
+    expect(config.browser.domainPolicy).toBe('allowlist');
+    expect(config.browser.domainAllowlist).toEqual([
+      'https://example.com',
+      'https://docs.example.com',
+    ]);
+    expect(config.browser.domainBlocklist).toEqual([
+      'https://evil.com',
+      'https://ads.example',
+    ]);
+    expect(config.browser.traceRetentionDays).toBe(14);
+    expect(config.browser.mcpPlaywrightVersion).toBe('0.0.99');
+  });
 });

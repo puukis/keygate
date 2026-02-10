@@ -1,3 +1,6 @@
+import os from 'node:os';
+import path from 'node:path';
+import { promises as fs } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import {
   WebSocketChannel,
@@ -5,11 +8,19 @@ import {
   applySpicyModeEnable,
   applySpicyObedienceUpdate,
   buildSessionChunkPayload,
+  buildBrowserStatusSignature,
   buildConnectedPayload,
   buildSessionMessageEndPayload,
   buildSessionSnapshotPayload,
   buildSessionUserMessagePayload,
   buildStatusPayload,
+  applyBrowserPolicyUpdate,
+  isPathWithinRoot,
+  maybeRefreshCodexProviderForBrowserStatusChange,
+  resolveLatestSessionScreenshot,
+  resolveSessionScreenshotByFilename,
+  sanitizeBrowserScreenshotFilename,
+  sanitizeBrowserSessionId,
 } from '../index.js';
 describe('server spicy obedience payloads', () => {
   it('includes spicyObedienceEnabled in connected payload', () => {
@@ -23,6 +34,14 @@ describe('server spicy obedience payloads', () => {
       discord: {
         token: 'discord-token',
         prefix: '!kg ',
+      },
+      browser: {
+        domainPolicy: 'none',
+        domainAllowlist: [],
+        domainBlocklist: [],
+        traceRetentionDays: 7,
+        mcpPlaywrightVersion: '0.0.64',
+        artifactsPath: '/tmp/keygate-browser',
       },
     } as any;
 
@@ -48,6 +67,14 @@ describe('server spicy obedience payloads', () => {
       discord: {
         token: '',
         prefix: '!keygate ',
+      },
+      browser: {
+        domainPolicy: 'none',
+        domainAllowlist: [],
+        domainBlocklist: [],
+        traceRetentionDays: 7,
+        mcpPlaywrightVersion: '0.0.64',
+        artifactsPath: '/tmp/keygate-browser',
       },
     } as any;
 
@@ -456,5 +483,253 @@ describe('WebSocketChannel confirmation flow', () => {
 
     await expect(first).resolves.toBe('cancel');
     await expect(second).resolves.toBe('cancel');
+  });
+});
+
+describe('browser policy update', () => {
+  it('persists browser policy settings and updates in-memory config', async () => {
+    const config = {
+      browser: {
+        domainPolicy: 'none',
+        domainAllowlist: [],
+        domainBlocklist: [],
+        traceRetentionDays: 7,
+        mcpPlaywrightVersion: '0.0.64',
+        artifactsPath: '/tmp/keygate-browser',
+      },
+    } as any;
+
+    const persistEnvUpdate = vi.fn(async () => undefined);
+
+    const view = await applyBrowserPolicyUpdate(
+      config,
+      {
+        domainPolicy: 'allowlist',
+        domainAllowlist: ['https://example.com', ' https://docs.example.com '],
+        traceRetentionDays: 10,
+        mcpPlaywrightVersion: '0.0.70',
+      },
+      persistEnvUpdate,
+    );
+
+    expect(persistEnvUpdate).toHaveBeenCalledWith({
+      BROWSER_DOMAIN_POLICY: 'allowlist',
+      BROWSER_DOMAIN_ALLOWLIST: 'https://example.com, https://docs.example.com',
+      BROWSER_DOMAIN_BLOCKLIST: '',
+      BROWSER_TRACE_RETENTION_DAYS: '10',
+      MCP_PLAYWRIGHT_VERSION: '0.0.70',
+    });
+
+    expect(config.browser).toMatchObject({
+      domainPolicy: 'allowlist',
+      domainAllowlist: ['https://example.com', 'https://docs.example.com'],
+      traceRetentionDays: 10,
+      mcpPlaywrightVersion: '0.0.70',
+    });
+
+    expect(view.domainPolicy).toBe('allowlist');
+    expect(view.desiredVersion).toBe('0.0.70');
+  });
+
+  it('rejects allowlist mode without domains', async () => {
+    const config = {
+      browser: {
+        domainPolicy: 'none',
+        domainAllowlist: [],
+        domainBlocklist: [],
+        traceRetentionDays: 7,
+        mcpPlaywrightVersion: '0.0.64',
+        artifactsPath: '/tmp/keygate-browser',
+      },
+    } as any;
+
+    await expect(
+      applyBrowserPolicyUpdate(
+        config,
+        {
+          domainPolicy: 'allowlist',
+          domainAllowlist: [],
+        },
+        async () => undefined,
+      ),
+    ).rejects.toThrow('Allowlist policy requires at least one allowed origin.');
+  });
+});
+
+describe('codex browser context refresh', () => {
+  function makeBrowserStatus(overrides: Partial<Record<string, unknown>> = {}): any {
+    return {
+      installed: true,
+      healthy: true,
+      serverName: 'playwright',
+      configuredVersion: '0.0.64',
+      desiredVersion: '0.0.64',
+      domainPolicy: 'none',
+      domainAllowlist: [],
+      domainBlocklist: [],
+      traceRetentionDays: 7,
+      artifactsPath: '/tmp/keygate-browser',
+      command: 'npx',
+      args: ['-y', '@playwright/mcp@0.0.64'],
+      ...overrides,
+    };
+  }
+
+  it('initializes tracker baseline without refreshing provider', async () => {
+    const gateway = {
+      getLLMState: vi.fn(() => ({
+        provider: 'openai-codex',
+        model: 'openai-codex/gpt-5.3',
+        reasoningEffort: 'medium',
+      })),
+      setLLMSelection: vi.fn(async () => undefined),
+    } as any;
+    const tracker = { hasBaseline: false, signature: null };
+    const status = makeBrowserStatus();
+
+    await maybeRefreshCodexProviderForBrowserStatusChange(gateway, status, tracker);
+
+    expect(tracker.hasBaseline).toBe(true);
+    expect(tracker.signature).toBe(buildBrowserStatusSignature(status));
+    expect(gateway.setLLMSelection).not.toHaveBeenCalled();
+  });
+
+  it('refreshes codex provider when browser status signature changes', async () => {
+    const gateway = {
+      getLLMState: vi.fn(() => ({
+        provider: 'openai-codex',
+        model: 'openai-codex/gpt-5.3',
+        reasoningEffort: 'medium',
+      })),
+      setLLMSelection: vi.fn(async () => undefined),
+    } as any;
+    const tracker = {
+      hasBaseline: true,
+      signature: buildBrowserStatusSignature(makeBrowserStatus()),
+    };
+    const nextStatus = makeBrowserStatus({
+      args: ['-y', '@playwright/mcp@0.0.70'],
+      configuredVersion: '0.0.70',
+      desiredVersion: '0.0.70',
+    });
+
+    await maybeRefreshCodexProviderForBrowserStatusChange(gateway, nextStatus, tracker);
+
+    expect(gateway.setLLMSelection).toHaveBeenCalledWith(
+      'openai-codex',
+      'openai-codex/gpt-5.3',
+      'medium'
+    );
+    expect(tracker.signature).toBe(buildBrowserStatusSignature(nextStatus));
+  });
+
+  it('does not refresh provider for non-codex LLM selection', async () => {
+    const gateway = {
+      getLLMState: vi.fn(() => ({
+        provider: 'openai',
+        model: 'gpt-4o',
+      })),
+      setLLMSelection: vi.fn(async () => undefined),
+    } as any;
+    const tracker = {
+      hasBaseline: true,
+      signature: buildBrowserStatusSignature(makeBrowserStatus({ configuredVersion: '0.0.64' })),
+    };
+    const nextStatus = makeBrowserStatus({
+      args: ['-y', '@playwright/mcp@0.0.70'],
+      configuredVersion: '0.0.70',
+      desiredVersion: '0.0.70',
+    });
+
+    await maybeRefreshCodexProviderForBrowserStatusChange(gateway, nextStatus, tracker);
+
+    expect(gateway.setLLMSelection).not.toHaveBeenCalled();
+    expect(tracker.signature).toBe(buildBrowserStatusSignature(nextStatus));
+  });
+});
+
+describe('browser screenshot security helpers', () => {
+  it('sanitizes session id input and rejects traversal patterns', () => {
+    expect(sanitizeBrowserSessionId('web:123')).toBe('web:123');
+    expect(sanitizeBrowserSessionId('../etc/passwd')).toBeNull();
+    expect(sanitizeBrowserSessionId('web:abc/def')).toBeNull();
+  });
+
+  it('finds the latest screenshot for a session prefix', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'keygate-screenshots-'));
+    const first = path.join(root, 'session-web:1-step-1.png');
+    const second = path.join(root, 'session-web:1-step-2.png');
+    const other = path.join(root, 'session-web:2-step-1.png');
+
+    await fs.writeFile(first, 'first', 'utf8');
+    await fs.writeFile(second, 'second', 'utf8');
+    await fs.writeFile(other, 'other', 'utf8');
+
+    const firstTime = new Date(Date.now() - 30_000);
+    const secondTime = new Date(Date.now() - 5_000);
+    const otherTime = new Date(Date.now() - 1_000);
+
+    await fs.utimes(first, firstTime, firstTime);
+    await fs.utimes(second, secondTime, secondTime);
+    await fs.utimes(other, otherTime, otherTime);
+
+    const latest = await resolveLatestSessionScreenshot(root, 'web:1');
+    expect(latest).toBe(path.resolve(second));
+  });
+
+  it('finds legacy workspace-root screenshots using artifacts path input', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'keygate-workspace-'));
+    const artifactsRoot = path.join(workspaceRoot, '.keygate-browser-runs');
+    await fs.mkdir(artifactsRoot, { recursive: true });
+
+    const artifactsFile = path.join(artifactsRoot, 'session-web:1-step-1.png');
+    const legacyRootFile = path.join(workspaceRoot, 'session-web:1-step-2.png');
+
+    await fs.writeFile(artifactsFile, 'artifact', 'utf8');
+    await fs.writeFile(legacyRootFile, 'legacy', 'utf8');
+
+    const artifactsTime = new Date(Date.now() - 30_000);
+    const legacyTime = new Date(Date.now() - 1_000);
+    await fs.utimes(artifactsFile, artifactsTime, artifactsTime);
+    await fs.utimes(legacyRootFile, legacyTime, legacyTime);
+
+    const latest = await resolveLatestSessionScreenshot(artifactsRoot, 'web:1');
+    expect(latest).toBe(path.resolve(legacyRootFile));
+  });
+
+  it('sanitizes screenshot filename input and rejects traversal patterns', () => {
+    expect(sanitizeBrowserScreenshotFilename('session-web:123-step-1.png')).toBe('session-web:123-step-1.png');
+    expect(sanitizeBrowserScreenshotFilename('../session-web:123-step-1.png')).toBeNull();
+    expect(sanitizeBrowserScreenshotFilename('session-web:123-step-1.jpg')).toBeNull();
+    expect(sanitizeBrowserScreenshotFilename('')).toBeNull();
+  });
+
+  it('resolves exact screenshot file by filename across browser roots', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'keygate-workspace-file-'));
+    const artifactsRoot = path.join(workspaceRoot, '.keygate-browser-runs');
+    await fs.mkdir(artifactsRoot, { recursive: true });
+
+    const artifactsFile = path.join(artifactsRoot, 'session-web:1-step-1.png');
+    const workspaceFile = path.join(workspaceRoot, 'session-web:1-step-1.png');
+
+    await fs.writeFile(artifactsFile, 'artifact', 'utf8');
+    await fs.writeFile(workspaceFile, 'workspace', 'utf8');
+
+    const artifactsTime = new Date(Date.now() - 30_000);
+    const workspaceTime = new Date(Date.now() - 1_000);
+    await fs.utimes(artifactsFile, artifactsTime, artifactsTime);
+    await fs.utimes(workspaceFile, workspaceTime, workspaceTime);
+
+    const resolved = await resolveSessionScreenshotByFilename(
+      artifactsRoot,
+      'session-web:1-step-1.png'
+    );
+    expect(resolved).toBe(path.resolve(workspaceFile));
+  });
+
+  it('rejects out-of-root paths', () => {
+    const root = '/tmp/keygate-browser-root';
+    expect(isPathWithinRoot(root, '/tmp/keygate-browser-root/session-web:1-step-1.png')).toBe(true);
+    expect(isPathWithinRoot(root, '/tmp/keygate-browser-root/../secret.png')).toBe(false);
   });
 });

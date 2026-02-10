@@ -279,6 +279,11 @@ describe('OpenAICodexProvider', () => {
     expect(observedTurnInputText).toContain('Bootstrap rules here');
     expect(observedTurnInputText).toContain('USER MESSAGE:');
     expect(observedTurnInputText).toContain('hello codex');
+    expect(observedTurnInputText).toContain('MODEL IDENTITY (KEYGATE PROJECT): You are Keygate\'s AI assistant.');
+    expect(observedTurnInputText).toContain('browser_snapshot');
+    expect(observedTurnInputText).toContain('browser_take_screenshot');
+    expect(observedTurnInputText).toContain('session-session-abc-step-<n>.png');
+    expect(observedTurnInputText).toContain('SAFE MODE: Before mutating browser actions, ask for explicit user confirmation in chat');
 
     await provider.dispose();
   });

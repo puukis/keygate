@@ -4,6 +4,11 @@ import './LiveActivityLog.css';
 
 interface LiveActivityLogProps {
   events: ToolEvent[];
+  latestScreenshot?: {
+    sessionId: string;
+    imageUrl: string;
+    capturedAt: Date | null;
+  } | null;
 }
 
 const MAX_VISIBLE_EVENTS = 24;
@@ -16,7 +21,7 @@ function truncateText(value: string, maxLength: number): string {
   return `${value.slice(0, maxLength)}...`;
 }
 
-export function LiveActivityLog({ events }: LiveActivityLogProps) {
+export function LiveActivityLog({ events, latestScreenshot }: LiveActivityLogProps) {
   const [showProviderEvents, setShowProviderEvents] = useState(false);
   const [showAllEvents, setShowAllEvents] = useState(false);
 
@@ -55,6 +60,22 @@ export function LiveActivityLog({ events }: LiveActivityLogProps) {
           </span>
         )}
       </div>
+
+      {latestScreenshot && (
+        <div className="latest-screenshot-card animate-slide-in">
+          <div className="latest-screenshot-header">
+            <strong>Latest Browser Screenshot</strong>
+            <span>{latestScreenshot.capturedAt ? latestScreenshot.capturedAt.toLocaleTimeString() : 'just now'}</span>
+          </div>
+          <div className="latest-screenshot-meta">Session: {latestScreenshot.sessionId}</div>
+          <img
+            src={latestScreenshot.imageUrl}
+            alt={`Latest browser capture for ${latestScreenshot.sessionId}`}
+            className="latest-screenshot-image"
+            loading="lazy"
+          />
+        </div>
+      )}
 
       <div className="events-list">
         {visibleEvents.length === 0 ? (

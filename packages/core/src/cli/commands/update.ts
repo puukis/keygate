@@ -2,6 +2,8 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { hasFlag, type ParsedArgs } from '../argv.js';
+import { loadConfigFromEnv } from '../../config/env.js';
+import { MCPBrowserManager } from '../../codex/mcpBrowserManager.js';
 
 interface NpmInstallInfo {
   packageName: string;
@@ -28,6 +30,9 @@ export async function runUpdateCommand(args: ParsedArgs): Promise<void> {
       throw new Error('Detected npm install mode but could not resolve installed package.');
     }
     updateNpmInstall(npmInstall, checkOnly);
+    if (!checkOnly) {
+      await reapplyMcpBrowserConfig();
+    }
     return;
   }
 
@@ -36,6 +41,9 @@ export async function runUpdateCommand(args: ParsedArgs): Promise<void> {
       throw new Error('Detected github install mode but could not resolve repository path.');
     }
     updateGithubInstall(repoRoot, checkOnly);
+    if (!checkOnly) {
+      await reapplyMcpBrowserConfig();
+    }
     return;
   }
 
@@ -43,6 +51,25 @@ export async function runUpdateCommand(args: ParsedArgs): Promise<void> {
     'Could not determine installation mode. If installed via npm, reinstall with npm. ' +
       'If installed via source, run the latest install script to restore launcher metadata.'
   );
+}
+
+async function reapplyMcpBrowserConfig(): Promise<void> {
+  try {
+    const config = loadConfigFromEnv();
+    const manager = new MCPBrowserManager(config);
+    const currentStatus = await manager.status();
+
+    if (!currentStatus.installed) {
+      return;
+    }
+
+    const refreshedStatus = await manager.update();
+    console.log('Re-applied MCP browser config after update.');
+    console.log('- playwright version: ' + refreshedStatus.desiredVersion);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn('Warning: failed to re-apply MCP browser config after update: ' + message);
+  }
 }
 
 function resolveInstallMode(repoRoot: string | undefined, npmInstall: NpmInstallInfo | undefined): InstallMode {

@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Message, StreamActivity } from '../App';
+import { buildScreenshotImageUrl, extractScreenshotFilenamesFromText } from '../browserPreview';
 import { parseMessageSegments } from './messageContent';
 import './ChatView.css';
 
@@ -15,12 +16,25 @@ interface ChatViewProps {
   readOnlyHint?: string;
 }
 
+interface MessageRowProps {
+  msg: Message;
+  copiedCodeBlockId: string | null;
+  onCopyCode: (blockId: string, code: string) => Promise<void> | void;
+}
+
 const STARTER_PROMPTS = [
   'Summarize the latest project changes and open tasks.',
   'Check the repo for security risks and suggest quick fixes.',
   'Write a deployment checklist for today\'s release.',
   'Draft a concise standup update from current progress.',
 ];
+
+const AUTO_SCROLL_THRESHOLD_PX = 80;
+
+function isNearBottom(container: HTMLDivElement): boolean {
+  const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+  return distanceFromBottom <= AUTO_SCROLL_THRESHOLD_PX;
+}
 
 export function ChatView({
   messages,
@@ -33,7 +47,8 @@ export function ChatView({
 }: ChatViewProps) {
   const [input, setInput] = useState('');
   const [copiedCodeBlockId, setCopiedCodeBlockId] = useState<string | null>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const shouldAutoScrollRef = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const copyResetTimeoutRef = useRef<number | null>(null);
   const hasStreamingMessage = messages.some((msg) => msg.id === 'streaming');
@@ -49,8 +64,31 @@ export function ChatView({
   }, []);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const container = messagesContainerRef.current;
+    if (!container || !shouldAutoScrollRef.current) {
+      return;
+    }
+
+    container.scrollTo({ top: container.scrollHeight, behavior: 'auto' });
   }, [messages, isStreaming]);
+
+  useEffect(() => {
+    const container = messagesContainerRef.current;
+    if (!container) {
+      return;
+    }
+
+    const handleScroll = () => {
+      shouldAutoScrollRef.current = isNearBottom(container);
+    };
+
+    handleScroll();
+    container.addEventListener('scroll', handleScroll, { passive: true });
+
+    return () => {
+      container.removeEventListener('scroll', handleScroll);
+    };
+  }, []);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -103,7 +141,7 @@ export function ChatView({
           {readOnlyHint}
         </div>
       )}
-      <div className="messages-container">
+      <div className="messages-container" ref={messagesContainerRef}>
         {messages.length === 0 ? (
           <div className="empty-state animate-slide-in">
             <p className="empty-kicker">Ready</p>
@@ -128,75 +166,12 @@ export function ChatView({
         ) : (
           <>
             {messages.map((msg) => (
-              <div
+              <MessageRow
                 key={msg.id}
-                className={`message ${msg.role} animate-slide-in`}
-              >
-                <div className="message-avatar" aria-hidden="true">
-                  {msg.role === 'user' ? 'U' : 'K'}
-                </div>
-                <div className="message-content">
-                  <div className="message-header">
-                    <span className="message-role">
-                      {msg.role === 'user' ? 'You' : 'Keygate'}
-                    </span>
-                    <span className="message-time">
-                      {msg.timestamp.toLocaleTimeString()}
-                    </span>
-                  </div>
-                  <div className="message-bubble">
-                    <div className="message-rendered">
-                      {parseMessageSegments(msg.content).map((segment, segmentIndex) => {
-                        const key = `${msg.id}:${segmentIndex}`;
-                        if (segment.type === 'text') {
-                          if (segment.content.length === 0) {
-                            return null;
-                          }
-
-                          return (
-                            <div key={key} className="message-text">
-                              <ReactMarkdown
-                                remarkPlugins={[remarkGfm]}
-                                components={{
-                                  a: ({ node: _node, ...props }) => (
-                                    <a {...props} target="_blank" rel="noreferrer noopener" />
-                                  ),
-                                }}
-                              >
-                                {segment.content}
-                              </ReactMarkdown>
-                            </div>
-                          );
-                        }
-
-                        const blockId = `${msg.id}:code:${segmentIndex}`;
-                        return (
-                          <div key={key} className="code-block">
-                            <div className="code-block-header">
-                              <span className="code-block-language">
-                                {segment.language ?? 'text'}
-                              </span>
-                              <button
-                                type="button"
-                                className="code-copy-btn"
-                                onClick={() => handleCopyCode(blockId, segment.content)}
-                              >
-                                {copiedCodeBlockId === blockId ? 'Copied' : 'Copy code'}
-                              </button>
-                            </div>
-                            <pre>
-                              <code>{segment.content}</code>
-                            </pre>
-                          </div>
-                        );
-                      })}
-                    </div>
-                    {msg.id === 'streaming' && (
-                      <span className="cursor-blink">|</span>
-                    )}
-                  </div>
-                </div>
-              </div>
+                msg={msg}
+                copiedCodeBlockId={copiedCodeBlockId}
+                onCopyCode={handleCopyCode}
+              />
             ))}
 
             {isStreaming && !hasStreamingMessage && (
@@ -241,7 +216,6 @@ export function ChatView({
             )}
           </>
         )}
-        <div ref={messagesEndRef} />
       </div>
 
       <form className="input-container" onSubmit={handleSubmit}>
@@ -269,6 +243,119 @@ export function ChatView({
           )}
         </button>
       </form>
+    </div>
+  );
+}
+
+function MessageRow({ msg, copiedCodeBlockId, onCopyCode }: MessageRowProps) {
+  const renderedScreenshotFilenames = new Set<string>();
+
+  return (
+    <div className={`message ${msg.role} animate-slide-in`}>
+      <div className="message-avatar" aria-hidden="true">
+        {msg.role === 'user' ? 'U' : 'K'}
+      </div>
+      <div className="message-content">
+        <div className="message-header">
+          <span className="message-role">
+            {msg.role === 'user' ? 'You' : 'Keygate'}
+          </span>
+          <span className="message-time">
+            {msg.timestamp.toLocaleTimeString()}
+          </span>
+        </div>
+        <div className="message-bubble">
+          <div className="message-rendered">
+            {parseMessageSegments(msg.content).map((segment, segmentIndex) => {
+              const key = `${msg.id}:${segmentIndex}`;
+              if (segment.type === 'text') {
+                if (segment.content.length === 0) {
+                  return null;
+                }
+
+                const screenshotRefs = (msg.role === 'assistant'
+                  ? extractScreenshotFilenamesFromText(segment.content)
+                  : [])
+                  .filter((screenshotRef) => {
+                    const dedupeKey = screenshotRef.filename.toLowerCase();
+                    if (renderedScreenshotFilenames.has(dedupeKey)) {
+                      return false;
+                    }
+
+                    renderedScreenshotFilenames.add(dedupeKey);
+                    return true;
+                  });
+
+                return (
+                  <div key={key} className="message-text">
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                        a: ({ node: _node, ...props }) => (
+                          <a {...props} target="_blank" rel="noreferrer noopener" />
+                        ),
+                      }}
+                    >
+                      {segment.content}
+                    </ReactMarkdown>
+                    {screenshotRefs.length > 0 && (
+                      <div className="message-screenshot-list">
+                        {screenshotRefs.map((screenshotRef) => {
+                          const screenshotUrl = buildScreenshotImageUrl(screenshotRef.filename);
+                          return (
+                            <span
+                              key={`${msg.id}:${segmentIndex}:${screenshotRef.filename}`}
+                              className="message-screenshot-inline"
+                            >
+                              <a
+                                href={screenshotUrl}
+                                target="_blank"
+                                rel="noreferrer noopener"
+                              >
+                                {screenshotRef.filename}
+                              </a>
+                              <img
+                                src={screenshotUrl}
+                                alt={`Browser screenshot for ${screenshotRef.sessionId}`}
+                                className="message-screenshot-image"
+                                loading="lazy"
+                              />
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              }
+
+              const blockId = `${msg.id}:code:${segmentIndex}`;
+              return (
+                <div key={key} className="code-block">
+                  <div className="code-block-header">
+                    <span className="code-block-language">
+                      {segment.language ?? 'text'}
+                    </span>
+                    <button
+                      type="button"
+                      className="code-copy-btn"
+                      onClick={() => onCopyCode(blockId, segment.content)}
+                    >
+                      {copiedCodeBlockId === blockId ? 'Copied' : 'Copy code'}
+                    </button>
+                  </div>
+                  <pre>
+                    <code>{segment.content}</code>
+                  </pre>
+                </div>
+              );
+            })}
+          </div>
+          {msg.id === 'streaming' && (
+            <span className="cursor-blink">|</span>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

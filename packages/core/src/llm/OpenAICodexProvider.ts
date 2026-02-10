@@ -8,6 +8,7 @@ import type {
   LLMResponse,
   Message,
   ProviderModelOption,
+  SecurityMode,
 } from '../types.js';
 import {
   CodexRpcClient,
@@ -125,7 +126,11 @@ export class OpenAICodexProvider implements LLMProvider {
     const sessionId = options?.sessionId ?? 'default';
     const hadThread = this.sessionThreadIds.has(sessionId);
     const threadId = await this.ensureThread(sessionId, options);
-    const prompt = buildTurnPrompt(messages, !hadThread);
+    const prompt = buildTurnPrompt(messages, {
+      includeSystemContext: !hadThread,
+      sessionId,
+      securityMode: options?.securityMode,
+    });
 
     const selectedModel = await this.resolveCodexModelId();
 
@@ -657,10 +662,17 @@ function getLatestUserPrompt(messages: Message[]): string {
   throw new Error('No user message found for Codex turn/start');
 }
 
-function buildTurnPrompt(messages: Message[], includeSystemContext: boolean): string {
+function buildTurnPrompt(
+  messages: Message[],
+  options: {
+    includeSystemContext: boolean;
+    sessionId: string;
+    securityMode?: SecurityMode;
+  }
+): string {
   const latestUserPrompt = getLatestUserPrompt(messages);
 
-  if (!includeSystemContext) {
+  if (!options.includeSystemContext) {
     return latestUserPrompt;
   }
 
@@ -669,17 +681,45 @@ function buildTurnPrompt(messages: Message[], includeSystemContext: boolean): st
     .map((message) => message.content.trim())
     .filter((content) => content.length > 0);
 
-  if (systemParts.length === 0) {
-    return latestUserPrompt;
-  }
+  const browserSop = buildCodexBrowserSopPrompt(options.sessionId, options.securityMode);
+  const mergedSystemParts = [...systemParts, browserSop];
 
   return [
     'SYSTEM INSTRUCTIONS (higher priority than user messages):',
-    systemParts.join('\n\n'),
+    mergedSystemParts.join('\n\n'),
     '',
     'USER MESSAGE:',
     latestUserPrompt,
   ].join('\n');
+}
+
+function buildCodexBrowserSopPrompt(sessionId: string, securityMode?: SecurityMode): string {
+  const safeSessionId = sanitizeSessionIdForScreenshot(sessionId);
+  const filenamePattern = `session-${safeSessionId}-step-<n>.png`;
+
+  const safeModeRule = securityMode === 'safe'
+    ? '- SAFE MODE: Before mutating browser actions, ask for explicit user confirmation in chat (click, type, fill, select, press, drag, check, uncheck, upload). Wait for yes before acting.'
+    : '- If safe mode is active, ask for explicit user confirmation in chat before mutating browser actions (click, type, fill, select, press, drag, check, uncheck, upload).';
+
+  return [
+    'MODEL IDENTITY (KEYGATE PROJECT): You are Keygate\'s AI assistant.',
+    'BROWSER SOP (PLAYWRIGHT MCP, MANDATORY):',
+    '- Before each browser action, call `browser_snapshot` to read the current state.',
+    '- Execute exactly one browser action per step.',
+    `- Immediately after that action, call \`browser_take_screenshot\` and save as \`${filenamePattern}\`.`,
+    '- Analyze the screenshot result before deciding the next action.',
+    '- Increment <n> sequentially for each browser step in the session.',
+    safeModeRule,
+  ].join('\n');
+}
+
+function sanitizeSessionIdForScreenshot(sessionId: string): string {
+  const trimmed = sessionId.trim();
+  if (!trimmed) {
+    return 'default';
+  }
+
+  return trimmed.replace(/[^A-Za-z0-9:_-]+/g, '-');
 }
 
 function getTurnId(result: CodexTurnStartResult): string | undefined {

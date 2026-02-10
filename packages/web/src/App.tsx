@@ -6,6 +6,10 @@ import { ConfirmationModal } from './components/ConfirmationModal';
 import { useWebSocket } from './hooks/useWebSocket';
 import { buildEnableSpicyModeMessage, buildSetSpicyObedienceMessage } from './spicyObedience';
 import {
+  buildLatestScreenshotUrl,
+  shouldResetLatestScreenshotPreview,
+} from './browserPreview';
+import {
   EMPTY_SESSION_CHAT_STATE,
   buildSessionOptions,
   isComposerDisabled,
@@ -20,6 +24,29 @@ export type SecurityMode = 'safe' | 'spicy';
 export type LLMProviderId = 'openai' | 'gemini' | 'ollama' | 'openai-codex';
 type CodexReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 type ConfirmationDecision = 'allow_once' | 'allow_always' | 'cancel';
+type BrowserDomainPolicy = 'none' | 'allowlist' | 'blocklist';
+
+interface BrowserConfigState {
+  installed: boolean;
+  healthy: boolean;
+  serverName: string;
+  configuredVersion: string | null;
+  desiredVersion: string;
+  domainPolicy: BrowserDomainPolicy;
+  domainAllowlist: string[];
+  domainBlocklist: string[];
+  traceRetentionDays: number;
+  artifactsPath: string;
+  command: string | null;
+  args: string[];
+  warning?: string;
+}
+
+interface LatestScreenshotPreview {
+  sessionId: string;
+  imageUrl: string;
+  capturedAt: Date | null;
+}
 
 interface DiscordConfigState {
   configured: boolean;
@@ -107,7 +134,29 @@ const CODEX_REASONING_EFFORT_OPTIONS: Array<{ value: CodexReasoningEffort; label
 ];
 
 const DEFAULT_DISCORD_PREFIX = '!keygate ';
+const DEFAULT_BROWSER_VERSION = '0.0.64';
 const MAX_STREAM_ACTIVITIES = 8;
+
+const BROWSER_DOMAIN_POLICY_OPTIONS: Array<{ value: BrowserDomainPolicy; label: string }> = [
+  { value: 'none', label: 'No domain restrictions' },
+  { value: 'allowlist', label: 'Allowlist only' },
+  { value: 'blocklist', label: 'Blocklist deny' },
+];
+
+const DEFAULT_BROWSER_CONFIG_STATE: BrowserConfigState = {
+  installed: false,
+  healthy: false,
+  serverName: 'playwright',
+  configuredVersion: null,
+  desiredVersion: DEFAULT_BROWSER_VERSION,
+  domainPolicy: 'none',
+  domainAllowlist: [],
+  domainBlocklist: [],
+  traceRetentionDays: 7,
+  artifactsPath: '',
+  command: null,
+  args: [],
+};
 
 const PROVIDER_ACTIVITY_IGNORED_PATTERNS: RegExp[] = [
   /ratelimits/i,
@@ -246,6 +295,66 @@ function parseDiscordConfig(value: unknown): DiscordConfigState | undefined {
     configured,
     prefix: normalizeDiscordPrefixInput(rawPrefix, true),
   };
+}
+
+function parseBrowserConfig(value: unknown): BrowserConfigState | undefined {
+  const payload = asRecord(value);
+  if (!payload) {
+    return undefined;
+  }
+
+  const domainPolicyRaw = firstString(payload['domainPolicy'])?.toLowerCase();
+  const domainPolicy: BrowserDomainPolicy =
+    domainPolicyRaw === 'allowlist' || domainPolicyRaw === 'blocklist'
+      ? domainPolicyRaw
+      : 'none';
+
+  const configuredVersion = firstString(payload['configuredVersion']) ?? null;
+  const desiredVersion = firstString(payload['desiredVersion']) ?? DEFAULT_BROWSER_VERSION;
+  const traceRetentionDaysRaw = Number.parseInt(String(payload['traceRetentionDays'] ?? ''), 10);
+  const traceRetentionDays = Number.isFinite(traceRetentionDaysRaw) && traceRetentionDaysRaw > 0
+    ? traceRetentionDaysRaw
+    : 7;
+
+  return {
+    installed: payload['installed'] === true,
+    healthy: payload['healthy'] === true,
+    serverName: firstString(payload['serverName']) ?? 'playwright',
+    configuredVersion,
+    desiredVersion,
+    domainPolicy,
+    domainAllowlist: parseOriginListInput(payload['domainAllowlist']),
+    domainBlocklist: parseOriginListInput(payload['domainBlocklist']),
+    traceRetentionDays,
+    artifactsPath: firstString(payload['artifactsPath']) ?? '',
+    command: firstString(payload['command']) ?? null,
+    args: Array.isArray(payload['args'])
+      ? payload['args'].filter((entry): entry is string => typeof entry === 'string')
+      : [],
+    warning: firstString(payload['warning']),
+  };
+}
+
+function parseOriginListInput(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return Array.from(new Set(value
+      .filter((entry): entry is string => typeof entry === 'string')
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0)));
+  }
+
+  if (typeof value !== 'string') {
+    return [];
+  }
+
+  return Array.from(new Set(value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)));
+}
+
+function stringifyOriginList(origins: string[]): string {
+  return origins.join(', ');
 }
 
 function normalizeDiscordPrefixInput(value: string, fallbackToDefault = false): string {
@@ -568,6 +677,17 @@ function App() {
   const [discordClearToken, setDiscordClearToken] = useState(false);
   const [discordSaving, setDiscordSaving] = useState(false);
 
+  const [browserConfig, setBrowserConfig] = useState<BrowserConfigState>(DEFAULT_BROWSER_CONFIG_STATE);
+  const [browserPolicyDraft, setBrowserPolicyDraft] = useState<BrowserDomainPolicy>('none');
+  const [browserAllowlistDraft, setBrowserAllowlistDraft] = useState('');
+  const [browserBlocklistDraft, setBrowserBlocklistDraft] = useState('');
+  const [browserRetentionDraft, setBrowserRetentionDraft] = useState('7');
+  const [browserVersionDraft, setBrowserVersionDraft] = useState(DEFAULT_BROWSER_VERSION);
+  const [browserSaving, setBrowserSaving] = useState(false);
+  const [browserActionPending, setBrowserActionPending] = useState<'install' | 'update' | 'remove' | null>(null);
+
+  const [latestScreenshot, setLatestScreenshot] = useState<LatestScreenshotPreview | null>(null);
+
   const [pendingProviderSwitch, setPendingProviderSwitch] = useState<LLMProviderId | null>(null);
   const [modelsByProvider, setModelsByProvider] = useState<Partial<Record<LLMProviderId, ProviderModelOption[]>>>({});
   const [modelsLoading, setModelsLoading] = useState(false);
@@ -578,6 +698,9 @@ function App() {
   const activeStreamActivities = activeSessionId ? streamActivitiesBySession[activeSessionId] ?? [] : [];
   const activeIsStreaming = activeSessionId ? sessionState.streamingBySession[activeSessionId] === true : false;
   const activeIsReadOnly = isSessionReadOnly(activeSessionId, mainSessionId);
+  const activeLatestScreenshot = latestScreenshot && activeSessionId === latestScreenshot.sessionId
+    ? latestScreenshot
+    : null;
 
   const sessionOptions = useMemo(
     () => buildSessionOptions(mainSessionId, sessionState.metaBySession),
@@ -662,7 +785,19 @@ function App() {
           setDiscordPrefixDraft(discordState.prefix);
           setDiscordTokenDraft('');
           setDiscordClearToken(false);
-          setDiscordSaving(false);
+        }
+        setDiscordSaving(false);
+        setBrowserSaving(false);
+        setBrowserActionPending(null);
+
+        const browserState = parseBrowserConfig(data['browser']);
+        if (browserState) {
+          setBrowserConfig(browserState);
+          setBrowserPolicyDraft(browserState.domainPolicy);
+          setBrowserAllowlistDraft(stringifyOriginList(browserState.domainAllowlist));
+          setBrowserBlocklistDraft(stringifyOriginList(browserState.domainBlocklist));
+          setBrowserRetentionDraft(String(browserState.traceRetentionDays));
+          setBrowserVersionDraft(browserState.desiredVersion);
         }
 
         const rawSessionId = firstString(data['sessionId']);
@@ -989,6 +1124,21 @@ function App() {
         break;
       }
 
+      case 'mcp_browser_status': {
+        const browserState = parseBrowserConfig(data['browser']);
+        if (browserState) {
+          setBrowserConfig(browserState);
+          setBrowserPolicyDraft(browserState.domainPolicy);
+          setBrowserAllowlistDraft(stringifyOriginList(browserState.domainAllowlist));
+          setBrowserBlocklistDraft(stringifyOriginList(browserState.domainBlocklist));
+          setBrowserRetentionDraft(String(browserState.traceRetentionDays));
+          setBrowserVersionDraft(browserState.desiredVersion);
+        }
+        setBrowserSaving(false);
+        setBrowserActionPending(null);
+        break;
+      }
+
       case 'session_cleared': {
         const rawSession = firstString(data['sessionId']);
         const clearedSessionId = rawSession
@@ -1016,6 +1166,8 @@ function App() {
 
       case 'error': {
         setDiscordSaving(false);
+        setBrowserSaving(false);
+        setBrowserActionPending(null);
 
         const targetSession = mainSessionId ?? selectedSessionId;
         if (!targetSession) {
@@ -1055,6 +1207,7 @@ function App() {
 
   const { send, connected, connecting } = useWebSocket(getWebSocketUrl(), handleMessage);
 
+
   useEffect(() => {
     if (!connected) {
       return undefined;
@@ -1064,13 +1217,93 @@ function App() {
       send({ type: 'get_session_snapshot' });
     };
 
+    const requestBrowserStatus = () => {
+      send({ type: 'get_mcp_browser_status' });
+    };
+
     requestSnapshot();
-    const intervalId = window.setInterval(requestSnapshot, 2500);
+    requestBrowserStatus();
+
+    const snapshotIntervalId = window.setInterval(requestSnapshot, 2500);
+    const browserIntervalId = window.setInterval(requestBrowserStatus, 8000);
+
     return () => {
-      window.clearInterval(intervalId);
+      window.clearInterval(snapshotIntervalId);
+      window.clearInterval(browserIntervalId);
     };
   }, [connected, send]);
 
+  useEffect(() => {
+    const clearPreview = () => {
+      setLatestScreenshot((previous) => (previous ? null : previous));
+    };
+
+    if (!connected || !activeSessionId) {
+      clearPreview();
+      return undefined;
+    }
+
+    if (shouldResetLatestScreenshotPreview(latestScreenshot?.sessionId ?? null, activeSessionId)) {
+      clearPreview();
+    }
+
+    let cancelled = false;
+
+    const pollLatestScreenshot = async () => {
+      try {
+        const baseScreenshotUrl = buildLatestScreenshotUrl(activeSessionId);
+        const response = await fetch(baseScreenshotUrl, {
+          method: 'HEAD',
+          cache: 'no-store',
+        });
+
+        if (response.status === 404) {
+          if (!cancelled) {
+            clearPreview();
+          }
+          return;
+        }
+
+        if (!response.ok) {
+          return;
+        }
+
+        const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
+        if (!contentType.startsWith('image/')) {
+          if (!cancelled) {
+            clearPreview();
+          }
+          return;
+        }
+
+        const imageUrl = `${baseScreenshotUrl}&ts=${Date.now()}`;
+
+        if (cancelled) {
+          return;
+        }
+
+        setLatestScreenshot(() => {
+          return {
+            sessionId: activeSessionId,
+            imageUrl,
+            capturedAt: new Date(),
+          };
+        });
+      } catch {
+        // Ignore poll errors and retry on next interval.
+      }
+    };
+
+    void pollLatestScreenshot();
+    const intervalId = window.setInterval(() => {
+      void pollLatestScreenshot();
+    }, 4000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [activeSessionId, connected, latestScreenshot?.sessionId]);
   useEffect(() => {
     if (!isConfigMenuOpen) {
       return undefined;
@@ -1237,10 +1470,76 @@ function App() {
     });
   }, [discordClearToken, discordPrefixDraft, discordTokenDraft, send]);
 
+
+  const handleInstallMcpBrowser = useCallback(() => {
+    setBrowserActionPending('install');
+    send({ type: 'setup_mcp_browser' });
+  }, [send]);
+
+  const handleUpdateMcpBrowser = useCallback(() => {
+    setBrowserActionPending('update');
+    send({ type: 'setup_mcp_browser' });
+  }, [send]);
+
+  const handleRemoveMcpBrowser = useCallback(() => {
+    setBrowserActionPending('remove');
+    send({ type: 'remove_mcp_browser' });
+  }, [send]);
+
+  const handleSaveBrowserPolicy = useCallback(() => {
+    const traceRetentionDays = Number.parseInt(browserRetentionDraft.trim(), 10);
+    if (!Number.isFinite(traceRetentionDays) || traceRetentionDays < 1) {
+      alert('Trace retention must be a whole number >= 1 day.');
+      return;
+    }
+
+    const allowlist = parseOriginListInput(browserAllowlistDraft);
+    const blocklist = parseOriginListInput(browserBlocklistDraft);
+
+    if (browserPolicyDraft === 'allowlist' && allowlist.length === 0) {
+      alert('Allowlist policy requires at least one origin.');
+      return;
+    }
+
+    if (browserPolicyDraft === 'blocklist' && blocklist.length === 0) {
+      alert('Blocklist policy requires at least one origin.');
+      return;
+    }
+
+    setBrowserSaving(true);
+    send({
+      type: 'set_browser_policy',
+      domainPolicy: browserPolicyDraft,
+      domainAllowlist: allowlist,
+      domainBlocklist: blocklist,
+      traceRetentionDays,
+      mcpPlaywrightVersion: browserVersionDraft.trim().length > 0
+        ? browserVersionDraft.trim()
+        : browserConfig.desiredVersion,
+    });
+  }, [
+    browserAllowlistDraft,
+    browserBlocklistDraft,
+    browserConfig.desiredVersion,
+    browserPolicyDraft,
+    browserRetentionDraft,
+    browserVersionDraft,
+    send,
+  ]);
+
   const discordHasChanges =
     discordPrefixDraft !== discordConfig.prefix ||
     discordTokenDraft.trim().length > 0 ||
     discordClearToken;
+
+  const browserPolicyHasChanges =
+    browserPolicyDraft !== browserConfig.domainPolicy ||
+    browserAllowlistDraft !== stringifyOriginList(browserConfig.domainAllowlist) ||
+    browserBlocklistDraft !== stringifyOriginList(browserConfig.domainBlocklist) ||
+    browserRetentionDraft !== String(browserConfig.traceRetentionDays) ||
+    browserVersionDraft.trim() !== browserConfig.desiredVersion;
+
+  const browserBusy = browserSaving || browserActionPending !== null;
 
   const canClearMainSession = connected && !!mainSessionId && selectedSessionId === mainSessionId && !activeIsStreaming;
 
@@ -1322,7 +1621,7 @@ function App() {
           />
         </section>
 
-        <LiveActivityLog events={activeToolEvents} />
+        <LiveActivityLog events={activeToolEvents} latestScreenshot={activeLatestScreenshot} />
       </main>
 
       {isConfigMenuOpen && (
@@ -1463,6 +1762,130 @@ function App() {
               )}
             </section>
 
+
+            <section className="config-section">
+              <h3>MCP Browser</h3>
+              <p className="config-note">Installed: {browserConfig.installed ? 'Yes' : 'No'}</p>
+              <p className="config-note">Health: {browserConfig.healthy ? 'Ready' : 'Needs setup'}</p>
+              <p className="config-note">
+                Version: {browserConfig.configuredVersion ?? '(not configured)'} / pinned {browserConfig.desiredVersion}
+              </p>
+              <p className="config-note">Policy: {browserConfig.domainPolicy}</p>
+              <p className="config-note">Output path: {browserConfig.artifactsPath || '(not set)'}</p>
+
+              {browserConfig.warning && (
+                <p className="config-note config-warning">{browserConfig.warning}</p>
+              )}
+
+              <div className="config-button-row">
+                <button
+                  className="btn-secondary"
+                  onClick={handleInstallMcpBrowser}
+                  disabled={!connected || activeIsStreaming || browserBusy || browserConfig.installed}
+                >
+                  {browserActionPending === 'install' ? 'Installing...' : 'Install'}
+                </button>
+                <button
+                  className="btn-secondary"
+                  onClick={handleUpdateMcpBrowser}
+                  disabled={!connected || activeIsStreaming || browserBusy || !browserConfig.installed}
+                >
+                  {browserActionPending === 'update' ? 'Updating...' : 'Update'}
+                </button>
+                <button
+                  className="btn-secondary"
+                  onClick={handleRemoveMcpBrowser}
+                  disabled={!connected || activeIsStreaming || browserBusy || !browserConfig.installed}
+                >
+                  {browserActionPending === 'remove' ? 'Removing...' : 'Remove'}
+                </button>
+                <button
+                  className="btn-secondary"
+                  onClick={() => send({ type: 'get_mcp_browser_status' })}
+                  disabled={!connected || activeIsStreaming || browserBusy}
+                >
+                  Refresh Status
+                </button>
+              </div>
+
+              <label className="llm-control config-control">
+                <span>Domain Policy</span>
+                <select
+                  value={browserPolicyDraft}
+                  onChange={(event) => setBrowserPolicyDraft(event.target.value as BrowserDomainPolicy)}
+                  disabled={!connected || activeIsStreaming || browserBusy}
+                >
+                  {BROWSER_DOMAIN_POLICY_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="llm-control config-control">
+                <span>Allowlist Origins (comma separated)</span>
+                <input
+                  className="config-text-input"
+                  type="text"
+                  value={browserAllowlistDraft}
+                  onChange={(event) => setBrowserAllowlistDraft(event.target.value)}
+                  placeholder="https://example.com, https://docs.example.com"
+                  spellCheck={false}
+                  autoComplete="off"
+                  disabled={!connected || activeIsStreaming || browserBusy || browserPolicyDraft !== 'allowlist'}
+                />
+              </label>
+
+              <label className="llm-control config-control">
+                <span>Blocklist Origins (comma separated)</span>
+                <input
+                  className="config-text-input"
+                  type="text"
+                  value={browserBlocklistDraft}
+                  onChange={(event) => setBrowserBlocklistDraft(event.target.value)}
+                  placeholder="https://ads.example, https://trackers.example"
+                  spellCheck={false}
+                  autoComplete="off"
+                  disabled={!connected || activeIsStreaming || browserBusy || browserPolicyDraft !== 'blocklist'}
+                />
+              </label>
+
+              <label className="llm-control config-control">
+                <span>Retention (days)</span>
+                <input
+                  className="config-text-input"
+                  type="number"
+                  min={1}
+                  value={browserRetentionDraft}
+                  onChange={(event) => setBrowserRetentionDraft(event.target.value)}
+                  disabled={!connected || activeIsStreaming || browserBusy}
+                />
+              </label>
+
+              <label className="llm-control config-control">
+                <span>Playwright MCP Version</span>
+                <input
+                  className="config-text-input"
+                  type="text"
+                  value={browserVersionDraft}
+                  onChange={(event) => setBrowserVersionDraft(event.target.value)}
+                  placeholder={DEFAULT_BROWSER_VERSION}
+                  spellCheck={false}
+                  autoComplete="off"
+                  disabled={!connected || activeIsStreaming || browserBusy}
+                />
+              </label>
+
+              <button
+                className="btn-secondary"
+                onClick={handleSaveBrowserPolicy}
+                disabled={!connected || activeIsStreaming || browserBusy || !browserPolicyHasChanges}
+              >
+                {browserSaving ? 'Saving...' : 'Save Browser Policy'}
+              </button>
+              <small className="config-note">
+                Policy changes reconfigure Playwright MCP when the browser server is already installed.
+              </small>
+            </section>
             <section className="config-section">
               <h3>Discord Bot</h3>
               <p className="config-note">

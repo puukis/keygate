@@ -25,6 +25,21 @@ SPICY_MAX_OBEDIENCE_ENABLED=false
 # Workspace path for safe mode file operations
 WORKSPACE_PATH=~/keygate-workspace
 
+# MCP browser policy: none, allowlist, or blocklist
+BROWSER_DOMAIN_POLICY=none
+
+# Comma-separated origins, used when policy=allowlist
+BROWSER_DOMAIN_ALLOWLIST=
+
+# Comma-separated origins, used when policy=blocklist
+BROWSER_DOMAIN_BLOCKLIST=
+
+# Retention in days for browser run artifacts (screenshots, traces)
+BROWSER_TRACE_RETENTION_DAYS=7
+
+# Pinned Playwright MCP version for codex mcp provisioning
+MCP_PLAYWRIGHT_VERSION=0.0.64
+
 # Automatically open chat UI when running `keygate` (default true)
 KEYGATE_OPEN_CHAT_ON_START=true
 
