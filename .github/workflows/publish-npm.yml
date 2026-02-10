@@ -55,6 +55,9 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Validate publish manifests
+        run: node ./scripts/check-publish-manifests.mjs
+
       - name: Publish @puukis/core and @puukis/cli if versions are new
         shell: bash
         run: |

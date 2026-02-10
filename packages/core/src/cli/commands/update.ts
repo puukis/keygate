@@ -10,6 +10,12 @@ interface NpmInstallInfo {
   version: string;
 }
 
+interface NpmPackageManifest {
+  dependencies?: Record<string, string>;
+  optionalDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+}
+
 type InstallMode = 'npm' | 'github' | 'unknown';
 
 export async function runUpdateCommand(args: ParsedArgs): Promise<void> {
@@ -166,11 +172,65 @@ function updateNpmInstall(info: NpmInstallInfo, checkOnly: boolean): void {
   }
 
   const update = spawnSync('npm', ['install', '-g', `${info.packageName}@latest`], {
-    stdio: 'inherit',
     encoding: 'utf8',
   });
 
+  if (update.stdout) {
+    process.stdout.write(update.stdout);
+  }
+  if (update.stderr) {
+    process.stderr.write(update.stderr);
+  }
+
   if (update.status !== 0) {
+    const combinedOutput = `${update.stdout ?? ''}\n${update.stderr ?? ''}`;
+    if (isWorkspaceProtocolInstallFailure(combinedOutput)) {
+      const fallbackVersion = findLatestInstallableNpmVersion(info.packageName, current);
+      if (fallbackVersion) {
+        if (compareVersions(fallbackVersion, current) <= 0) {
+          console.warn(
+            'Latest npm version is not installable via npm (workspace: dependency metadata). ' +
+              `Staying on ${current}.`
+          );
+          return;
+        }
+
+        console.warn(
+          'Latest npm version is not installable via npm (workspace: dependency metadata). ' +
+            `Trying ${fallbackVersion}...`
+        );
+
+        const fallback = spawnSync('npm', ['install', '-g', `${info.packageName}@${fallbackVersion}`], {
+          encoding: 'utf8',
+        });
+
+        if (fallback.stdout) {
+          process.stdout.write(fallback.stdout);
+        }
+        if (fallback.stderr) {
+          process.stderr.write(fallback.stderr);
+        }
+
+        if (fallback.status !== 0) {
+          throw new Error(
+            `npm update failed with exit code ${update.status ?? 'unknown'}; fallback ` +
+              `${fallbackVersion} failed with exit code ${fallback.status ?? 'unknown'}`
+          );
+        }
+
+        const refreshed = detectNpmInstall([info.packageName]);
+        const finalVersion = refreshed?.version ?? fallbackVersion;
+        console.log(`Updated ${info.packageName} to ${finalVersion}.`);
+        console.log('- note: latest npm version is currently not installable via npm');
+        return;
+      }
+
+      throw new Error(
+        'npm update failed because the latest npm version references workspace: dependency ranges, ' +
+          'which npm cannot install globally'
+      );
+    }
+
     throw new Error(`npm update failed with exit code ${update.status ?? 'unknown'}`);
   }
 
@@ -190,6 +250,95 @@ function getNpmLatestVersion(packageName: string): string | undefined {
 
   const version = view.stdout.trim();
   return version.length > 0 ? version : undefined;
+}
+
+function findLatestInstallableNpmVersion(
+  packageName: string,
+  currentVersion: string
+): string | undefined {
+  const versions = getNpmVersions(packageName);
+  if (!versions || versions.length === 0) {
+    return undefined;
+  }
+
+  const sortedCandidates = versions
+    .filter((version) => compareVersions(version, currentVersion) >= 0)
+    .sort((left, right) => compareVersions(right, left));
+
+  for (const version of sortedCandidates) {
+    const manifest = getNpmManifest(packageName, version);
+    if (manifest && !manifestUsesWorkspaceProtocol(manifest)) {
+      return version;
+    }
+  }
+
+  return undefined;
+}
+
+function getNpmVersions(packageName: string): string[] | undefined {
+  const view = spawnSync('npm', ['view', packageName, 'versions', '--json'], {
+    encoding: 'utf8',
+  });
+
+  if (view.status !== 0) {
+    return undefined;
+  }
+
+  const parsed = tryParseJson<unknown>(view.stdout);
+  if (Array.isArray(parsed)) {
+    return parsed.filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+  }
+
+  if (typeof parsed === 'string' && parsed.trim().length > 0) {
+    return [parsed.trim()];
+  }
+
+  return undefined;
+}
+
+function getNpmManifest(packageName: string, version: string): NpmPackageManifest | undefined {
+  const view = spawnSync('npm', ['view', `${packageName}@${version}`, '--json'], {
+    encoding: 'utf8',
+  });
+
+  if (view.status !== 0) {
+    return undefined;
+  }
+
+  const parsed = tryParseJson<unknown>(view.stdout);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return undefined;
+  }
+
+  return parsed as NpmPackageManifest;
+}
+
+function manifestUsesWorkspaceProtocol(manifest: NpmPackageManifest): boolean {
+  return (
+    dependencyMapUsesWorkspaceProtocol(manifest.dependencies) ||
+    dependencyMapUsesWorkspaceProtocol(manifest.optionalDependencies) ||
+    dependencyMapUsesWorkspaceProtocol(manifest.peerDependencies)
+  );
+}
+
+function dependencyMapUsesWorkspaceProtocol(map: Record<string, string> | undefined): boolean {
+  if (!map) {
+    return false;
+  }
+
+  return Object.values(map).some((value) => {
+    const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+    return normalized.startsWith('workspace:');
+  });
+}
+
+function isWorkspaceProtocolInstallFailure(output: string): boolean {
+  const normalized = output.toLowerCase();
+  return (
+    normalized.includes('eunsupportedprotocol') &&
+    normalized.includes('workspace:') &&
+    normalized.includes('unsupported url type')
+  );
 }
 
 function updateGithubInstall(repoRoot: string, checkOnly: boolean): void {
