@@ -37,6 +37,18 @@ interface ActivityEntry {
   detail?: string;
 }
 
+interface SlashCommandEntry {
+  command: string;
+  description: string;
+  source: 'builtin' | 'skill';
+}
+
+interface SlashAutocompleteState {
+  query: string;
+  matches: string[];
+  index: number;
+}
+
 interface PendingConfirmationState {
   prompt: string;
   details?: ConfirmationDetails;
@@ -48,6 +60,29 @@ interface SessionState {
   streamBuffer: string;
   streamStartedAt: Date | null;
 }
+
+const BUILTIN_TERMINAL_SLASH_COMMANDS: SlashCommandEntry[] = [
+  {
+    command: 'help',
+    description: 'Show terminal chat commands.',
+    source: 'builtin',
+  },
+  {
+    command: 'new',
+    description: 'Start a fresh terminal session.',
+    source: 'builtin',
+  },
+  {
+    command: 'exit',
+    description: 'Leave terminal chat.',
+    source: 'builtin',
+  },
+  {
+    command: 'quit',
+    description: 'Alias for /exit.',
+    source: 'builtin',
+  },
+];
 
 class TerminalChannel extends BaseChannel {
   type = 'terminal' as const;
@@ -84,6 +119,8 @@ class KeygateTui {
   private pendingConfirmation: PendingConfirmationState | null = null;
   private waitingForResponse = false;
   private draft = '';
+  private slashCommands: SlashCommandEntry[] = [...BUILTIN_TERMINAL_SLASH_COMMANDS];
+  private slashAutocompleteState: SlashAutocompleteState | null = null;
   private multilineMode = false;
   private multilineLines: string[] = [];
   private transcriptScrollOffset = 0;
@@ -124,6 +161,7 @@ class KeygateTui {
       'Full-screen terminal chat started. Use /help for commands. Multiline mode: type { then finish with }.'
     );
     this.render();
+    void this.refreshSlashCommands();
 
     await new Promise<void>((resolve) => {
       this.exitPromiseResolve = resolve;
@@ -307,6 +345,10 @@ class KeygateTui {
       return;
     }
 
+    if (key?.name !== 'tab') {
+      this.slashAutocompleteState = null;
+    }
+
     if (key?.name === 'up') {
       this.transcriptScrollOffset += 1;
       this.render();
@@ -346,6 +388,14 @@ class KeygateTui {
     if (key?.name === 'backspace') {
       this.draft = dropLastCharacter(this.draft);
       this.render();
+      return;
+    }
+
+    if (key?.name === 'tab') {
+      const completed = this.tryAutocompleteSlashCommand();
+      if (completed) {
+        this.render();
+      }
       return;
     }
 
@@ -478,6 +528,11 @@ class KeygateTui {
         '/new - start a fresh terminal session',
         '/exit or /quit - leave terminal chat',
         '',
+        'Slash command UX:',
+        '- type `/` to open command suggestions',
+        '- type to filter matches',
+        '- press Tab to autocomplete',
+        '',
         'Multiline input:',
         '- type `{` and press Enter to start',
         '- type `}` on its own line to send',
@@ -510,7 +565,9 @@ class KeygateTui {
     this.multilineLines = [];
     this.waitingForResponse = false;
     this.transcriptScrollOffset = 0;
+    this.slashAutocompleteState = null;
     this.addSystemMessage(`Started new session: ${this.activeSessionId}`);
+    void this.refreshSlashCommands();
     this.render();
   }
 
@@ -532,6 +589,92 @@ class KeygateTui {
     if (this.activities.length > MAX_ACTIVITY_ENTRIES) {
       this.activities.shift();
     }
+  }
+
+  private async refreshSlashCommands(): Promise<void> {
+    try {
+      const entries = await this.gateway.skills.listSkills(this.activeSessionId);
+      const skills: SlashCommandEntry[] = entries
+        .filter((entry) => entry.skill.userInvocable)
+        .map((entry) => ({
+          command: entry.skill.name.toLowerCase(),
+          description: toPlainSingleLine(entry.skill.description),
+          source: 'skill' as const,
+        }))
+        .sort((left, right) => left.command.localeCompare(right.command));
+      this.slashCommands = mergeSlashCommands(BUILTIN_TERMINAL_SLASH_COMMANDS, skills);
+    } catch {
+      this.slashCommands = [...BUILTIN_TERMINAL_SLASH_COMMANDS];
+    }
+    this.render();
+  }
+
+  private getSlashMatches(query: string): SlashCommandEntry[] {
+    const normalizedQuery = query.trim().toLowerCase();
+    if (!normalizedQuery) {
+      return this.slashCommands;
+    }
+
+    const prefixMatches: SlashCommandEntry[] = [];
+    const containsMatches: SlashCommandEntry[] = [];
+    for (const entry of this.slashCommands) {
+      if (entry.command.startsWith(normalizedQuery)) {
+        prefixMatches.push(entry);
+        continue;
+      }
+
+      if (entry.command.includes(normalizedQuery) || entry.description.toLowerCase().includes(normalizedQuery)) {
+        containsMatches.push(entry);
+      }
+    }
+
+    return [...prefixMatches, ...containsMatches];
+  }
+
+  private tryAutocompleteSlashCommand(): boolean {
+    if (this.multilineMode || this.draft.length === 0 || !this.draft.startsWith('/')) {
+      this.slashAutocompleteState = null;
+      return false;
+    }
+
+    const parts = parseSlashDraft(this.draft);
+    const query = parts.command.toLowerCase();
+    const prefixMatches = this.getSlashMatches(query).filter((entry) => entry.command.startsWith(query));
+    if (prefixMatches.length === 0) {
+      this.slashAutocompleteState = null;
+      return false;
+    }
+
+    const matchNames = prefixMatches.map((entry) => entry.command);
+    let selectedIndex = 0;
+    if (
+      this.slashAutocompleteState &&
+      this.slashAutocompleteState.query === query &&
+      arraysEqual(this.slashAutocompleteState.matches, matchNames)
+    ) {
+      selectedIndex = (this.slashAutocompleteState.index + 1) % matchNames.length;
+    } else if (prefixMatches.length > 1) {
+      const sharedPrefix = longestCommonPrefix(matchNames);
+      if (sharedPrefix.length > query.length) {
+        this.draft = `/${sharedPrefix}${parts.args}`;
+        this.slashAutocompleteState = {
+          query: sharedPrefix,
+          matches: matchNames,
+          index: Math.max(0, matchNames.indexOf(sharedPrefix)),
+        };
+        return true;
+      }
+    }
+
+    const selected = matchNames[selectedIndex] ?? matchNames[0]!;
+    const suffix = parts.args.length > 0 ? parts.args : ' ';
+    this.draft = `/${selected}${suffix}`;
+    this.slashAutocompleteState = {
+      query: selected,
+      matches: matchNames,
+      index: selectedIndex,
+    };
+    return true;
   }
 
   private render(): void {
@@ -577,6 +720,7 @@ class KeygateTui {
   private buildBottomLines(width: number): string[] {
     const separator = `${ACCENT_DIM}${'─'.repeat(width)}${RESET}`;
     const latestActivity = this.buildLatestActivityLine(width);
+    const slashOverlay = this.buildSlashOverlayLines(width);
 
     if (this.pendingConfirmation) {
       const prompt = toPlainSingleLine(this.pendingConfirmation.details?.summary ?? this.pendingConfirmation.prompt);
@@ -592,12 +736,53 @@ class KeygateTui {
       ? `[multiline ${this.multilineLines.length}] > ${this.draft}`
       : `${this.waitingForResponse ? '[busy] ' : ''}> ${this.draft}`;
 
+    const hintLine = slashOverlay.length > 0
+      ? 'scroll: ↑/↓ line • PgUp/PgDn page • Home oldest • End latest • Tab autocomplete • Ctrl+L redraw • Ctrl+C exit'
+      : 'scroll: ↑/↓ line • PgUp/PgDn page • Home oldest • End latest • Ctrl+L redraw • Ctrl+C exit';
+
     return [
       separator,
       latestActivity,
+      ...slashOverlay,
       truncateText(inputLine, width),
-      `${ACCENT_DIM}${truncateText('scroll: ↑/↓ line • PgUp/PgDn page • Home oldest • End latest • Ctrl+L redraw • Ctrl+C exit', width)}${RESET}`,
+      `${ACCENT_DIM}${truncateText(hintLine, width)}${RESET}`,
     ];
+  }
+
+  private buildSlashOverlayLines(width: number): string[] {
+    if (this.multilineMode || this.draft.length === 0 || !this.draft.startsWith('/')) {
+      return [];
+    }
+
+    const parts = parseSlashDraft(this.draft);
+    const query = parts.command.toLowerCase();
+    const matches = this.getSlashMatches(query);
+    const lines: string[] = [];
+
+    const summaryLabel = query.length > 0
+      ? `slash commands matching "${query}" (${matches.length})`
+      : `slash commands (${matches.length})`;
+    lines.push(`${MUTED}${truncateText(summaryLabel, width)}${RESET}`);
+
+    if (matches.length === 0) {
+      lines.push(`${WARN}${truncateText('no matching slash command', width)}${RESET}`);
+      return lines;
+    }
+
+    const visible = matches.slice(0, 4);
+    for (const [index, entry] of visible.entries()) {
+      const marker = index === 0 ? '>' : ' ';
+      const source = entry.source === 'skill' ? 'skill' : 'built-in';
+      const detail = entry.description.length > 0 ? ` - ${entry.description}` : '';
+      lines.push(truncateText(`${marker} /${entry.command}${detail} (${source})`, width));
+    }
+
+    const hiddenCount = matches.length - visible.length;
+    if (hiddenCount > 0) {
+      lines.push(`${MUTED}${truncateText(`+${hiddenCount} more matches`, width)}${RESET}`);
+    }
+
+    return lines;
   }
 
   private buildLatestActivityLine(width: number): string {
@@ -657,6 +842,76 @@ class KeygateTui {
 
     return visible;
   }
+}
+
+function parseSlashDraft(value: string): { command: string; args: string } {
+  const content = value.startsWith('/') ? value.slice(1) : value;
+  const whitespaceIndex = content.search(/\s/);
+  if (whitespaceIndex < 0) {
+    return {
+      command: content,
+      args: '',
+    };
+  }
+
+  return {
+    command: content.slice(0, whitespaceIndex),
+    args: content.slice(whitespaceIndex),
+  };
+}
+
+function mergeSlashCommands(...groups: SlashCommandEntry[][]): SlashCommandEntry[] {
+  const merged = new Map<string, SlashCommandEntry>();
+  for (const group of groups) {
+    for (const entry of group) {
+      const command = entry.command.trim().toLowerCase();
+      if (command.length === 0 || merged.has(command)) {
+        continue;
+      }
+      merged.set(command, {
+        command,
+        description: toPlainSingleLine(entry.description),
+        source: entry.source,
+      });
+    }
+  }
+
+  return [...merged.values()];
+}
+
+function arraysEqual(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function longestCommonPrefix(values: string[]): string {
+  if (values.length === 0) {
+    return '';
+  }
+
+  let prefix = values[0] ?? '';
+  for (let index = 1; index < values.length; index += 1) {
+    const candidate = values[index] ?? '';
+    let cursor = 0;
+    while (cursor < prefix.length && cursor < candidate.length && prefix[cursor] === candidate[cursor]) {
+      cursor += 1;
+    }
+    prefix = prefix.slice(0, cursor);
+    if (prefix.length === 0) {
+      break;
+    }
+  }
+
+  return prefix;
 }
 
 function sanitizeMessageContent(value: string): string {
