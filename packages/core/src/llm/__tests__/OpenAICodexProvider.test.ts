@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
+import os from 'node:os';
+import path from 'node:path';
+import { promises as fs } from 'node:fs';
 import { CodexRpcClient } from '../../codex/CodexRpcClient.js';
 import { OpenAICodexProvider } from '../OpenAICodexProvider.js';
 
@@ -1450,6 +1453,221 @@ describe('OpenAICodexProvider', () => {
 
     expect(text).toBe('Hey. I just came online?');
     expect(text).not.toContain('\n');
+    await provider.dispose();
+  });
+
+  it('includes localImage items in turn/start input when latest user message has attachments', async () => {
+    const fake = new FakeChildProcess();
+    const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'keygate-codex-localimage-'));
+    const imagePath = path.join(fixtureRoot, 'photo.png');
+    await fs.writeFile(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+    let observedInput: Array<Record<string, unknown>> = [];
+
+    fake.stdin.on('data', (chunk) => {
+      const lines = String(chunk)
+        .split(/\n/g)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+
+      for (const line of lines) {
+        const payload = JSON.parse(line) as {
+          id?: number;
+          method?: string;
+          params?: Record<string, unknown>;
+        };
+
+        if (payload.method === 'initialized') {
+          continue;
+        }
+
+        if (payload.method === 'initialize') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { sessionId: 'session-1' } }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'account/read') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: { requiresOpenaiAuth: false, account: null },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'model/list') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: { data: [{ id: 'gpt-5.2-codex', displayName: 'GPT-5.2 Codex', isDefault: true }], nextCursor: null },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'thread/start') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { thread: { id: 'thread-1' } } }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'turn/start') {
+          observedInput = Array.isArray(payload.params?.['input'])
+            ? payload.params?.['input'] as Array<Record<string, unknown>>
+            : [];
+
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { turn: { id: 'turn-1' } } }) + '\n');
+          setTimeout(() => {
+            fake.stdout.write(JSON.stringify({
+              method: 'turn/completed',
+              params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } },
+            }) + '\n');
+          }, 5);
+          continue;
+        }
+      }
+    });
+
+    const rpcClient = new CodexRpcClient({
+      requestTimeoutMs: 5_000,
+      spawnFactory: () => fake as any,
+    });
+    const provider = new OpenAICodexProvider('openai-codex/gpt-5.2', { rpcClient });
+
+    for await (const _chunk of provider.stream(
+      [{
+        role: 'user',
+        content: 'analyze',
+        attachments: [{
+          id: 'att-1',
+          filename: 'photo.png',
+          contentType: 'image/png',
+          sizeBytes: 4,
+          path: imagePath,
+          url: '/api/uploads/image?sessionId=web%3Atest&id=att-1',
+        }],
+      }],
+      { sessionId: 'session-local-image' }
+    )) {
+      // drain
+    }
+
+    expect(observedInput[0]).toMatchObject({ type: 'text' });
+    expect(observedInput[1]).toEqual({
+      type: 'localImage',
+      path: imagePath,
+    });
+
+    await provider.dispose();
+  });
+
+  it('retries turn/start once with data-url image items when localImage is rejected', async () => {
+    const fake = new FakeChildProcess();
+    const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'keygate-codex-fallback-'));
+    const imagePath = path.join(fixtureRoot, 'photo.png');
+    await fs.writeFile(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+    const observedInputs: Array<Array<Record<string, unknown>>> = [];
+    let turnStartCalls = 0;
+
+    fake.stdin.on('data', (chunk) => {
+      const lines = String(chunk)
+        .split(/\n/g)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+
+      for (const line of lines) {
+        const payload = JSON.parse(line) as {
+          id?: number;
+          method?: string;
+          params?: Record<string, unknown>;
+        };
+
+        if (payload.method === 'initialized') {
+          continue;
+        }
+
+        if (payload.method === 'initialize') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { sessionId: 'session-1' } }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'account/read') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: { requiresOpenaiAuth: false, account: null },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'model/list') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: { data: [{ id: 'gpt-5.2-codex', displayName: 'GPT-5.2 Codex', isDefault: true }], nextCursor: null },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'thread/start') {
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { thread: { id: 'thread-1' } } }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'turn/start') {
+          turnStartCalls += 1;
+          const input = Array.isArray(payload.params?.['input'])
+            ? payload.params?.['input'] as Array<Record<string, unknown>>
+            : [];
+          observedInputs.push(input);
+
+          if (turnStartCalls === 1) {
+            fake.stdout.write(JSON.stringify({
+              id: payload.id,
+              error: {
+                code: -32602,
+                message: 'unknown variant localImage',
+              },
+            }) + '\n');
+            continue;
+          }
+
+          fake.stdout.write(JSON.stringify({ id: payload.id, result: { turn: { id: 'turn-1' } } }) + '\n');
+          setTimeout(() => {
+            fake.stdout.write(JSON.stringify({
+              method: 'turn/completed',
+              params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } },
+            }) + '\n');
+          }, 5);
+          continue;
+        }
+      }
+    });
+
+    const rpcClient = new CodexRpcClient({
+      requestTimeoutMs: 5_000,
+      spawnFactory: () => fake as any,
+    });
+    const provider = new OpenAICodexProvider('openai-codex/gpt-5.2', { rpcClient });
+
+    for await (const _chunk of provider.stream(
+      [{
+        role: 'user',
+        content: 'analyze',
+        attachments: [{
+          id: 'att-1',
+          filename: 'photo.png',
+          contentType: 'image/png',
+          sizeBytes: 4,
+          path: imagePath,
+          url: '/api/uploads/image?sessionId=web%3Atest&id=att-1',
+        }],
+      }],
+      { sessionId: 'session-fallback-image' }
+    )) {
+      // drain
+    }
+
+    expect(turnStartCalls).toBe(2);
+    expect(observedInputs[0]?.[1]).toMatchObject({ type: 'localImage', path: imagePath });
+    expect(observedInputs[1]?.[1]?.['type']).toBe('image');
+    expect(String(observedInputs[1]?.[1]?.['url'])).toMatch(/^data:image\/png;base64,/);
+
     await provider.dispose();
   });
 });

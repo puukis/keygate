@@ -19,12 +19,13 @@ export type SkillCommandArgMode = 'raw';
 
 // ==================== Messages ====================
 
-export interface Attachment {
+export interface MessageAttachment {
   id: string;
   filename: string;
   contentType: string;
-  url?: string;
-  data?: Buffer;
+  sizeBytes: number;
+  path: string;
+  url: string;
 }
 
 export interface NormalizedMessage {
@@ -34,13 +35,14 @@ export interface NormalizedMessage {
   channel: Channel;
   userId: string;
   content: string;
-  attachments?: Attachment[];
+  attachments?: MessageAttachment[];
   timestamp: Date;
 }
 
 export interface Message {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  attachments?: MessageAttachment[];
   toolCallId?: string;
   toolCalls?: ToolCall[];
 }
@@ -276,7 +278,12 @@ export interface SkillRuntimeSnapshot {
 // ==================== Events ====================
 
 export interface KeygateEvents {
-  'message:user': { sessionId: string; channelType: ChannelType; content: string };
+  'message:user': {
+    sessionId: string;
+    channelType: ChannelType;
+    content: string;
+    attachments?: MessageAttachment[];
+  };
   'message:start': { sessionId: string; messageId: string };
   'message:chunk': { sessionId: string; content: string };
   'message:end': { sessionId: string; content: string };

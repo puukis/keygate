@@ -1,5 +1,7 @@
 import { EventEmitter } from 'eventemitter3';
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
+import { promises as fs } from 'node:fs';
 import type {
   CodexReasoningEffort,
   KeygateConfig,
@@ -105,16 +107,19 @@ export class Gateway extends EventEmitter<KeygateEvents> {
       session.messages.push({
         role: 'user',
         content: message.content,
+        attachments: message.attachments,
       });
       session.updatedAt = new Date();
       this.emit('message:user', {
         sessionId: message.sessionId,
         channelType: message.channelType,
         content: message.content,
+        attachments: message.attachments,
       });
       this.persistSessionSnapshot(session, {
         role: 'user',
         content: message.content,
+        attachments: message.attachments,
       });
 
       // Emit start event
@@ -434,6 +439,15 @@ export class Gateway extends EventEmitter<KeygateEvents> {
    */
   clearSession(sessionId: string): void {
     const session = this.sessions.get(sessionId);
+    const attachmentPaths = new Set<string>([
+      ...collectAttachmentPaths(session?.messages ?? []),
+      ...this.db.getSessionAttachmentPaths(sessionId),
+    ]);
+
+    void this.removeAttachmentFiles(attachmentPaths).catch((error) => {
+      console.error('Failed to remove session attachments:', error);
+    });
+
     if (session) {
       session.messages = [];
       session.updatedAt = new Date();
@@ -449,7 +463,7 @@ export class Gateway extends EventEmitter<KeygateEvents> {
 
   private persistSessionSnapshot(
     session: Session,
-    message?: Pick<Session['messages'][number], 'role' | 'content'>
+    message?: Pick<Session['messages'][number], 'role' | 'content' | 'attachments'>
   ): void {
     try {
       this.db.saveSession(session);
@@ -457,10 +471,30 @@ export class Gateway extends EventEmitter<KeygateEvents> {
         this.db.saveMessage(session.id, {
           role: message.role,
           content: message.content,
+          attachments: message.attachments,
         });
       }
     } catch (error) {
       console.error('Failed to persist session state:', error);
+    }
+  }
+
+  private async removeAttachmentFiles(pathsToDelete: Iterable<string>): Promise<void> {
+    const uploadRoot = path.resolve(path.join(this.config.security.workspacePath, '.keygate-uploads'));
+
+    for (const filePath of pathsToDelete) {
+      const resolvedPath = path.resolve(filePath);
+      if (!isPathWithinRoot(uploadRoot, resolvedPath)) {
+        continue;
+      }
+
+      try {
+        await fs.unlink(resolvedPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+          throw error;
+        }
+      }
     }
   }
 }
@@ -487,4 +521,32 @@ function getDefaultModelForProvider(provider: KeygateConfig['llm']['provider']):
     default:
       return 'gpt-4o';
   }
+}
+
+function collectAttachmentPaths(messages: Session['messages']): string[] {
+  const paths = new Set<string>();
+
+  for (const message of messages) {
+    for (const attachment of message.attachments ?? []) {
+      const normalizedPath = attachment.path.trim();
+      if (!normalizedPath) {
+        continue;
+      }
+
+      paths.add(normalizedPath);
+    }
+  }
+
+  return Array.from(paths);
+}
+
+function isPathWithinRoot(rootDir: string, targetPath: string): boolean {
+  const resolvedRoot = path.resolve(rootDir);
+  const resolvedTarget = path.resolve(targetPath);
+
+  if (resolvedTarget === resolvedRoot) {
+    return true;
+  }
+
+  return resolvedTarget.startsWith(`${resolvedRoot}${path.sep}`);
 }

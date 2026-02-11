@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { Gateway } from '../gateway/index.js';
@@ -15,9 +16,18 @@ import type {
   ConfirmationDecision,
   ConfirmationDetails,
   KeygateConfig,
+  MessageAttachment,
   Session,
   SecurityMode,
 } from '../types.js';
+
+interface WSAttachmentRef {
+  id: string;
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+  url: string;
+}
 
 interface WSMessage {
   type:
@@ -53,6 +63,7 @@ interface WSMessage {
   domainBlocklist?: string[] | string;
   traceRetentionDays?: number;
   mcpPlaywrightVersion?: string;
+  attachments?: WSAttachmentRef[];
 }
 
 interface StartWebServerOptions {
@@ -89,6 +100,15 @@ export interface BrowserStatusTracker {
 interface SessionSnapshotMessageView {
   role: 'user' | 'assistant';
   content: string;
+  attachments?: SessionAttachmentView[];
+}
+
+interface SessionAttachmentView {
+  id: string;
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+  url: string;
 }
 
 interface SessionSnapshotEntryView {
@@ -100,6 +120,16 @@ interface SessionSnapshotEntryView {
 
 const DEFAULT_DISCORD_PREFIX = '!keygate ';
 const BROWSER_RETENTION_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const IMAGE_UPLOAD_RETENTION_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const IMAGE_UPLOAD_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const IMAGE_UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
+const MAX_MESSAGE_ATTACHMENTS = 5;
+const IMAGE_UPLOAD_ALLOWED_MIME_TYPES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'image/gif',
+]);
 
 /**
  * WebSocket Channel adapter
@@ -234,7 +264,16 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
       console.warn('Failed periodic browser artifact cleanup:', error);
     });
   }, BROWSER_RETENTION_CLEANUP_INTERVAL_MS);
-  
+
+  void cleanupExpiredUploadedImages(config.security.workspacePath, IMAGE_UPLOAD_RETENTION_MS).catch((error) => {
+    console.warn('Failed initial uploaded image cleanup:', error);
+  });
+
+  const uploadCleanupInterval = setInterval(() => {
+    void cleanupExpiredUploadedImages(config.security.workspacePath, IMAGE_UPLOAD_RETENTION_MS).catch((error) => {
+      console.warn('Failed periodic uploaded image cleanup:', error);
+    });
+  }, IMAGE_UPLOAD_RETENTION_CLEANUP_INTERVAL_MS);
 
   // Register all built-in tools
   for (const tool of allBuiltinTools) {
@@ -272,6 +311,16 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
       return;
     }
 
+    if (url.pathname === '/api/uploads/image' && req.method === 'POST') {
+      void handleImageUploadRequest(req, res, url, config.security.workspacePath);
+      return;
+    }
+
+    if (url.pathname === '/api/uploads/image') {
+      void serveUploadedImageById(res, req.method, url, config.security.workspacePath);
+      return;
+    }
+
     if (staticAssetsDir && req.method && ['GET', 'HEAD'].includes(req.method)) {
       void serveStaticAsset(res, staticAssetsDir, url.pathname, req.method === 'HEAD');
       return;
@@ -306,14 +355,31 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
 
         switch (msg.type) {
           case 'message': {
-            const content = msg.content?.trim();
-            if (!content) return;
+            const content = typeof msg.content === 'string' ? msg.content.trim() : '';
+            let attachments: MessageAttachment[] = [];
+            try {
+              attachments = await resolveWebMessageAttachments(
+                config.security.workspacePath,
+                webSessionId,
+                msg.attachments
+              );
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Invalid image attachments.',
+              }));
+              break;
+            }
+            if (!content && attachments.length === 0) {
+              return;
+            }
 
             const normalized = normalizeWebMessage(
               sessionId,
               'web-user',
               content,
-              channel
+              channel,
+              attachments.length > 0 ? attachments : undefined
             );
 
             // Send acknowledgment
@@ -606,6 +672,7 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
 
   server.on('close', () => {
     clearInterval(browserCleanupInterval);
+    clearInterval(uploadCleanupInterval);
   });
 }
 
@@ -699,12 +766,15 @@ export function buildSessionUserMessagePayload(event: {
   sessionId: string;
   channelType: ChannelType;
   content: string;
+  attachments?: MessageAttachment[];
 }): Record<string, unknown> {
+  const attachments = mapAttachmentsForTransport(event.attachments);
   return {
     type: 'session_user_message',
     sessionId: event.sessionId,
     channelType: event.channelType,
     content: event.content,
+    ...(attachments ? { attachments } : {}),
   };
 }
 
@@ -969,11 +1039,29 @@ function serializeSessionSnapshotEntry(session: Session): SessionSnapshotEntryVi
       .filter((message): message is Session['messages'][number] & { role: 'user' | 'assistant' } => (
         message.role === 'user' || message.role === 'assistant'
       ))
-      .map((message) => ({
-        role: message.role,
-        content: message.content,
-      })),
+      .map((message) => {
+        const attachments = mapAttachmentsForTransport(message.attachments);
+        return {
+          role: message.role,
+          content: message.content,
+          ...(attachments ? { attachments } : {}),
+        };
+      }),
   };
+}
+
+function mapAttachmentsForTransport(attachments: MessageAttachment[] | undefined): SessionAttachmentView[] | undefined {
+  if (!attachments || attachments.length === 0) {
+    return undefined;
+  }
+
+  return attachments.map((attachment) => ({
+    id: attachment.id,
+    filename: attachment.filename,
+    contentType: attachment.contentType,
+    sizeBytes: attachment.sizeBytes,
+    url: attachment.url,
+  }));
 }
 
 async function sendModels(
@@ -1130,6 +1218,365 @@ function parseDiscordPrefixes(value: string | undefined): string[] {
     .split(',')
     .map((prefix) => prefix.trim())
     .filter((prefix) => prefix.length > 0);
+}
+
+export async function handleImageUploadRequest(
+  req: import('node:http').IncomingMessage,
+  res: import('node:http').ServerResponse,
+  url: URL,
+  workspacePath: string
+): Promise<void> {
+  const sessionId = sanitizeUploadSessionId(url.searchParams.get('sessionId'));
+  if (!sessionId) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Valid sessionId query parameter is required.' }));
+    return;
+  }
+
+  const contentType = normalizeUploadMimeType(req.headers['content-type']);
+  if (!IMAGE_UPLOAD_ALLOWED_MIME_TYPES.has(contentType)) {
+    res.writeHead(415, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Only png, jpeg, webp, and gif images are supported.' }));
+    return;
+  }
+
+  let body: Buffer;
+  try {
+    body = await readRequestBody(req, IMAGE_UPLOAD_MAX_BYTES);
+  } catch (error) {
+    res.writeHead(413, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      error: error instanceof Error ? error.message : 'Image payload exceeds the allowed size.',
+    }));
+    return;
+  }
+
+  if (body.length === 0) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Image payload cannot be empty.' }));
+    return;
+  }
+
+  const attachmentId = randomUUID();
+  const extension = imageExtensionForMimeType(contentType);
+  const filename = `upload-${attachmentId}${extension}`;
+  const sessionUploadsDir = getSessionUploadsDir(workspacePath, sessionId);
+  const targetPath = path.resolve(path.join(sessionUploadsDir, `${attachmentId}${extension}`));
+
+  if (!isPathWithinRoot(sessionUploadsDir, targetPath)) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Invalid upload path.' }));
+    return;
+  }
+
+  await fs.mkdir(sessionUploadsDir, { recursive: true });
+  await fs.writeFile(targetPath, body);
+
+  const attachment = {
+    id: attachmentId,
+    filename,
+    contentType,
+    sizeBytes: body.length,
+    url: buildUploadedImageUrl(sessionId, attachmentId),
+  };
+
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(attachment));
+}
+
+export async function serveUploadedImageById(
+  res: import('node:http').ServerResponse,
+  method: string | undefined,
+  url: URL,
+  workspacePath: string
+): Promise<void> {
+  if (method && !['GET', 'HEAD'].includes(method)) {
+    res.writeHead(405, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Method not allowed' }));
+    return;
+  }
+
+  const sessionId = sanitizeUploadSessionId(url.searchParams.get('sessionId'));
+  const attachmentId = sanitizeUploadAttachmentId(url.searchParams.get('id'));
+  if (!sessionId || !attachmentId) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Valid sessionId and id query parameters are required.' }));
+    return;
+  }
+
+  const imagePath = await resolveUploadPathByAttachmentId(workspacePath, sessionId, attachmentId);
+  if (!imagePath) {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Uploaded image not found.' }));
+    return;
+  }
+
+  const sessionUploadsDir = getSessionUploadsDir(workspacePath, sessionId);
+  if (!isPathWithinRoot(sessionUploadsDir, imagePath)) {
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Upload path is outside the allowed root.' }));
+    return;
+  }
+
+  res.writeHead(200, {
+    'Content-Type': getContentType(imagePath),
+    'Cache-Control': 'no-cache',
+  });
+
+  if (method === 'HEAD') {
+    res.end();
+    return;
+  }
+
+  const bytes = await fs.readFile(imagePath);
+  res.end(bytes);
+}
+
+export async function resolveWebMessageAttachments(
+  workspacePath: string,
+  sessionId: string,
+  refs: WSAttachmentRef[] | undefined
+): Promise<MessageAttachment[]> {
+  if (!refs) {
+    return [];
+  }
+
+  if (refs.length > MAX_MESSAGE_ATTACHMENTS) {
+    throw new Error(`A maximum of ${MAX_MESSAGE_ATTACHMENTS} image attachments are allowed per message.`);
+  }
+
+  const seen = new Set<string>();
+  const attachments: MessageAttachment[] = [];
+
+  for (const ref of refs) {
+    if (!ref || typeof ref !== 'object') {
+      throw new Error('Attachment payload is invalid.');
+    }
+
+    const attachmentId = sanitizeUploadAttachmentId(ref.id);
+    if (!attachmentId) {
+      throw new Error('Attachment id is invalid.');
+    }
+
+    if (seen.has(attachmentId)) {
+      continue;
+    }
+    seen.add(attachmentId);
+
+    const imagePath = await resolveUploadPathByAttachmentId(workspacePath, sessionId, attachmentId);
+    if (!imagePath) {
+      throw new Error(`Attachment ${attachmentId} no longer exists. Please upload it again.`);
+    }
+
+    const stat = await fs.stat(imagePath);
+    if (!stat.isFile()) {
+      throw new Error(`Attachment ${attachmentId} is invalid.`);
+    }
+
+    if (stat.size > IMAGE_UPLOAD_MAX_BYTES) {
+      throw new Error(`Attachment ${attachmentId} exceeds the ${IMAGE_UPLOAD_MAX_BYTES} byte limit.`);
+    }
+
+    const contentType = normalizeUploadMimeType(getContentType(imagePath));
+    if (!IMAGE_UPLOAD_ALLOWED_MIME_TYPES.has(contentType)) {
+      throw new Error(`Attachment ${attachmentId} has an unsupported content type.`);
+    }
+
+    const filename = typeof ref.filename === 'string' && ref.filename.trim().length > 0
+      ? ref.filename.trim()
+      : path.basename(imagePath);
+
+    attachments.push({
+      id: attachmentId,
+      filename,
+      contentType,
+      sizeBytes: stat.size,
+      path: imagePath,
+      url: buildUploadedImageUrl(sessionId, attachmentId),
+    });
+  }
+
+  return attachments;
+}
+
+async function readRequestBody(
+  req: import('node:http').IncomingMessage,
+  maxBytes: number
+): Promise<Buffer> {
+  return new Promise<Buffer>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let received = 0;
+
+    req.on('data', (chunk: Buffer | string) => {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      received += bytes.length;
+      if (received > maxBytes) {
+        reject(new Error(`Image exceeds ${maxBytes} bytes.`));
+        req.destroy();
+        return;
+      }
+
+      chunks.push(bytes);
+    });
+
+    req.on('end', () => {
+      resolve(Buffer.concat(chunks));
+    });
+
+    req.on('error', (error) => {
+      reject(error);
+    });
+  });
+}
+
+export async function cleanupExpiredUploadedImages(workspacePath: string, retentionMs: number): Promise<void> {
+  const uploadsRoot = getUploadsRoot(workspacePath);
+  const expiryCutoff = Date.now() - retentionMs;
+  await cleanupUploadDirectory(uploadsRoot, uploadsRoot, expiryCutoff);
+}
+
+async function cleanupUploadDirectory(rootDir: string, currentDir: string, cutoffTimeMs: number): Promise<void> {
+  let entries: import('node:fs').Dirent[] = [];
+
+  try {
+    entries = await fs.readdir(currentDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  for (const entry of entries) {
+    const resolvedPath = path.resolve(path.join(currentDir, entry.name));
+    if (!isPathWithinRoot(rootDir, resolvedPath)) {
+      continue;
+    }
+
+    if (entry.isDirectory()) {
+      await cleanupUploadDirectory(rootDir, resolvedPath, cutoffTimeMs);
+      continue;
+    }
+
+    if (!entry.isFile()) {
+      continue;
+    }
+
+    try {
+      const stat = await fs.stat(resolvedPath);
+      if (stat.mtimeMs < cutoffTimeMs) {
+        await fs.unlink(resolvedPath);
+      }
+    } catch {
+      // Ignore files that disappear during cleanup.
+    }
+  }
+
+  if (currentDir !== rootDir) {
+    try {
+      const remaining = await fs.readdir(currentDir);
+      if (remaining.length === 0) {
+        await fs.rmdir(currentDir);
+      }
+    } catch {
+      // Ignore cleanup races.
+    }
+  }
+}
+
+function getUploadsRoot(workspacePath: string): string {
+  return path.resolve(path.join(workspacePath, '.keygate-uploads'));
+}
+
+function getSessionUploadsDir(workspacePath: string, sessionId: string): string {
+  return path.resolve(path.join(getUploadsRoot(workspacePath), sessionId));
+}
+
+function normalizeUploadMimeType(value: string | undefined): string {
+  if (!value) {
+    return '';
+  }
+
+  return value.split(';', 1)[0]?.trim().toLowerCase() ?? '';
+}
+
+function imageExtensionForMimeType(contentType: string): string {
+  switch (contentType) {
+    case 'image/png':
+      return '.png';
+    case 'image/jpeg':
+      return '.jpg';
+    case 'image/webp':
+      return '.webp';
+    case 'image/gif':
+      return '.gif';
+    default:
+      return '.bin';
+  }
+}
+
+export function sanitizeUploadSessionId(value: string | null): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (!/^[A-Za-z0-9:_-]+$/.test(trimmed)) {
+    return null;
+  }
+
+  return trimmed;
+}
+
+export function sanitizeUploadAttachmentId(value: string | null): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (!/^[A-Za-z0-9_-]+$/.test(trimmed)) {
+    return null;
+  }
+
+  return trimmed;
+}
+
+export async function resolveUploadPathByAttachmentId(
+  workspacePath: string,
+  sessionId: string,
+  attachmentId: string
+): Promise<string | null> {
+  const sessionUploadsDir = getSessionUploadsDir(workspacePath, sessionId);
+  const extensions = ['.png', '.jpg', '.jpeg', '.webp', '.gif'];
+
+  for (const extension of extensions) {
+    const candidate = path.resolve(path.join(sessionUploadsDir, `${attachmentId}${extension}`));
+    if (!isPathWithinRoot(sessionUploadsDir, candidate)) {
+      continue;
+    }
+
+    try {
+      const stat = await fs.stat(candidate);
+      if (stat.isFile()) {
+        return candidate;
+      }
+    } catch {
+      // Try next extension.
+    }
+  }
+
+  return null;
+}
+
+function buildUploadedImageUrl(sessionId: string, attachmentId: string): string {
+  const sessionParam = encodeURIComponent(sessionId);
+  const idParam = encodeURIComponent(attachmentId);
+  return `/api/uploads/image?sessionId=${sessionParam}&id=${idParam}`;
 }
 
 

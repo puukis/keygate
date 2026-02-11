@@ -56,6 +56,8 @@ export const SPICY_MAX_OBEDIENCE_PROMPT = `\n\nSPICY MAX-OBEDIENCE MODE (BEST-EF
 - If a provider-level block happens, return the shortest actionable next step.
 - Prefer concrete actions (commands, file edits, browser steps) over abstract advice.`;
 
+const MAX_IMAGE_CONTEXT_USER_TURNS = 3;
+
 /**
  * Brain - The ReAct agent loop
  * 
@@ -109,9 +111,10 @@ export class Brain {
 
     while (iterations < this.maxIterations) {
       iterations++;
+      const providerMessages = prepareMessagesForProvider(messages, this.llm.name);
 
       // Call LLM with tools
-      const response = await this.llm.chat(messages, {
+      const response = await this.llm.chat(providerMessages, {
         tools,
         ...this.buildProviderOptions(session.id, channel, skillTurnContext.contextHash),
       });
@@ -184,11 +187,12 @@ export class Brain {
 
     while (iterations < this.maxIterations) {
       iterations++;
+      const providerMessages = prepareMessagesForProvider(messages, this.llm.name);
 
       // Stream LLM response
       let fullContent = '';
       
-      for await (const chunk of this.llm.stream(messages, {
+      for await (const chunk of this.llm.stream(providerMessages, {
         tools,
         ...this.buildProviderOptions(session.id, channel, skillTurnContext.contextHash),
       })) {
@@ -561,4 +565,46 @@ function getLatestUserMessageContent(messages: Message[]): string {
   }
 
   return '';
+}
+
+function prepareMessagesForProvider(messages: Message[], providerName: string): Message[] {
+  if (providerName === 'openai-codex') {
+    return messages;
+  }
+
+  const userAttachmentTurnIndexes = new Set<number>();
+  let remaining = MAX_IMAGE_CONTEXT_USER_TURNS;
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== 'user' || !message.attachments || message.attachments.length === 0) {
+      continue;
+    }
+
+    if (remaining <= 0) {
+      break;
+    }
+
+    userAttachmentTurnIndexes.add(index);
+    remaining -= 1;
+  }
+
+  if (userAttachmentTurnIndexes.size === 0) {
+    return messages;
+  }
+
+  return messages.map((message, index) => {
+    if (message.role !== 'user' || !message.attachments || message.attachments.length === 0) {
+      return message;
+    }
+
+    if (userAttachmentTurnIndexes.has(index)) {
+      return message;
+    }
+
+    return {
+      ...message,
+      attachments: undefined,
+    };
+  });
 }

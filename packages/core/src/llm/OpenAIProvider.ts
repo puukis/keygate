@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { readAttachmentAsDataUrl } from './attachments.js';
 import type {
   ChatOptions,
   LLMChunk,
@@ -23,9 +24,10 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   async chat(messages: Message[], options?: ChatOptions): Promise<LLMResponse> {
+    const convertedMessages = await this.convertMessages(messages);
     const response = await this.client.chat.completions.create({
       model: this.model,
-      messages: this.convertMessages(messages),
+      messages: convertedMessages,
       tools: options?.tools ? this.convertTools(options.tools) : undefined,
       temperature: options?.temperature ?? 0.7,
       max_tokens: options?.maxTokens,
@@ -50,9 +52,10 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   async *stream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
+    const convertedMessages = await this.convertMessages(messages);
     const stream = await this.client.chat.completions.create({
       model: this.model,
-      messages: this.convertMessages(messages),
+      messages: convertedMessages,
       tools: options?.tools ? this.convertTools(options.tools) : undefined,
       temperature: options?.temperature ?? 0.7,
       max_tokens: options?.maxTokens,
@@ -104,17 +107,53 @@ export class OpenAIProvider implements LLMProvider {
     }
   }
 
-  private convertMessages(messages: Message[]): OpenAI.ChatCompletionMessageParam[] {
-    return messages.map((m): OpenAI.ChatCompletionMessageParam => {
+  private async convertMessages(messages: Message[]): Promise<OpenAI.ChatCompletionMessageParam[]> {
+    const converted: OpenAI.ChatCompletionMessageParam[] = [];
+
+    for (const message of messages) {
+      if (message.role === 'user' && message.attachments && message.attachments.length > 0) {
+        const parts: OpenAI.ChatCompletionContentPart[] = [];
+        if (message.content.length > 0) {
+          parts.push({
+            type: 'text',
+            text: message.content,
+          });
+        }
+
+        for (const attachment of message.attachments) {
+          const dataUrl = await readAttachmentAsDataUrl(attachment);
+          if (!dataUrl) {
+            continue;
+          }
+
+          parts.push({
+            type: 'image_url',
+            image_url: {
+              url: dataUrl,
+            },
+          });
+        }
+
+        converted.push({
+          role: 'user',
+          content: parts.length > 0
+            ? parts
+            : [{ type: 'text', text: message.content }],
+        });
+        continue;
+      }
+
+      const m = message;
       if (m.role === 'tool') {
-        return {
+        converted.push({
           role: 'tool',
           content: m.content,
           tool_call_id: m.toolCallId ?? '',
-        };
+        });
+        continue;
       }
       if (m.role === 'assistant' && m.toolCalls) {
-        return {
+        converted.push({
           role: 'assistant',
           content: m.content,
           tool_calls: m.toolCalls.map(tc => ({
@@ -125,13 +164,16 @@ export class OpenAIProvider implements LLMProvider {
               arguments: JSON.stringify(tc.arguments),
             },
           })),
-        };
+        });
+        continue;
       }
-      return {
+      converted.push({
         role: m.role as 'system' | 'user' | 'assistant',
         content: m.content,
-      };
-    });
+      });
+    }
+
+    return converted;
   }
 
   private convertTools(tools: ToolDefinition[]): OpenAI.ChatCompletionTool[] {

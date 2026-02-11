@@ -21,6 +21,31 @@ describe('normalize message helpers', () => {
     expect(normalized.content).toBe('hello');
   });
 
+  it('forwards web attachments when present', () => {
+    const channel = createChannel('web');
+    const normalized = normalizeWebMessage(
+      'abc',
+      'user-1',
+      'describe this image',
+      channel,
+      [{
+        id: 'att-1',
+        filename: 'capture.png',
+        contentType: 'image/png',
+        sizeBytes: 128,
+        path: '/tmp/capture.png',
+        url: '/api/uploads/image?sessionId=web%3Aabc&id=att-1',
+      }]
+    );
+
+    expect(normalized.attachments).toEqual([
+      expect.objectContaining({
+        id: 'att-1',
+        filename: 'capture.png',
+      }),
+    ]);
+  });
+
   it('normalizes discord messages with discord session prefix', () => {
     const channel = createChannel('discord');
     const normalized = normalizeDiscordMessage('msg-1', 'chan-1', 'user-1', 'hello', channel);

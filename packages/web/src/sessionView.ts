@@ -1,9 +1,18 @@
 export type SessionChannelType = 'web' | 'discord' | 'terminal';
 
+export interface SessionAttachment {
+  id: string;
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+  url: string;
+}
+
 export interface SessionMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  attachments?: SessionAttachment[];
   timestamp: Date;
 }
 
@@ -15,6 +24,7 @@ export interface SessionMeta {
 export interface SessionSnapshotMessage {
   role: 'user' | 'assistant';
   content: string;
+  attachments?: SessionAttachment[];
 }
 
 export interface SessionSnapshotEntry {
@@ -65,6 +75,7 @@ export type SessionChatEvent =
     sessionId: string;
     channelType: SessionChannelType;
     content: string;
+    attachments?: SessionAttachment[];
     timestamp: Date;
   }
   | {
@@ -131,6 +142,7 @@ export function reduceSessionChatState(state: SessionChatState, event: SessionCh
           id: `snapshot:${session.sessionId}:${index}`,
           role: message.role,
           content: message.content,
+          attachments: message.attachments,
           timestamp: new Date(session.updatedAt),
         }));
 
@@ -221,6 +233,7 @@ export function reduceSessionChatState(state: SessionChatState, event: SessionCh
         id: buildMessageId(event.sessionId, 'user', event.timestamp, prevMessages.length),
         role: 'user' as const,
         content: event.content,
+        attachments: event.attachments,
         timestamp: new Date(event.timestamp),
       };
 

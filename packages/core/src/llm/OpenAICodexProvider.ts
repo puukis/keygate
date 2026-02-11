@@ -7,9 +7,11 @@ import type {
   LLMProvider,
   LLMResponse,
   Message,
+  MessageAttachment,
   ProviderModelOption,
   SecurityMode,
 } from '../types.js';
+import { getLatestUserMessageAttachments, readAttachmentAsDataUrl } from './attachments.js';
 import {
   CodexRpcClient,
   codexModelFromProviderModelId,
@@ -141,10 +143,12 @@ export class OpenAICodexProvider implements LLMProvider {
     });
 
     const selectedModel = await this.resolveCodexModelId();
+    const latestAttachments = getLatestUserMessageAttachments(messages);
+    const primaryTurnInput = await buildCodexTurnInputItems(prompt, latestAttachments, 'local');
 
     const turnParams: Record<string, unknown> = {
       threadId,
-      input: [{ type: 'text', text: prompt }],
+      input: primaryTurnInput,
       cwd: options?.cwd ?? this.cwd,
       model: selectedModel,
       approvalPolicy: normalizeApprovalPolicy(options?.approvalPolicy),
@@ -158,7 +162,17 @@ export class OpenAICodexProvider implements LLMProvider {
       turnParams['sandbox_policy'] = sandboxPolicy;
     }
 
-    const turnStart = await this.client.request<CodexTurnStartResult>('turn/start', turnParams);
+    let turnStart: CodexTurnStartResult;
+    try {
+      turnStart = await this.client.request<CodexTurnStartResult>('turn/start', turnParams);
+    } catch (error) {
+      if (latestAttachments.length === 0 || !shouldRetryCodexTurnWithImageDataUrl(error)) {
+        throw error;
+      }
+
+      turnParams['input'] = await buildCodexTurnInputItems(prompt, latestAttachments, 'data-url');
+      turnStart = await this.client.request<CodexTurnStartResult>('turn/start', turnParams);
+    }
     const turnId = getTurnId(turnStart);
 
     if (!turnId) {
@@ -671,6 +685,65 @@ function getLatestUserPrompt(messages: Message[]): string {
   }
 
   throw new Error('No user message found for Codex turn/start');
+}
+
+async function buildCodexTurnInputItems(
+  prompt: string,
+  attachments: MessageAttachment[],
+  mode: 'local' | 'data-url'
+): Promise<Array<Record<string, string>>> {
+  const items: Array<Record<string, string>> = [{
+    type: 'text',
+    text: prompt,
+  }];
+
+  if (attachments.length === 0) {
+    return items;
+  }
+
+  if (mode === 'local') {
+    for (const attachment of attachments) {
+      const normalizedPath = attachment.path.trim();
+      if (!normalizedPath) {
+        continue;
+      }
+
+      items.push({
+        type: 'localImage',
+        path: normalizedPath,
+      });
+    }
+
+    return items;
+  }
+
+  for (const attachment of attachments) {
+    const dataUrl = await readAttachmentAsDataUrl(attachment);
+    if (!dataUrl) {
+      continue;
+    }
+
+    items.push({
+      type: 'image',
+      url: dataUrl,
+      image_url: dataUrl,
+    });
+  }
+
+  return items;
+}
+
+function shouldRetryCodexTurnWithImageDataUrl(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.toLowerCase();
+
+  return (
+    normalized.includes('localimage') ||
+    normalized.includes('local_image') ||
+    normalized.includes('unknown variant') ||
+    normalized.includes('invalid type') ||
+    normalized.includes('deserialize')
+  );
 }
 
 function buildTurnPrompt(

@@ -1,6 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
+import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import {
   WebSocketChannel,
@@ -17,10 +18,16 @@ import {
   applyBrowserPolicyUpdate,
   isPathWithinRoot,
   maybeRefreshCodexProviderForBrowserStatusChange,
+  cleanupExpiredUploadedImages,
   resolveLatestSessionScreenshot,
+  resolveUploadPathByAttachmentId,
   resolveSessionScreenshotByFilename,
   sanitizeBrowserScreenshotFilename,
   sanitizeBrowserSessionId,
+  sanitizeUploadAttachmentId,
+  sanitizeUploadSessionId,
+  serveUploadedImageById,
+  handleImageUploadRequest,
 } from '../index.js';
 describe('server spicy obedience payloads', () => {
   it('includes spicyObedienceEnabled in connected payload', () => {
@@ -161,6 +168,49 @@ describe('session snapshot payload', () => {
       { role: 'assistant', content: 'a1' },
     ]);
   });
+
+  it('includes user message attachments in snapshot serialization', () => {
+    const gateway = {
+      listSessions: () => [
+        {
+          id: 'web:current',
+          channelType: 'web' as const,
+          messages: [{
+            role: 'user' as const,
+            content: 'analyze this',
+            attachments: [{
+              id: 'att-1',
+              filename: 'photo.png',
+              contentType: 'image/png',
+              sizeBytes: 1024,
+              path: '/tmp/photo.png',
+              url: '/api/uploads/image?sessionId=web%3Acurrent&id=att-1',
+            }],
+          }],
+          createdAt: new Date('2026-02-08T12:00:00.000Z'),
+          updatedAt: new Date('2026-02-08T12:01:00.000Z'),
+        },
+      ],
+    } as any;
+
+    const payload = buildSessionSnapshotPayload(gateway, 'web:current');
+    const sessions = payload['sessions'] as Array<Record<string, unknown>>;
+    const current = sessions.find((session) => session['sessionId'] === 'web:current');
+    const messages = current?.['messages'] as Array<Record<string, unknown>>;
+    const firstMessage = messages[0];
+
+    expect(firstMessage).toEqual({
+      role: 'user',
+      content: 'analyze this',
+      attachments: [{
+        id: 'att-1',
+        filename: 'photo.png',
+        contentType: 'image/png',
+        sizeBytes: 1024,
+        url: '/api/uploads/image?sessionId=web%3Acurrent&id=att-1',
+      }],
+    });
+  });
 });
 
 describe('session websocket event payloads', () => {
@@ -169,11 +219,26 @@ describe('session websocket event payloads', () => {
       sessionId: 'discord:123',
       channelType: 'discord',
       content: 'hello',
+      attachments: [{
+        id: 'att-1',
+        filename: 'chart.png',
+        contentType: 'image/png',
+        sizeBytes: 256,
+        path: '/tmp/chart.png',
+        url: '/api/uploads/image?sessionId=discord%3A123&id=att-1',
+      }],
     })).toEqual({
       type: 'session_user_message',
       sessionId: 'discord:123',
       channelType: 'discord',
       content: 'hello',
+      attachments: [{
+        id: 'att-1',
+        filename: 'chart.png',
+        contentType: 'image/png',
+        sizeBytes: 256,
+        url: '/api/uploads/image?sessionId=discord%3A123&id=att-1',
+      }],
     });
 
     expect(buildSessionChunkPayload({
@@ -741,3 +806,198 @@ describe('browser screenshot security helpers', () => {
     expect(isPathWithinRoot(root, '/tmp/keygate-browser-root/../secret.png')).toBe(false);
   });
 });
+
+describe('image upload helpers', () => {
+  it('sanitizes upload session/id values and rejects traversal', () => {
+    expect(sanitizeUploadSessionId('web:123')).toBe('web:123');
+    expect(sanitizeUploadSessionId('../etc/passwd')).toBeNull();
+    expect(sanitizeUploadSessionId('web:abc/def')).toBeNull();
+
+    expect(sanitizeUploadAttachmentId('abc-123_DEF')).toBe('abc-123_DEF');
+    expect(sanitizeUploadAttachmentId('../../bad')).toBeNull();
+    expect(sanitizeUploadAttachmentId('')).toBeNull();
+  });
+
+  it('resolves upload files by attachment id under session root', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'keygate-upload-resolve-'));
+    const sessionDir = path.join(workspaceRoot, '.keygate-uploads', 'web:test');
+    await fs.mkdir(sessionDir, { recursive: true });
+    await fs.writeFile(path.join(sessionDir, 'att-1.png'), 'png-data', 'utf8');
+
+    const found = await resolveUploadPathByAttachmentId(workspaceRoot, 'web:test', 'att-1');
+    const missing = await resolveUploadPathByAttachmentId(workspaceRoot, 'web:test', 'missing');
+
+    expect(found).toBe(path.resolve(path.join(sessionDir, 'att-1.png')));
+    expect(missing).toBeNull();
+  });
+
+  it('rejects upload requests with invalid session id, mime type, or oversized body', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'keygate-upload-validate-'));
+
+    const invalidSession = await invokeUpload({
+      workspacePath: workspaceRoot,
+      sessionId: '../etc/passwd',
+      contentType: 'image/png',
+      body: Buffer.from('a'),
+    });
+    expect(invalidSession.statusCode).toBe(400);
+
+    const invalidMime = await invokeUpload({
+      workspacePath: workspaceRoot,
+      sessionId: 'web:test',
+      contentType: 'text/plain',
+      body: Buffer.from('a'),
+    });
+    expect(invalidMime.statusCode).toBe(415);
+
+    const oversized = await invokeUpload({
+      workspacePath: workspaceRoot,
+      sessionId: 'web:test',
+      contentType: 'image/png',
+      body: Buffer.alloc(10 * 1024 * 1024 + 1, 1),
+    });
+    expect(oversized.statusCode).toBe(413);
+  });
+
+  it('stores and serves uploaded images with session/id validation', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'keygate-upload-store-'));
+
+    const upload = await invokeUpload({
+      workspacePath: workspaceRoot,
+      sessionId: 'web:test',
+      contentType: 'image/png',
+      body: Buffer.from('png-bytes'),
+    });
+
+    expect(upload.statusCode).toBe(200);
+    const payload = JSON.parse(upload.body.toString('utf8')) as Record<string, unknown>;
+    expect(typeof payload['id']).toBe('string');
+    expect(payload['contentType']).toBe('image/png');
+    expect(payload['sizeBytes']).toBe(9);
+
+    const attachmentId = String(payload['id']);
+
+    const served = await invokeServeUpload({
+      workspacePath: workspaceRoot,
+      method: 'GET',
+      sessionId: 'web:test',
+      attachmentId,
+    });
+
+    expect(served.statusCode).toBe(200);
+    expect(served.headers['Content-Type']).toBe('image/png');
+    expect(served.body.toString('utf8')).toBe('png-bytes');
+
+    const invalidLookup = await invokeServeUpload({
+      workspacePath: workspaceRoot,
+      method: 'GET',
+      sessionId: '../bad',
+      attachmentId,
+    });
+    expect(invalidLookup.statusCode).toBe(400);
+  });
+
+  it('removes uploaded files older than retention window', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'keygate-upload-retention-'));
+    const sessionDir = path.join(workspaceRoot, '.keygate-uploads', 'web:test');
+    const oldFile = path.join(sessionDir, 'old.png');
+    const freshFile = path.join(sessionDir, 'fresh.png');
+
+    await fs.mkdir(sessionDir, { recursive: true });
+    await fs.writeFile(oldFile, 'old', 'utf8');
+    await fs.writeFile(freshFile, 'fresh', 'utf8');
+
+    const now = Date.now();
+    const oldTime = new Date(now - (31 * 24 * 60 * 60 * 1000));
+    const freshTime = new Date(now - 1_000);
+    await fs.utimes(oldFile, oldTime, oldTime);
+    await fs.utimes(freshFile, freshTime, freshTime);
+
+    await cleanupExpiredUploadedImages(workspaceRoot, 30 * 24 * 60 * 60 * 1000);
+
+    await expect(fs.access(oldFile)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fs.access(freshFile)).resolves.toBeUndefined();
+  });
+});
+
+type MockResponseResult = {
+  statusCode: number;
+  headers: Record<string, string>;
+  body: Buffer;
+};
+
+async function invokeUpload(args: {
+  workspacePath: string;
+  sessionId: string;
+  contentType: string;
+  body: Buffer;
+}): Promise<MockResponseResult> {
+  const req = new PassThrough() as PassThrough & {
+    headers: Record<string, string>;
+  };
+  req.headers = {
+    'content-type': args.contentType,
+  };
+
+  const url = new URL(`http://localhost/api/uploads/image?sessionId=${encodeURIComponent(args.sessionId)}`);
+  const response = createMockResponse();
+
+  const pending = handleImageUploadRequest(req as any, response.res as any, url, args.workspacePath);
+  req.end(args.body);
+  await pending;
+
+  return response.result();
+}
+
+async function invokeServeUpload(args: {
+  workspacePath: string;
+  method: 'GET' | 'HEAD';
+  sessionId: string;
+  attachmentId: string;
+}): Promise<MockResponseResult> {
+  const url = new URL(
+    `http://localhost/api/uploads/image?sessionId=${encodeURIComponent(args.sessionId)}&id=${encodeURIComponent(args.attachmentId)}`
+  );
+  const response = createMockResponse();
+
+  await serveUploadedImageById(response.res as any, args.method, url, args.workspacePath);
+  return response.result();
+}
+
+function createMockResponse(): {
+  res: {
+    writeHead: (statusCode: number, headers?: Record<string, string>) => void;
+    end: (chunk?: unknown) => void;
+  };
+  result: () => MockResponseResult;
+} {
+  let statusCode = 200;
+  let headers: Record<string, string> = {};
+  const chunks: Buffer[] = [];
+
+  return {
+    res: {
+      writeHead: (nextStatusCode: number, nextHeaders?: Record<string, string>) => {
+        statusCode = nextStatusCode;
+        headers = { ...(nextHeaders ?? {}) };
+      },
+      end: (chunk?: unknown) => {
+        if (chunk === undefined || chunk === null) {
+          return;
+        }
+
+        if (Buffer.isBuffer(chunk)) {
+          chunks.push(chunk);
+          return;
+        }
+
+        chunks.push(Buffer.from(String(chunk), 'utf8'));
+      },
+    },
+    result: () => ({
+      statusCode,
+      headers,
+      body: Buffer.concat(chunks),
+    }),
+  };
+}

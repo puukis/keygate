@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as fs from 'node:fs';
-import type { Message, Session, ToolResult } from '../types.js';
+import type { Message, MessageAttachment, Session, ToolResult } from '../types.js';
 
 /**
  * SQLite Database for Keygate persistence
@@ -55,6 +55,22 @@ export class KeygateDatabase {
       CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
       CREATE INDEX IF NOT EXISTS idx_tool_logs_session ON tool_logs(session_id);
     `);
+
+    this.ensureMessagesAttachmentsColumn();
+  }
+
+  private ensureMessagesAttachmentsColumn(): void {
+    type ColumnInfo = {
+      name: string;
+    };
+
+    const columns = this.db.prepare('PRAGMA table_info(messages)').all() as ColumnInfo[];
+    const hasAttachmentsColumn = columns.some((column) => column.name === 'attachments');
+    if (hasAttachmentsColumn) {
+      return;
+    }
+
+    this.db.exec('ALTER TABLE messages ADD COLUMN attachments TEXT');
   }
 
   /**
@@ -133,13 +149,14 @@ export class KeygateDatabase {
    */
   saveMessage(sessionId: string, message: Message): void {
     const stmt = this.db.prepare(`
-      INSERT INTO messages (session_id, role, content, tool_call_id, tool_calls, created_at)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO messages (session_id, role, content, attachments, tool_call_id, tool_calls, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       sessionId,
       message.role,
       message.content,
+      message.attachments ? JSON.stringify(message.attachments) : null,
       message.toolCallId ?? null,
       message.toolCalls ? JSON.stringify(message.toolCalls) : null,
       new Date().toISOString()
@@ -153,6 +170,7 @@ export class KeygateDatabase {
     type MessageRow = {
       role: 'system' | 'user' | 'assistant' | 'tool';
       content: string;
+      attachments: string | null;
       tool_call_id: string | null;
       tool_calls: string | null;
     };
@@ -163,9 +181,46 @@ export class KeygateDatabase {
     return rows.map(row => ({
       role: row.role,
       content: row.content,
+      attachments: parseMessageAttachments(row.attachments),
       toolCallId: row.tool_call_id ?? undefined,
       toolCalls: row.tool_calls ? JSON.parse(row.tool_calls) : undefined,
     }));
+  }
+
+  getSessionAttachmentPaths(sessionId: string): string[] {
+    type AttachmentsRow = {
+      attachments: string | null;
+    };
+
+    const stmt = this.db.prepare(`
+      SELECT attachments
+      FROM messages
+      WHERE session_id = ?
+        AND attachments IS NOT NULL
+    `);
+
+    const rows = stmt.all(sessionId) as AttachmentsRow[];
+    const seen = new Set<string>();
+    const paths: string[] = [];
+
+    for (const row of rows) {
+      const attachments = parseMessageAttachments(row.attachments);
+      if (!attachments) {
+        continue;
+      }
+
+      for (const attachment of attachments) {
+        const normalizedPath = attachment.path.trim();
+        if (!normalizedPath || seen.has(normalizedPath)) {
+          continue;
+        }
+
+        seen.add(normalizedPath);
+        paths.push(normalizedPath);
+      }
+    }
+
+    return paths;
   }
 
   /**
@@ -243,3 +298,47 @@ export class KeygateDatabase {
 
 // Re-export as Database for simpler imports
 export { KeygateDatabase as Database };
+
+function parseMessageAttachments(value: string | null): MessageAttachment[] | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) {
+      return undefined;
+    }
+
+    const attachments = parsed.flatMap((entry) => {
+      if (!entry || typeof entry !== 'object') {
+        return [];
+      }
+
+      const record = entry as Record<string, unknown>;
+      const id = typeof record['id'] === 'string' ? record['id'].trim() : '';
+      const filename = typeof record['filename'] === 'string' ? record['filename'].trim() : '';
+      const contentType = typeof record['contentType'] === 'string' ? record['contentType'].trim() : '';
+      const sizeBytes = Number.parseInt(String(record['sizeBytes'] ?? ''), 10);
+      const filePath = typeof record['path'] === 'string' ? record['path'].trim() : '';
+      const url = typeof record['url'] === 'string' ? record['url'].trim() : '';
+
+      if (!id || !filename || !contentType || !Number.isFinite(sizeBytes) || sizeBytes < 0 || !filePath || !url) {
+        return [];
+      }
+
+      return [{
+        id,
+        filename,
+        contentType,
+        sizeBytes,
+        path: filePath,
+        url,
+      } satisfies MessageAttachment];
+    });
+
+    return attachments.length > 0 ? attachments : undefined;
+  } catch {
+    return undefined;
+  }
+}

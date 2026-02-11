@@ -15,6 +15,7 @@ import {
   isComposerDisabled,
   isSessionReadOnly,
   reduceSessionChatState,
+  type SessionAttachment,
   type SessionChannelType,
   type SessionSnapshotEntry,
 } from './sessionView';
@@ -73,6 +74,7 @@ export interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  attachments?: SessionAttachment[];
   timestamp: Date;
 }
 
@@ -611,6 +613,38 @@ function normalizeWebSessionId(value: string): string {
   return value.startsWith('web:') ? value : `web:${value}`;
 }
 
+function parseSessionAttachments(value: unknown): SessionAttachment[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const attachments = value.flatMap((item) => {
+    const record = asRecord(item);
+    if (!record) {
+      return [];
+    }
+
+    const id = firstString(record['id']);
+    const filename = firstString(record['filename']);
+    const contentType = firstString(record['contentType']);
+    const url = firstString(record['url']);
+    const sizeBytesRaw = Number.parseInt(String(record['sizeBytes'] ?? ''), 10);
+    if (!id || !filename || !contentType || !url || !Number.isFinite(sizeBytesRaw) || sizeBytesRaw < 0) {
+      return [];
+    }
+
+    return [{
+      id,
+      filename,
+      contentType,
+      sizeBytes: sizeBytesRaw,
+      url,
+    } satisfies SessionAttachment];
+  });
+
+  return attachments.length > 0 ? attachments : undefined;
+}
+
 function parseSessionSnapshotEntries(value: unknown): SessionSnapshotEntry[] {
   if (!Array.isArray(value)) {
     return [];
@@ -642,13 +676,14 @@ function parseSessionSnapshotEntries(value: unknown): SessionSnapshotEntry[] {
 
         const roleValue = firstString(messageRecord['role']);
         const content = firstRawString(messageRecord['content']) ?? '';
+        const attachments = parseSessionAttachments(messageRecord['attachments']);
 
         if (roleValue !== 'user' && roleValue !== 'assistant') {
           return [];
         }
 
         const role: 'user' | 'assistant' = roleValue;
-        return [{ role, content }];
+        return [{ role, content, attachments }];
       })
       : [];
 
@@ -835,8 +870,13 @@ function App() {
       case 'session_user_message': {
         const sessionId = firstString(data['sessionId']);
         const channelType = firstString(data['channelType']);
-        const content = firstNonEmptyRawString(data['content']);
-        if (!sessionId || !content || (channelType !== 'web' && channelType !== 'discord' && channelType !== 'terminal')) {
+        const content = firstRawString(data['content']) ?? '';
+        const attachments = parseSessionAttachments(data['attachments']);
+        if (
+          !sessionId
+          || (content.trim().length === 0 && (!attachments || attachments.length === 0))
+          || (channelType !== 'web' && channelType !== 'discord' && channelType !== 'terminal')
+        ) {
           break;
         }
 
@@ -846,6 +886,7 @@ function App() {
           sessionId,
           channelType,
           content,
+          attachments,
           timestamp,
         }));
         break;
@@ -1355,12 +1396,18 @@ function App() {
     });
   }, [connected, llm.reasoningEffort, llm.provider, modelsByProvider, pendingProviderSwitch, send]);
 
-  const handleSendMessage = useCallback((content: string) => {
-    if (!content.trim() || !connected || !mainSessionId || selectedSessionId !== mainSessionId) {
+  const handleSendMessage = useCallback((content: string, attachments?: SessionAttachment[]) => {
+    const trimmedContent = content.trim();
+    const hasAttachments = Boolean(attachments && attachments.length > 0);
+    if ((!trimmedContent && !hasAttachments) || !connected || !mainSessionId || selectedSessionId !== mainSessionId) {
       return;
     }
 
-    send({ type: 'message', content });
+    send({
+      type: 'message',
+      content: trimmedContent,
+      attachments,
+    });
   }, [connected, mainSessionId, selectedSessionId, send]);
 
   const handleConfirm = useCallback((decision: ConfirmationDecision) => {
@@ -1640,6 +1687,7 @@ function App() {
             streamActivities={activeStreamActivities}
             disabled={composerDisabled}
             inputPlaceholder={composerPlaceholder}
+            sessionIdForUploads={mainSessionId}
             readOnlyHint={activeIsReadOnly ? readOnlyHintText : undefined}
           />
         </section>

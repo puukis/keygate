@@ -1,4 +1,4 @@
-import type { Channel, ChannelType, NormalizedMessage } from '../types.js';
+import type { Channel, ChannelType, MessageAttachment, NormalizedMessage } from '../types.js';
 import { randomUUID } from 'node:crypto';
 
 /**
@@ -29,7 +29,8 @@ export function normalizeWebMessage(
   sessionId: string,
   userId: string,
   content: string,
-  channel: Channel
+  channel: Channel,
+  attachments?: MessageAttachment[]
 ): NormalizedMessage {
   return {
     id: randomUUID(),
@@ -38,6 +39,7 @@ export function normalizeWebMessage(
     channel,
     userId,
     content,
+    attachments,
     timestamp: new Date(),
   };
 }

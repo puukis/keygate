@@ -5,6 +5,7 @@ import {
   type Content,
   type FunctionDeclaration,
 } from '@google/generative-ai';
+import { readAttachmentAsBase64 } from './attachments.js';
 import type {
   ChatOptions,
   LLMChunk,
@@ -30,7 +31,7 @@ export class GeminiProvider implements LLMProvider {
 
   async chat(messages: Message[], options?: ChatOptions): Promise<LLMResponse> {
     return this.withRetry(async () => {
-      const { systemInstruction, contents } = this.convertMessages(messages);
+      const { systemInstruction, contents } = await this.convertMessages(messages);
       
       const geminiTools = options?.tools 
         ? [{ functionDeclarations: this.convertTools(options.tools) }] 
@@ -73,7 +74,7 @@ export class GeminiProvider implements LLMProvider {
     // Note: Streaming retries are harder because we can't easily restart the generator 
     // from the middle. For now, we only retry the initial connection.
     const result = await this.withRetry(async () => {
-        const { systemInstruction, contents } = this.convertMessages(messages);
+        const { systemInstruction, contents } = await this.convertMessages(messages);
         
         const geminiTools = options?.tools 
           ? [{ functionDeclarations: this.convertTools(options.tools) }] 
@@ -142,7 +143,7 @@ export class GeminiProvider implements LLMProvider {
     }
   }
 
-  private convertMessages(messages: Message[]): { systemInstruction: string; contents: Content[] } {
+  private async convertMessages(messages: Message[]): Promise<{ systemInstruction: string; contents: Content[] }> {
     let systemInstruction = '';
     const contents: Content[] = [];
 
@@ -153,9 +154,30 @@ export class GeminiProvider implements LLMProvider {
       }
 
       if (msg.role === 'user') {
+        const parts: Part[] = [];
+        if (msg.content.length > 0) {
+          parts.push({ text: msg.content });
+        }
+
+        if (msg.attachments && msg.attachments.length > 0) {
+          for (const attachment of msg.attachments) {
+            const payload = await readAttachmentAsBase64(attachment);
+            if (!payload) {
+              continue;
+            }
+
+            parts.push({
+              inlineData: {
+                data: payload.base64,
+                mimeType: payload.contentType,
+              },
+            });
+          }
+        }
+
         contents.push({
           role: 'user',
-          parts: [{ text: msg.content }],
+          parts: parts.length > 0 ? parts : [{ text: msg.content }],
         });
       } else if (msg.role === 'assistant') {
         const parts: Part[] = [{ text: msg.content }];

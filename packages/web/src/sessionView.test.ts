@@ -75,4 +75,57 @@ describe('reduceSessionChatState session_message_end', () => {
 
     expect(state.metaBySession['terminal:alpha']?.channelType).toBe('terminal');
   });
+
+  it('preserves attachments from session snapshot entries', () => {
+    const state = reduceSessionChatState(EMPTY_SESSION_CHAT_STATE, {
+      type: 'session_snapshot',
+      sessions: [{
+        sessionId: 'web:main',
+        channelType: 'web',
+        updatedAt: new Date('2026-02-08T12:00:00.000Z'),
+        messages: [{
+          role: 'user',
+          content: 'analyze this image',
+          attachments: [{
+            id: 'att-1',
+            filename: 'photo.png',
+            contentType: 'image/png',
+            sizeBytes: 1234,
+            url: '/api/uploads/image?sessionId=web%3Amain&id=att-1',
+          }],
+        }],
+      }],
+    });
+
+    const messages = state.messagesBySession['web:main'] ?? [];
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.attachments).toEqual([{
+      id: 'att-1',
+      filename: 'photo.png',
+      contentType: 'image/png',
+      sizeBytes: 1234,
+      url: '/api/uploads/image?sessionId=web%3Amain&id=att-1',
+    }]);
+  });
+
+  it('preserves attachments from session_user_message events', () => {
+    const state = reduceSessionChatState(EMPTY_SESSION_CHAT_STATE, {
+      type: 'session_user_message',
+      sessionId: 'web:main',
+      channelType: 'web',
+      content: '',
+      attachments: [{
+        id: 'att-2',
+        filename: 'diagram.webp',
+        contentType: 'image/webp',
+        sizeBytes: 512,
+        url: '/api/uploads/image?sessionId=web%3Amain&id=att-2',
+      }],
+      timestamp: new Date('2026-02-08T13:00:00.000Z'),
+    });
+
+    const messages = state.messagesBySession['web:main'] ?? [];
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.attachments?.[0]?.id).toBe('att-2');
+  });
 });
