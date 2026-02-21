@@ -6,6 +6,15 @@ import type { ParsedArgs } from '../argv.js';
 import { getFlagString, hasFlag } from '../argv.js';
 import { loadConfigFromEnv } from '../../config/env.js';
 import { SkillsManager } from '../../skills/index.js';
+import {
+  loadRegistry,
+  searchMarketplace,
+  getMarketplaceEntry,
+  publishSkill,
+  unpublishSkill,
+  listFeatured,
+  recordDownload,
+} from '../../skills/marketplace.js';
 
 export async function runSkillsCommand(args: ParsedArgs): Promise<void> {
   const action = args.positional[1] ?? 'list';
@@ -35,6 +44,21 @@ export async function runSkillsCommand(args: ParsedArgs): Promise<void> {
       return;
     case 'remove':
       await runRemove(manager, args);
+      return;
+    case 'search':
+      await runSearch(args);
+      return;
+    case 'info':
+      await runInfo(args);
+      return;
+    case 'publish':
+      await runPublish(args);
+      return;
+    case 'unpublish':
+      await runUnpublish(args);
+      return;
+    case 'featured':
+      await runFeaturedList();
       return;
     default:
       throw new Error(`Unknown skills command: ${action}`);
@@ -420,5 +444,129 @@ async function pathExists(targetPath: string): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+// ── Marketplace CLI ──
+
+async function runSearch(args: ParsedArgs): Promise<void> {
+  const query = args.positional[2] ?? '';
+  const asJson = hasFlag(args.flags, 'json');
+  const tagsRaw = getFlagString(args.flags, 'tags', '');
+  const tags = tagsRaw.length > 0
+    ? tagsRaw.split(',').map((t) => t.trim()).filter((t) => t.length > 0)
+    : [];
+
+  const registry = await loadRegistry();
+  const result = searchMarketplace(registry, query, { tags });
+
+  if (asJson) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (result.entries.length === 0) {
+    console.log('No skills found matching your query.');
+    return;
+  }
+
+  console.log(`Found ${result.total} skill(s):\n`);
+  for (const entry of result.entries) {
+    const badge = entry.featured ? ' ★' : '';
+    const tagStr = entry.tags.length > 0 ? ` [${entry.tags.join(', ')}]` : '';
+    console.log(`  ${entry.name}${badge} — ${entry.description}${tagStr}`);
+    console.log(`    by ${entry.author} | ${entry.downloads} downloads | source: ${entry.source}`);
+  }
+}
+
+async function runInfo(args: ParsedArgs): Promise<void> {
+  const name = args.positional[2]?.trim();
+  if (!name) {
+    throw new Error('Usage: keygate skills info <name>');
+  }
+
+  const registry = await loadRegistry();
+  const entry = getMarketplaceEntry(registry, name);
+  if (!entry) {
+    throw new Error(`Skill "${name}" not found in marketplace.`);
+  }
+
+  const asJson = hasFlag(args.flags, 'json');
+  if (asJson) {
+    console.log(JSON.stringify(entry, null, 2));
+    return;
+  }
+
+  console.log(`Name: ${entry.name}`);
+  console.log(`Description: ${entry.description}`);
+  console.log(`Author: ${entry.author}`);
+  console.log(`Version: ${entry.version}`);
+  console.log(`Source: ${entry.source}`);
+  if (entry.homepage) {
+    console.log(`Homepage: ${entry.homepage}`);
+  }
+  console.log(`Tags: ${entry.tags.length > 0 ? entry.tags.join(', ') : '(none)'}`);
+  console.log(`Downloads: ${entry.downloads}`);
+  console.log(`Featured: ${entry.featured ? 'yes' : 'no'}`);
+  console.log(`Published: ${entry.publishedAt}`);
+  console.log(`Updated: ${entry.updatedAt}`);
+}
+
+async function runPublish(args: ParsedArgs): Promise<void> {
+  const skillPath = args.positional[2]?.trim();
+  if (!skillPath) {
+    throw new Error('Usage: keygate skills publish <path> --author <name> --source <source> [--tags tag1,tag2] [--featured]');
+  }
+
+  const author = getFlagString(args.flags, 'author', '').trim();
+  if (!author) {
+    throw new Error('--author is required when publishing a skill.');
+  }
+
+  const source = getFlagString(args.flags, 'source', skillPath).trim();
+  const tagsRaw = getFlagString(args.flags, 'tags', '');
+  const tags = tagsRaw.length > 0
+    ? tagsRaw.split(',').map((t) => t.trim()).filter((t) => t.length > 0)
+    : [];
+  const featured = hasFlag(args.flags, 'featured');
+
+  const entry = await publishSkill({
+    skillPath: path.resolve(expandHome(skillPath)),
+    author,
+    source,
+    tags,
+    featured,
+  });
+
+  console.log(`Published skill "${entry.name}" v${entry.version} to marketplace.`);
+}
+
+async function runUnpublish(args: ParsedArgs): Promise<void> {
+  const name = args.positional[2]?.trim();
+  if (!name) {
+    throw new Error('Usage: keygate skills unpublish <name>');
+  }
+
+  const removed = await unpublishSkill(name);
+  if (removed) {
+    console.log(`Removed "${name}" from marketplace.`);
+  } else {
+    console.log(`Skill "${name}" was not found in marketplace.`);
+  }
+}
+
+async function runFeaturedList(): Promise<void> {
+  const registry = await loadRegistry();
+  const featured = listFeatured(registry);
+
+  if (featured.length === 0) {
+    console.log('No featured skills in marketplace.');
+    return;
+  }
+
+  console.log('Featured skills:\n');
+  for (const entry of featured) {
+    console.log(`  ★ ${entry.name} — ${entry.description}`);
+    console.log(`    by ${entry.author} | ${entry.downloads} downloads`);
   }
 }

@@ -44,35 +44,6 @@ export interface CodexInitializeResult {
   [key: string]: unknown;
 }
 
-export interface CodexAccount {
-  type?: string;
-  email?: string;
-  [key: string]: unknown;
-}
-
-export interface CodexAccountReadResult {
-  account?: CodexAccount | null;
-  requiresOpenaiAuth?: boolean;
-  [key: string]: unknown;
-}
-
-export interface CodexLoginStartParams {
-  type: 'chatgpt';
-}
-
-export interface CodexLoginStartResult {
-  loginId?: string;
-  authUrl?: string;
-  [key: string]: unknown;
-}
-
-export interface CodexLoginCompletedNotification {
-  loginId?: string;
-  success?: boolean;
-  error?: string;
-  [key: string]: unknown;
-}
-
 export interface CodexModelEntry {
   id?: string;
   model?: string;
@@ -111,4 +82,33 @@ export interface CodexTurnStartResult {
 export interface CodexRpcNotification {
   method: string;
   params?: Record<string, unknown>;
+}
+
+export interface CodexAccount {
+  type?: string;
+  email?: string;
+  [key: string]: unknown;
+}
+
+export interface CodexAccountReadResult {
+  account?: CodexAccount | null;
+  requiresOpenaiAuth?: boolean;
+  [key: string]: unknown;
+}
+
+export interface CodexLoginStartParams {
+  type: 'chatgpt';
+}
+
+export interface CodexLoginStartResult {
+  loginId?: string;
+  authUrl?: string;
+  [key: string]: unknown;
+}
+
+export interface CodexLoginCompletedNotification {
+  loginId?: string;
+  success?: boolean;
+  error?: string;
+  [key: string]: unknown;
 }

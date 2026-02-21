@@ -5,7 +5,7 @@ import { getConfigDir } from '../../config/env.js';
 import type { ParsedArgs } from '../argv.js';
 import { runGatewayCommand, type GatewayAction } from './gateway.js';
 
-export type ChannelName = 'web' | 'discord';
+export type ChannelName = 'web' | 'discord' | 'slack';
 export type ChannelAction = 'start' | 'stop' | 'restart' | 'status' | 'config';
 export type DiscordChannelState = {
   pid: number;
@@ -14,6 +14,7 @@ export type DiscordChannelState = {
   cwd: string;
   startedAt: string;
 };
+export type SlackChannelState = DiscordChannelState;
 export type ChannelRuntimeState = 'running' | 'stopped' | 'unknown';
 
 interface ChannelStatus {
@@ -46,7 +47,7 @@ interface ChannelCommandDeps {
   now: () => Date;
 }
 
-const CHANNELS_USAGE = 'Usage: keygate channels <web|discord> <start|stop|restart|status|config>';
+const CHANNELS_USAGE = 'Usage: keygate channels <web|discord|slack> <start|stop|restart|status|config>';
 const DISABLED_ENV_VALUES = new Set(['0', 'false', 'no', 'off']);
 const DEFAULT_DISCORD_PREFIX = '!keygate ';
 
@@ -68,11 +69,16 @@ export async function runChannelsCommand(
     return;
   }
 
+  if (channel === 'slack') {
+    await runSlackChannelAction(action, deps);
+    return;
+  }
+
   await runDiscordChannelAction(action, deps);
 }
 
 export function parseChannelName(value: string | undefined): ChannelName | null {
-  if (value === 'web' || value === 'discord') {
+  if (value === 'web' || value === 'discord' || value === 'slack') {
     return value;
   }
 
@@ -566,4 +572,276 @@ function resolveRepoRoot(deps: ChannelCommandDeps): string | null {
   }
 
   return findRepoRoot(path.dirname(path.resolve(deps.argv1)), deps.pathExists);
+}
+
+// ── Slack channel ──
+
+async function runSlackChannelAction(action: ChannelAction, deps: ChannelCommandDeps): Promise<void> {
+  if (action === 'config') {
+    await printSlackChannelConfig(deps);
+    return;
+  }
+
+  if (action === 'status') {
+    const status = await getSlackStatus(deps);
+    printSlackStatus(deps, status);
+    return;
+  }
+
+  if (action === 'restart') {
+    await stopSlackChannel(deps);
+    await startSlackChannel(deps);
+    const status = await getSlackStatus(deps);
+    deps.log('Slack channel restart requested.');
+    printSlackStatus(deps, status);
+    return;
+  }
+
+  if (action === 'start') {
+    const before = await getSlackStatus(deps);
+    if (before.state === 'running') {
+      deps.log('Slack channel is already running.');
+      printSlackStatus(deps, before);
+      return;
+    }
+
+    await startSlackChannel(deps);
+    const after = await getSlackStatus(deps);
+    deps.log('Slack channel start requested.');
+    printSlackStatus(deps, after);
+    return;
+  }
+
+  const before = await getSlackStatus(deps);
+  if (before.state === 'stopped') {
+    deps.log('Slack channel is already stopped.');
+    printSlackStatus(deps, before);
+    return;
+  }
+
+  await stopSlackChannel(deps);
+  const after = await getSlackStatus(deps);
+  deps.log('Slack channel stop requested.');
+  printSlackStatus(deps, after);
+}
+
+async function printSlackChannelConfig(deps: ChannelCommandDeps): Promise<void> {
+  const botToken = (deps.env['SLACK_BOT_TOKEN'] ?? '').trim();
+  const appToken = (deps.env['SLACK_APP_TOKEN'] ?? '').trim();
+  const state = await readSlackState(deps);
+  const launchCommand = resolveSlackLaunchCommand(deps);
+
+  deps.log('Channel: slack');
+  deps.log(`Bot token configured: ${botToken.length > 0 ? 'yes' : 'no'}`);
+  deps.log(`App token configured: ${appToken.length > 0 ? 'yes' : 'no'}`);
+  if (state) {
+    deps.log(`Managed process state file: ${slackStateFilePath(deps)}`);
+    deps.log(`Last known pid: ${state.pid}`);
+  }
+  deps.log(`Launch command: ${launchCommand}`);
+}
+
+async function startSlackChannel(deps: ChannelCommandDeps): Promise<void> {
+  const botToken = (deps.env['SLACK_BOT_TOKEN'] ?? '').trim();
+  if (!botToken) {
+    throw new Error('Slack bot token is missing. Configure SLACK_BOT_TOKEN before starting slack channel.');
+  }
+
+  const appToken = (deps.env['SLACK_APP_TOKEN'] ?? '').trim();
+  if (!appToken) {
+    throw new Error('Slack app token is missing. Configure SLACK_APP_TOKEN before starting slack channel.');
+  }
+
+  const launchSpec = resolveSlackLaunchSpec(deps);
+  const pid = deps.spawnDetached(launchSpec);
+
+  await deps.mkdir(path.dirname(slackStateFilePath(deps)));
+  const state: SlackChannelState = {
+    pid,
+    command: launchSpec.command,
+    args: launchSpec.args,
+    cwd: launchSpec.cwd,
+    startedAt: deps.now().toISOString(),
+  };
+  await writeSlackState(deps, state);
+  await waitForSlackStart(deps, pid);
+}
+
+async function stopSlackChannel(deps: ChannelCommandDeps): Promise<void> {
+  const state = await readSlackState(deps);
+  if (!state) {
+    return;
+  }
+
+  if (!isProcessAlive(deps, state.pid)) {
+    await clearSlackState(deps);
+    return;
+  }
+
+  try {
+    deps.kill(state.pid, 'SIGTERM');
+  } catch {
+    await clearSlackState(deps);
+    return;
+  }
+
+  await waitForExit(deps, state.pid, 5_000);
+  if (isProcessAlive(deps, state.pid)) {
+    try {
+      deps.kill(state.pid, 'SIGKILL');
+    } catch {
+      // no-op
+    }
+    await waitForExit(deps, state.pid, 2_000);
+  }
+
+  if (isProcessAlive(deps, state.pid)) {
+    throw new Error(`Unable to stop slack channel process pid=${state.pid}.`);
+  }
+
+  await clearSlackState(deps);
+}
+
+async function getSlackStatus(deps: ChannelCommandDeps): Promise<ChannelStatus> {
+  const state = await readSlackState(deps);
+  if (!state) {
+    return {
+      state: 'stopped',
+      detail: 'no managed slack process state found',
+    };
+  }
+
+  if (isProcessAlive(deps, state.pid)) {
+    const args = state.args.map((value) => JSON.stringify(value)).join(' ');
+    const command = `${state.command}${args.length > 0 ? ` ${args}` : ''}`;
+    return {
+      state: 'running',
+      detail: `pid=${state.pid}, cwd=${state.cwd}, startedAt=${state.startedAt}, command=${command}`,
+    };
+  }
+
+  await clearSlackState(deps);
+  return {
+    state: 'stopped',
+    detail: 'stale slack process state removed',
+  };
+}
+
+function printSlackStatus(deps: ChannelCommandDeps, status: ChannelStatus): void {
+  deps.log(`Slack channel status: ${status.state}`);
+  if (status.detail.trim().length > 0) {
+    deps.log(`Detail: ${status.detail}`);
+  }
+}
+
+function resolveSlackLaunchSpec(deps: ChannelCommandDeps): LaunchSpec {
+  const configured = deps.env['KEYGATE_SLACK_START_COMMAND']?.trim();
+  if (configured) {
+    return {
+      command: shellForPlatform(),
+      args: shellArgsForPlatform(configured),
+      cwd: deps.cwd,
+    };
+  }
+
+  const repoRoot = resolveRepoRoot(deps);
+  if (!repoRoot) {
+    throw new Error(
+      'Unable to resolve slack channel runtime. Set KEYGATE_SLACK_START_COMMAND or run from the keygate repository.'
+    );
+  }
+
+  const distEntry = path.join(repoRoot, 'packages', 'slack', 'dist', 'index.js');
+  if (deps.pathExists(distEntry)) {
+    return {
+      command: deps.execPath,
+      args: [distEntry],
+      cwd: repoRoot,
+    };
+  }
+
+  const sourceEntry = path.join(repoRoot, 'packages', 'slack', 'src', 'index.ts');
+  if (deps.pathExists(sourceEntry) && deps.hasCommand('pnpm')) {
+    return {
+      command: 'pnpm',
+      args: ['--filter', '@puukis/slack', 'exec', 'tsx', 'src/index.ts'],
+      cwd: repoRoot,
+    };
+  }
+
+  throw new Error(
+    'Unable to resolve slack channel runtime. Build @puukis/slack (`pnpm --filter @puukis/slack build`) or set KEYGATE_SLACK_START_COMMAND.'
+  );
+}
+
+function resolveSlackLaunchCommand(deps: ChannelCommandDeps): string {
+  try {
+    const spec = resolveSlackLaunchSpec(deps);
+    return `${spec.command} ${spec.args.join(' ')}`.trim();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return `unresolved (${message})`;
+  }
+}
+
+function slackStateFilePath(deps: ChannelCommandDeps): string {
+  return path.join(deps.configDir, 'channels', 'slack.json');
+}
+
+async function readSlackState(deps: ChannelCommandDeps): Promise<SlackChannelState | null> {
+  const statePath = slackStateFilePath(deps);
+  if (!deps.pathExists(statePath)) {
+    return null;
+  }
+
+  try {
+    const raw = await deps.readFile(statePath);
+    const parsed = JSON.parse(raw) as Partial<SlackChannelState>;
+    if (
+      typeof parsed.pid !== 'number' ||
+      !Number.isInteger(parsed.pid) ||
+      parsed.pid <= 0 ||
+      typeof parsed.command !== 'string' ||
+      !Array.isArray(parsed.args) ||
+      !parsed.args.every((item) => typeof item === 'string') ||
+      typeof parsed.cwd !== 'string' ||
+      typeof parsed.startedAt !== 'string'
+    ) {
+      return null;
+    }
+
+    return {
+      pid: parsed.pid,
+      command: parsed.command,
+      args: parsed.args,
+      cwd: parsed.cwd,
+      startedAt: parsed.startedAt,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function writeSlackState(deps: ChannelCommandDeps, state: SlackChannelState): Promise<void> {
+  const statePath = slackStateFilePath(deps);
+  await deps.writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
+}
+
+async function clearSlackState(deps: ChannelCommandDeps): Promise<void> {
+  const statePath = slackStateFilePath(deps);
+  try {
+    await deps.unlink(statePath);
+  } catch {
+    // no-op
+  }
+}
+
+async function waitForSlackStart(deps: ChannelCommandDeps, pid: number): Promise<void> {
+  await wait(250);
+  if (isProcessAlive(deps, pid)) {
+    return;
+  }
+
+  await clearSlackState(deps);
+  throw new Error('Slack channel failed to stay running after start.');
 }

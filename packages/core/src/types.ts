@@ -1,7 +1,7 @@
 // Core types for Keygate
 
 export type SecurityMode = 'safe' | 'spicy';
-export type ChannelType = 'web' | 'discord' | 'terminal';
+export type ChannelType = 'web' | 'discord' | 'terminal' | 'slack';
 export type CodexReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 export type BrowserDomainPolicy = 'none' | 'allowlist' | 'blocklist';
 export type SkillSourceType = 'workspace' | 'global' | 'plugin' | 'bundled' | 'extra';
@@ -157,6 +157,7 @@ export interface LLMProvider {
 export interface Session {
   id: string;
   channelType: ChannelType;
+  title?: string;
   messages: Message[];
   createdAt: Date;
   updatedAt: Date;
@@ -208,6 +209,11 @@ export interface KeygateConfig {
   discord?: {
     token: string;
     prefix: string;
+  };
+  slack?: {
+    botToken: string;
+    appToken: string;
+    signingSecret: string;
   };
 }
 
@@ -290,6 +296,12 @@ export interface KeygateEvents {
   'tool:start': { sessionId: string; tool: string; args: Record<string, unknown> };
   'tool:end': { sessionId: string; tool: string; result: ToolResult };
   'provider:event': { sessionId: string; event: ProviderEvent };
+  'context:usage': {
+    sessionId: string;
+    usedTokens: number;
+    limitTokens: number;
+    percent: number;
+  };
   'mode:changed': { mode: SecurityMode };
   'spicy_enabled:changed': { enabled: boolean };
   'spicy_obedience:changed': { enabled: boolean };

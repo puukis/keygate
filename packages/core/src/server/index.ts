@@ -9,6 +9,14 @@ import { normalizeWebMessage, BaseChannel } from '../pipeline/index.js';
 import { allBuiltinTools } from '../tools/index.js';
 import { updateKeygateFile } from '../config/env.js';
 import { MCPBrowserManager, type MCPBrowserStatus } from '../codex/mcpBrowserManager.js';
+import {
+  loadRegistry,
+  searchMarketplace,
+  getMarketplaceEntry,
+  listFeatured,
+  recordDownload,
+  type MarketplaceEntry,
+} from '../skills/marketplace.js';
 import type {
   BrowserDomainPolicy,
   ChannelType,
@@ -38,13 +46,28 @@ interface WSMessage {
     | 'enable_spicy_mode'
     | 'set_spicy_obedience'
     | 'set_discord_config'
+    | 'set_slack_config'
     | 'clear_session'
+    | 'new_session'
+    | 'delete_session'
+    | 'rename_session'
+    | 'switch_session'
     | 'get_models'
     | 'set_model'
     | 'get_mcp_browser_status'
     | 'setup_mcp_browser'
     | 'remove_mcp_browser'
-    | 'set_browser_policy';
+    | 'set_browser_policy'
+    | 'marketplace_search'
+    | 'marketplace_info'
+    | 'marketplace_featured'
+    | 'marketplace_install'
+    | 'memory_list'
+    | 'memory_get'
+    | 'memory_set'
+    | 'memory_delete'
+    | 'memory_search'
+    | 'memory_namespaces';
   sessionId?: string;
   content?: string;
   decision?: ConfirmationDecision;
@@ -64,6 +87,16 @@ interface WSMessage {
   traceRetentionDays?: number;
   mcpPlaywrightVersion?: string;
   attachments?: WSAttachmentRef[];
+  title?: string;
+  botToken?: string;
+  appToken?: string;
+  signingSecret?: string;
+  clearBotToken?: boolean;
+  query?: string;
+  tags?: string[];
+  scope?: string;
+  namespace?: string;
+  key?: string;
 }
 
 interface StartWebServerOptions {
@@ -74,6 +107,10 @@ interface StartWebServerOptions {
 interface DiscordConfigView {
   configured: boolean;
   prefix: string;
+}
+
+interface SlackConfigView {
+  configured: boolean;
 }
 
 interface BrowserConfigView {
@@ -114,6 +151,7 @@ interface SessionAttachmentView {
 interface SessionSnapshotEntryView {
   sessionId: string;
   channelType: ChannelType;
+  title?: string;
   updatedAt: string;
   messages: SessionSnapshotMessageView[];
 }
@@ -152,6 +190,14 @@ class WebSocketChannel extends BaseChannel {
   constructor(ws: WebSocket, sessionId: string) {
     super();
     this.ws = ws;
+    this.sessionId = sessionId;
+  }
+
+  getSessionId(): string {
+    return this.sessionId;
+  }
+
+  setSessionId(sessionId: string): void {
     this.sessionId = sessionId;
   }
 
@@ -338,7 +384,7 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
     const channel = new WebSocketChannel(ws, sessionId);
     channels.set(sessionId, channel);
     const llmState = gateway.getLLMState();
-    const webSessionId = `web:${sessionId}`;
+    let webSessionId = `web:${sessionId}`;
 
     console.log(`Client connected: ${sessionId}`);
 
@@ -374,16 +420,18 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
               return;
             }
 
+            // Use the current webSessionId (which may have changed via switch_session)
+            const activeSession = webSessionId.startsWith('web:') ? webSessionId.slice(4) : webSessionId;
             const normalized = normalizeWebMessage(
-              sessionId,
+              activeSession,
               'web-user',
               content,
               channel,
               attachments.length > 0 ? attachments : undefined
             );
 
-            // Send acknowledgment
-            ws.send(JSON.stringify({ type: 'message_received', sessionId }));
+            // Send acknowledgment with the active web session id
+            ws.send(JSON.stringify({ type: 'message_received', sessionId: activeSession }));
 
             await gateway.processMessage(normalized);
             break;
@@ -491,9 +539,109 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
             break;
           }
 
+          case 'set_slack_config': {
+            try {
+              const slack = await applySlackConfigUpdate(
+                config,
+                {
+                  botToken: typeof msg.botToken === 'string' ? msg.botToken : undefined,
+                  appToken: typeof msg.appToken === 'string' ? msg.appToken : undefined,
+                  signingSecret: typeof msg.signingSecret === 'string' ? msg.signingSecret : undefined,
+                  clearBotToken: msg.clearBotToken === true,
+                }
+              );
+
+              ws.send(JSON.stringify({
+                type: 'slack_config_updated',
+                slack,
+              }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Failed to save Slack configuration',
+              }));
+            }
+            break;
+          }
+
           case 'clear_session': {
             gateway.clearSession(webSessionId);
             ws.send(JSON.stringify({ type: 'session_cleared', sessionId }));
+            break;
+          }
+
+          case 'new_session': {
+            const newSession = gateway.createWebSession();
+            channel.setSessionId(newSession.id);
+            webSessionId = newSession.id;
+            ws.send(JSON.stringify({
+              type: 'session_created',
+              sessionId: newSession.id,
+            }));
+            ws.send(JSON.stringify(buildSessionSnapshotPayload(gateway, webSessionId)));
+            break;
+          }
+
+          case 'delete_session': {
+            const targetSessionId = typeof msg.sessionId === 'string' ? msg.sessionId.trim() : '';
+            if (!targetSessionId) {
+              ws.send(JSON.stringify({ type: 'error', error: 'sessionId is required' }));
+              break;
+            }
+
+            gateway.deleteSession(targetSessionId);
+
+            // If the deleted session was the active one, create a new session
+            if (targetSessionId === webSessionId) {
+              const replacement = gateway.createWebSession();
+              channel.setSessionId(replacement.id);
+              webSessionId = replacement.id;
+              ws.send(JSON.stringify({
+                type: 'session_switched',
+                sessionId: replacement.id,
+              }));
+            }
+
+            ws.send(JSON.stringify({
+              type: 'session_deleted',
+              sessionId: targetSessionId,
+            }));
+            ws.send(JSON.stringify(buildSessionSnapshotPayload(gateway, webSessionId)));
+            break;
+          }
+
+          case 'rename_session': {
+            const renameSessionId = typeof msg.sessionId === 'string' ? msg.sessionId.trim() : '';
+            const title = typeof msg.title === 'string' ? msg.title.trim() : '';
+            if (!renameSessionId) {
+              ws.send(JSON.stringify({ type: 'error', error: 'sessionId is required' }));
+              break;
+            }
+
+            gateway.renameSession(renameSessionId, title);
+            ws.send(JSON.stringify({
+              type: 'session_renamed',
+              sessionId: renameSessionId,
+              title,
+            }));
+            break;
+          }
+
+          case 'switch_session': {
+            const switchSessionId = typeof msg.sessionId === 'string' ? msg.sessionId.trim() : '';
+            if (!switchSessionId) {
+              ws.send(JSON.stringify({ type: 'error', error: 'sessionId is required' }));
+              break;
+            }
+
+            // Verify session exists (or will be created on first message)
+            channel.setSessionId(switchSessionId);
+            webSessionId = switchSessionId;
+            ws.send(JSON.stringify({
+              type: 'session_switched',
+              sessionId: switchSessionId,
+            }));
+            ws.send(JSON.stringify(buildSessionSnapshotPayload(gateway, webSessionId)));
             break;
           }
 
@@ -606,6 +754,224 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
             }
             break;
           }
+
+          case 'marketplace_search': {
+            try {
+              const query = typeof msg.query === 'string' ? msg.query : '';
+              const tags = Array.isArray(msg.tags) ? msg.tags.filter((t): t is string => typeof t === 'string') : [];
+              const registry = await loadRegistry();
+              const result = searchMarketplace(registry, query, { tags });
+              ws.send(JSON.stringify({
+                type: 'marketplace_search_result',
+                ...result,
+              }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Marketplace search failed',
+              }));
+            }
+            break;
+          }
+
+          case 'marketplace_info': {
+            const name = typeof msg.content === 'string' ? msg.content.trim() : '';
+            if (!name) {
+              ws.send(JSON.stringify({ type: 'error', error: 'Skill name is required' }));
+              break;
+            }
+            try {
+              const registry = await loadRegistry();
+              const entry = getMarketplaceEntry(registry, name);
+              ws.send(JSON.stringify({
+                type: 'marketplace_info_result',
+                entry,
+              }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Marketplace info failed',
+              }));
+            }
+            break;
+          }
+
+          case 'marketplace_featured': {
+            try {
+              const registry = await loadRegistry();
+              const featured = listFeatured(registry);
+              ws.send(JSON.stringify({
+                type: 'marketplace_featured_result',
+                entries: featured,
+              }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Marketplace featured failed',
+              }));
+            }
+            break;
+          }
+
+          case 'marketplace_install': {
+            const name = typeof msg.content === 'string' ? msg.content.trim() : '';
+            if (!name) {
+              ws.send(JSON.stringify({ type: 'error', error: 'Skill name is required' }));
+              break;
+            }
+            try {
+              const registry = await loadRegistry();
+              const entry = getMarketplaceEntry(registry, name);
+              if (!entry) {
+                ws.send(JSON.stringify({ type: 'error', error: `Skill "${name}" not found in marketplace` }));
+                break;
+              }
+
+              const scope = (typeof msg.scope === 'string' && msg.scope === 'global') ? 'global' : 'workspace';
+
+              // Use the gateway's skills manager to install from the registry source
+              const installResult = await installMarketplaceSkill(gateway, entry, scope);
+              await recordDownload(name);
+
+              ws.send(JSON.stringify({
+                type: 'marketplace_install_result',
+                name: entry.name,
+                scope,
+                installed: installResult,
+              }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Marketplace install failed',
+              }));
+            }
+            break;
+          }
+
+          case 'memory_list': {
+            try {
+              const namespace = typeof msg.namespace === 'string' ? msg.namespace : undefined;
+              const memories = gateway.memory.list(namespace);
+              ws.send(JSON.stringify({
+                type: 'memory_list_result',
+                memories: memories.map(serializeMemory),
+              }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Memory list failed',
+              }));
+            }
+            break;
+          }
+
+          case 'memory_get': {
+            const namespace = typeof msg.namespace === 'string' ? msg.namespace : 'general';
+            const key = typeof msg.key === 'string' ? msg.key.trim() : '';
+            if (!key) {
+              ws.send(JSON.stringify({ type: 'error', error: 'Memory key is required' }));
+              break;
+            }
+            try {
+              const memory = gateway.memory.get(namespace, key);
+              ws.send(JSON.stringify({
+                type: 'memory_get_result',
+                memory: memory ? serializeMemory(memory) : null,
+              }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Memory get failed',
+              }));
+            }
+            break;
+          }
+
+          case 'memory_set': {
+            const namespace = typeof msg.namespace === 'string' ? msg.namespace : 'general';
+            const key = typeof msg.key === 'string' ? msg.key.trim() : '';
+            const content = typeof msg.content === 'string' ? msg.content : '';
+            if (!key || !content) {
+              ws.send(JSON.stringify({ type: 'error', error: 'Memory key and content are required' }));
+              break;
+            }
+            try {
+              const memory = gateway.memory.set(namespace, key, content);
+              ws.send(JSON.stringify({
+                type: 'memory_set_result',
+                memory: serializeMemory(memory),
+              }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Memory set failed',
+              }));
+            }
+            break;
+          }
+
+          case 'memory_delete': {
+            const namespace = typeof msg.namespace === 'string' ? msg.namespace : 'general';
+            const key = typeof msg.key === 'string' ? msg.key.trim() : '';
+            if (!key) {
+              ws.send(JSON.stringify({ type: 'error', error: 'Memory key is required' }));
+              break;
+            }
+            try {
+              const deleted = gateway.memory.delete(namespace, key);
+              ws.send(JSON.stringify({
+                type: 'memory_delete_result',
+                key,
+                namespace,
+                deleted,
+              }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Memory delete failed',
+              }));
+            }
+            break;
+          }
+
+          case 'memory_search': {
+            const query = typeof msg.query === 'string' ? msg.query : '';
+            const namespace = typeof msg.namespace === 'string' ? msg.namespace : undefined;
+            if (!query) {
+              ws.send(JSON.stringify({ type: 'error', error: 'Search query is required' }));
+              break;
+            }
+            try {
+              const result = gateway.memory.search(query, { namespace });
+              ws.send(JSON.stringify({
+                type: 'memory_search_result',
+                memories: result.memories.map(serializeMemory),
+                total: result.total,
+              }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Memory search failed',
+              }));
+            }
+            break;
+          }
+
+          case 'memory_namespaces': {
+            try {
+              const namespaces = gateway.memory.listNamespaces();
+              ws.send(JSON.stringify({
+                type: 'memory_namespaces_result',
+                namespaces,
+              }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Memory namespaces failed',
+              }));
+            }
+            break;
+          }
         }
       } catch (error) {
         console.error('WebSocket message error:', error);
@@ -660,6 +1026,10 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
     broadcast(wss, { type: 'provider_event', ...event });
   });
 
+  gateway.on('context:usage', (event) => {
+    broadcast(wss, { type: 'context_usage', ...event });
+  });
+
   server.listen(config.server.port, () => {
     console.log(`🌐 Keygate Web Server running on http://localhost:${config.server.port}`);
 
@@ -698,6 +1068,7 @@ export function buildStatusPayload(gateway: Gateway, config: KeygateConfig): Rec
     spicyObedienceEnabled: gateway.getSpicyMaxObedienceEnabled(),
     llm: gateway.getLLMState(),
     discord: buildDiscordConfigView(config),
+    slack: buildSlackConfigView(config),
     browser: buildBrowserConfigViewFromConfig(config),
     skills,
   };
@@ -720,6 +1091,7 @@ export function buildConnectedPayload(
     spicyObedienceEnabled: gateway.getSpicyMaxObedienceEnabled(),
     llm: llmState,
     discord: buildDiscordConfigView(config),
+    slack: buildSlackConfigView(config),
     browser: buildBrowserConfigViewFromConfig(config),
     skills,
   };
@@ -731,7 +1103,7 @@ export function buildSessionSnapshotPayload(
 ): Record<string, unknown> {
   const sessions = gateway.listSessions();
   const visibleSessions = sessions.filter((session) => (
-    session.id === webSessionId || session.channelType === 'discord' || session.channelType === 'terminal'
+    session.id === webSessionId || session.channelType === 'discord' || session.channelType === 'terminal' || session.channelType === 'slack'
   ));
 
   if (!visibleSessions.some((session) => session.id === webSessionId)) {
@@ -1034,6 +1406,7 @@ function serializeSessionSnapshotEntry(session: Session): SessionSnapshotEntryVi
   return {
     sessionId: session.id,
     channelType: session.channelType,
+    title: session.title,
     updatedAt: session.updatedAt.toISOString(),
     messages: session.messages
       .filter((message): message is Session['messages'][number] & { role: 'user' | 'assistant' } => (
@@ -1190,6 +1563,148 @@ function buildDiscordConfigView(config: KeygateConfig): DiscordConfigView {
     configured: token.length > 0,
     prefix,
   };
+}
+
+function serializeMemory(memory: { id: number; namespace: string; key: string; content: string; createdAt: Date; updatedAt: Date }) {
+  return {
+    id: memory.id,
+    namespace: memory.namespace,
+    key: memory.key,
+    content: memory.content,
+    createdAt: memory.createdAt.toISOString(),
+    updatedAt: memory.updatedAt.toISOString(),
+  };
+}
+
+async function installMarketplaceSkill(
+  gateway: Gateway,
+  entry: MarketplaceEntry,
+  scope: 'workspace' | 'global'
+): Promise<boolean> {
+  const manager = gateway.skills;
+  await manager.ensureReady();
+  const targetRoot = manager.getScopeRoot(scope);
+
+  // Import needed modules
+  const { promises: fsPromises } = await import('node:fs');
+  const { spawnSync } = await import('node:child_process');
+  const os = await import('node:os');
+  const pathMod = await import('node:path');
+
+  const source = entry.source;
+  let sourcePath: string;
+  let cleanup: (() => Promise<void>) | undefined;
+
+  const resolvedLocal = pathMod.default.resolve(source);
+  try {
+    const stat = await fsPromises.stat(resolvedLocal);
+    if (stat.isDirectory()) {
+      sourcePath = resolvedLocal;
+    } else {
+      throw new Error('not a directory');
+    }
+  } catch {
+    // Try git clone
+    const tempDir = await fsPromises.mkdtemp(pathMod.default.join(os.default.tmpdir(), 'keygate-mp-install-'));
+    const cloneResult = spawnSync('git', ['clone', '--depth', '1', source, tempDir], { encoding: 'utf8' });
+    if (cloneResult.status !== 0) {
+      await fsPromises.rm(tempDir, { recursive: true, force: true });
+      throw new Error(`Failed to clone source: ${(cloneResult.stderr || '').trim()}`);
+    }
+    sourcePath = tempDir;
+    cleanup = async () => { await fsPromises.rm(tempDir, { recursive: true, force: true }); };
+  }
+
+  try {
+    const skillDir = pathMod.default.join(sourcePath, entry.name);
+    let fromDir: string;
+    try {
+      await fsPromises.access(pathMod.default.join(skillDir, 'SKILL.md'));
+      fromDir = skillDir;
+    } catch {
+      fromDir = sourcePath;
+    }
+
+    const targetDir = pathMod.default.join(targetRoot, entry.name);
+    await fsPromises.mkdir(targetRoot, { recursive: true });
+    await fsPromises.rm(targetDir, { recursive: true, force: true });
+    await fsPromises.cp(fromDir, targetDir, { recursive: true });
+
+    const state = await manager.loadInstallState(scope);
+    state.records[entry.name] = {
+      name: entry.name,
+      source: entry.source,
+      scope,
+      installedAt: new Date().toISOString(),
+    };
+    await manager.saveInstallState(scope, state);
+    await manager.refresh();
+
+    return true;
+  } finally {
+    if (cleanup) {
+      await cleanup();
+    }
+  }
+}
+
+function buildSlackConfigView(config: KeygateConfig): SlackConfigView {
+  const botToken = (config.slack?.botToken ?? process.env['SLACK_BOT_TOKEN'] ?? '').trim();
+
+  return {
+    configured: botToken.length > 0,
+  };
+}
+
+export async function applySlackConfigUpdate(
+  config: KeygateConfig,
+  update: {
+    botToken?: string;
+    appToken?: string;
+    signingSecret?: string;
+    clearBotToken?: boolean;
+  },
+  persistConfigUpdate: typeof updateKeygateFile = updateKeygateFile
+): Promise<SlackConfigView> {
+  const currentBotToken = config.slack?.botToken ?? process.env['SLACK_BOT_TOKEN'] ?? '';
+  const currentAppToken = config.slack?.appToken ?? process.env['SLACK_APP_TOKEN'] ?? '';
+  const currentSigningSecret = config.slack?.signingSecret ?? process.env['SLACK_SIGNING_SECRET'] ?? '';
+
+  const hasBotTokenUpdate = typeof update.botToken === 'string' && update.botToken.trim().length > 0;
+  const hasAppTokenUpdate = typeof update.appToken === 'string' && update.appToken.trim().length > 0;
+  const hasSigningSecretUpdate = typeof update.signingSecret === 'string' && update.signingSecret.trim().length > 0;
+  const shouldClear = update.clearBotToken === true;
+
+  const nextBotToken = shouldClear ? '' : hasBotTokenUpdate ? update.botToken!.trim() : currentBotToken;
+  const nextAppToken = shouldClear ? '' : hasAppTokenUpdate ? update.appToken!.trim() : currentAppToken;
+  const nextSigningSecret = shouldClear ? '' : hasSigningSecretUpdate ? update.signingSecret!.trim() : currentSigningSecret;
+
+  const envUpdates: Record<string, string> = {};
+  if (hasBotTokenUpdate || shouldClear) {
+    envUpdates['SLACK_BOT_TOKEN'] = nextBotToken;
+  }
+  if (hasAppTokenUpdate || shouldClear) {
+    envUpdates['SLACK_APP_TOKEN'] = nextAppToken;
+  }
+  if (hasSigningSecretUpdate || shouldClear) {
+    envUpdates['SLACK_SIGNING_SECRET'] = nextSigningSecret;
+  }
+
+  if (Object.keys(envUpdates).length > 0) {
+    await persistConfigUpdate(envUpdates);
+  }
+
+  const existingSlack = config.slack ?? { botToken: currentBotToken, appToken: currentAppToken, signingSecret: currentSigningSecret };
+  existingSlack.botToken = nextBotToken;
+  existingSlack.appToken = nextAppToken;
+  existingSlack.signingSecret = nextSigningSecret;
+  config.slack = existingSlack;
+
+  process.env['SLACK_BOT_TOKEN'] = nextBotToken;
+  process.env['SLACK_APP_TOKEN'] = nextAppToken;
+  process.env['SLACK_SIGNING_SECRET'] = nextSigningSecret;
+
+  return buildSlackConfigView(config);
 }
 
 function normalizeDiscordPrefix(value: string | undefined, fallbackToDefault = true): string {

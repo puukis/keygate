@@ -3,6 +3,9 @@ import { ChatView } from './components/ChatView';
 import { LiveActivityLog } from './components/LiveActivityLog';
 import { SecurityBadge } from './components/SecurityBadge';
 import { ConfirmationModal } from './components/ConfirmationModal';
+import { MarketplacePanel, type MarketplaceEntryView } from './components/MarketplacePanel';
+import { MemoryPanel, type MemoryEntryView } from './components/MemoryPanel';
+import { SessionSidebar } from './components/SessionSidebar';
 import { useWebSocket } from './hooks/useWebSocket';
 import { buildEnableSpicyModeMessage, buildSetSpicyObedienceMessage } from './spicyObedience';
 import {
@@ -677,11 +680,12 @@ function parseSessionSnapshotEntries(value: unknown): SessionSnapshotEntry[] {
     const updatedAtRaw = firstString(record['updatedAt']);
     const messagesRaw = record['messages'];
 
-    if (!sessionId || (channelTypeRaw !== 'web' && channelTypeRaw !== 'discord' && channelTypeRaw !== 'terminal')) {
+    if (!sessionId || (channelTypeRaw !== 'web' && channelTypeRaw !== 'discord' && channelTypeRaw !== 'terminal' && channelTypeRaw !== 'slack')) {
       return [];
     }
 
     const updatedAt = updatedAtRaw ? new Date(updatedAtRaw) : new Date();
+    const title = firstString(record['title']);
 
     const messages = Array.isArray(messagesRaw)
       ? messagesRaw.flatMap((message) => {
@@ -706,6 +710,7 @@ function parseSessionSnapshotEntries(value: unknown): SessionSnapshotEntry[] {
     return [{
       sessionId,
       channelType: channelTypeRaw,
+      title,
       updatedAt,
       messages,
     } satisfies SessionSnapshotEntry];
@@ -718,6 +723,7 @@ function App() {
   const [streamActivitiesBySession, setStreamActivitiesBySession] = useState<Record<string, StreamActivity[]>>({});
   const [mainSessionId, setMainSessionId] = useState<string | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [contextUsageBySession, setContextUsageBySession] = useState<Record<string, { usedTokens: number; limitTokens: number; percent: number }>>({});
 
   const [mode, setMode] = useState<SecurityMode>('safe');
   const [spicyEnabled, setSpicyEnabled] = useState(false);
@@ -749,6 +755,15 @@ function App() {
   const [browserSaving, setBrowserSaving] = useState(false);
   const [browserActionPending, setBrowserActionPending] = useState<'install' | 'update' | 'remove' | null>(null);
 
+  const [marketplaceSearchResults, setMarketplaceSearchResults] = useState<MarketplaceEntryView[]>([]);
+  const [marketplaceSearchTotal, setMarketplaceSearchTotal] = useState(0);
+  const [marketplaceFeatured, setMarketplaceFeatured] = useState<MarketplaceEntryView[]>([]);
+  const [marketplaceSelected, setMarketplaceSelected] = useState<MarketplaceEntryView | null>(null);
+  const [marketplaceInstallStatus, setMarketplaceInstallStatus] = useState<{ name: string; success: boolean; message: string } | null>(null);
+
+  const [agentMemories, setAgentMemories] = useState<MemoryEntryView[]>([]);
+  const [agentMemoryNamespaces, setAgentMemoryNamespaces] = useState<string[]>([]);
+
   const [latestScreenshot, setLatestScreenshot] = useState<LatestScreenshotPreview | null>(null);
 
   const [pendingProviderSwitch, setPendingProviderSwitch] = useState<LLMProviderId | null>(null);
@@ -761,6 +776,7 @@ function App() {
   const activeStreamActivities = activeSessionId ? streamActivitiesBySession[activeSessionId] ?? [] : [];
   const activeIsStreaming = activeSessionId ? sessionState.streamingBySession[activeSessionId] === true : false;
   const activeIsReadOnly = isSessionReadOnly(activeSessionId, mainSessionId);
+  const activeContextUsage = activeSessionId ? contextUsageBySession[activeSessionId] : undefined;
   const activeLatestScreenshot = latestScreenshot && activeSessionId === latestScreenshot.sessionId
     ? latestScreenshot
     : null;
@@ -936,7 +952,7 @@ function App() {
         if (
           !sessionId
           || (content.trim().length === 0 && (!attachments || attachments.length === 0))
-          || (channelType !== 'web' && channelType !== 'discord' && channelType !== 'terminal')
+          || (channelType !== 'web' && channelType !== 'discord' && channelType !== 'terminal' && channelType !== 'slack')
         ) {
           break;
         }
@@ -1274,6 +1290,159 @@ function App() {
         break;
       }
 
+      case 'session_created': {
+        const newSessionId = firstString(data['sessionId']);
+        if (newSessionId) {
+          setMainSessionId(newSessionId);
+          setSelectedSessionId(newSessionId);
+          setSessionState((prev) => reduceSessionChatState(prev, {
+            type: 'session_touch',
+            sessionId: newSessionId,
+            channelType: 'web',
+            updatedAt: new Date(),
+          }));
+        }
+        break;
+      }
+
+      case 'session_switched': {
+        const switchedSessionId = firstString(data['sessionId']);
+        if (switchedSessionId) {
+          setMainSessionId(switchedSessionId);
+          setSelectedSessionId(switchedSessionId);
+        }
+        break;
+      }
+
+      case 'session_deleted': {
+        const deletedSessionId = firstString(data['sessionId']);
+        if (!deletedSessionId) {
+          break;
+        }
+
+        setSessionState((prev) => {
+          const nextMessages = { ...prev.messagesBySession };
+          const nextMeta = { ...prev.metaBySession };
+          const nextStreaming = { ...prev.streamingBySession };
+          const nextBuffers = { ...prev.streamBuffersBySession };
+          delete nextMessages[deletedSessionId];
+          delete nextMeta[deletedSessionId];
+          delete nextStreaming[deletedSessionId];
+          delete nextBuffers[deletedSessionId];
+          return {
+            messagesBySession: nextMessages,
+            metaBySession: nextMeta,
+            streamingBySession: nextStreaming,
+            streamBuffersBySession: nextBuffers,
+          };
+        });
+
+        setToolEventsBySession((prev) => {
+          const next = { ...prev };
+          delete next[deletedSessionId];
+          return next;
+        });
+
+        clearStreamActivities(deletedSessionId);
+        break;
+      }
+
+      case 'session_renamed': {
+        const renamedSessionId = firstString(data['sessionId']);
+        const title = firstString(data['title']);
+        if (renamedSessionId) {
+          setSessionState((prev) => ({
+            ...prev,
+            metaBySession: {
+              ...prev.metaBySession,
+              [renamedSessionId]: {
+                ...prev.metaBySession[renamedSessionId]!,
+                title: title || undefined,
+              },
+            },
+          }));
+        }
+        break;
+      }
+
+      case 'context_usage': {
+        const cuSessionId = firstString(data['sessionId']);
+        const usedTokens = typeof data['usedTokens'] === 'number' ? data['usedTokens'] : 0;
+        const limitTokens = typeof data['limitTokens'] === 'number' ? data['limitTokens'] : 0;
+        const percent = typeof data['percent'] === 'number' ? data['percent'] : 0;
+        if (cuSessionId) {
+          setContextUsageBySession((prev) => ({
+            ...prev,
+            [cuSessionId]: { usedTokens, limitTokens, percent },
+          }));
+        }
+        break;
+      }
+
+      case 'marketplace_search_result': {
+        const entries = Array.isArray(data['entries']) ? data['entries'] as MarketplaceEntryView[] : [];
+        const total = typeof data['total'] === 'number' ? data['total'] : entries.length;
+        setMarketplaceSearchResults(entries);
+        setMarketplaceSearchTotal(total);
+        break;
+      }
+
+      case 'marketplace_info_result': {
+        const entry = data['entry'] as MarketplaceEntryView | null;
+        setMarketplaceSelected(entry);
+        break;
+      }
+
+      case 'marketplace_featured_result': {
+        const entries = Array.isArray(data['entries']) ? data['entries'] as MarketplaceEntryView[] : [];
+        setMarketplaceFeatured(entries);
+        break;
+      }
+
+      case 'marketplace_install_result': {
+        const name = typeof data['name'] === 'string' ? data['name'] : '';
+        const installed = data['installed'] !== false;
+        setMarketplaceInstallStatus({
+          name,
+          success: installed,
+          message: installed ? `${name} installed successfully` : `Failed to install ${name}`,
+        });
+        break;
+      }
+
+      case 'memory_list_result':
+      case 'memory_search_result': {
+        const memories = Array.isArray(data['memories']) ? data['memories'] as MemoryEntryView[] : [];
+        setAgentMemories(memories);
+        break;
+      }
+
+      case 'memory_set_result': {
+        const memory = data['memory'] as MemoryEntryView | undefined;
+        if (memory) {
+          setAgentMemories((prev) => {
+            const filtered = prev.filter((m) => !(m.namespace === memory.namespace && m.key === memory.key));
+            return [memory, ...filtered];
+          });
+        }
+        break;
+      }
+
+      case 'memory_delete_result': {
+        const ns = typeof data['namespace'] === 'string' ? data['namespace'] : '';
+        const k = typeof data['key'] === 'string' ? data['key'] : '';
+        if (data['deleted']) {
+          setAgentMemories((prev) => prev.filter((m) => !(m.namespace === ns && m.key === k)));
+        }
+        break;
+      }
+
+      case 'memory_namespaces_result': {
+        const namespaces = Array.isArray(data['namespaces']) ? data['namespaces'] as string[] : [];
+        setAgentMemoryNamespaces(namespaces);
+        break;
+      }
+
       case 'error': {
         setDiscordSaving(false);
         setBrowserSaving(false);
@@ -1460,7 +1629,7 @@ function App() {
   const handleSendMessage = useCallback((content: string, attachments?: SessionAttachment[]) => {
     const trimmedContent = content.trim();
     const hasAttachments = Boolean(attachments && attachments.length > 0);
-    if ((!trimmedContent && !hasAttachments) || !connected || !mainSessionId || selectedSessionId !== mainSessionId) {
+    if ((!trimmedContent && !hasAttachments) || !connected || !activeSessionId || !activeSessionId.startsWith('web:')) {
       return;
     }
 
@@ -1469,7 +1638,7 @@ function App() {
       content: trimmedContent,
       attachments,
     });
-  }, [connected, mainSessionId, selectedSessionId, send]);
+  }, [connected, activeSessionId, send]);
 
   const handleConfirm = useCallback((decision: ConfirmationDecision) => {
     const confirmation = pendingConfirmation;
@@ -1519,6 +1688,29 @@ function App() {
     send({ type: 'clear_session' });
     setIsConfigMenuOpen(false);
   }, [connected, mainSessionId, selectedSessionId, send]);
+
+  const handleNewSession = useCallback(() => {
+    if (!connected) return;
+    send({ type: 'new_session' });
+  }, [connected, send]);
+
+  const handleDeleteSession = useCallback((sessionId: string) => {
+    if (!connected) return;
+    send({ type: 'delete_session', sessionId });
+  }, [connected, send]);
+
+  const handleRenameSession = useCallback((sessionId: string, title: string) => {
+    if (!connected) return;
+    send({ type: 'rename_session', sessionId, title });
+  }, [connected, send]);
+
+  const handleSwitchSession = useCallback((sessionId: string) => {
+    setSelectedSessionId(sessionId);
+    // If it's a web session, also switch the active server-side session
+    if (sessionId.startsWith('web:') && connected) {
+      send({ type: 'switch_session', sessionId });
+    }
+  }, [connected, send]);
 
   const handleProviderChange = useCallback((provider: LLMProviderId) => {
     setPendingProviderSwitch(provider);
@@ -1734,24 +1926,28 @@ function App() {
       </header>
 
       <main className="app-main">
+        <SessionSidebar
+          sessions={sessionOptions}
+          activeSessionId={activeSessionId}
+          onSelectSession={handleSwitchSession}
+          onNewSession={handleNewSession}
+          onDeleteSession={handleDeleteSession}
+          onRenameSession={handleRenameSession}
+          disabled={!connected}
+        />
         <section className="chat-shell">
           <div className="chat-toolbar">
-            <label className="llm-control chat-session-control">
-              <span>Chat View</span>
-              <select
-                value={activeSessionId ?? ''}
-                onChange={(event) => setSelectedSessionId(event.target.value)}
-                disabled={!connected || sessionOptions.length === 0}
-              >
-                {sessionOptions.length === 0 ? (
-                  <option value="">No sessions yet</option>
-                ) : (
-                  sessionOptions.map((option) => (
-                    <option key={option.sessionId} value={option.sessionId}>{option.label}</option>
-                  ))
-                )}
-              </select>
-            </label>
+            {activeContextUsage && activeContextUsage.limitTokens > 0 && (
+              <div className="context-meter" title={`Context: ${activeContextUsage.usedTokens.toLocaleString()} / ${activeContextUsage.limitTokens.toLocaleString()} tokens (${activeContextUsage.percent}%)`}>
+                <div className="context-meter-bar">
+                  <div
+                    className={`context-meter-fill${activeContextUsage.percent >= 90 ? ' context-meter-critical' : activeContextUsage.percent >= 70 ? ' context-meter-warn' : ''}`}
+                    style={{ width: `${activeContextUsage.percent}%` }}
+                  />
+                </div>
+                <span className="context-meter-label">{activeContextUsage.percent}%</span>
+              </div>
+            )}
             {activeIsReadOnly && (
               <span className="session-readonly-chip">{readOnlyChipText}</span>
             )}
@@ -1764,7 +1960,7 @@ function App() {
             streamActivities={activeStreamActivities}
             disabled={composerDisabled}
             inputPlaceholder={composerPlaceholder}
-            sessionIdForUploads={mainSessionId}
+            sessionIdForUploads={activeSessionId}
             readOnlyHint={activeIsReadOnly ? readOnlyHintText : undefined}
           />
         </section>
@@ -2135,6 +2331,58 @@ function App() {
               >
                 Clear main session
               </button>
+            </section>
+
+            <section className="config-section">
+              <h3>Skill Marketplace</h3>
+              <MarketplacePanel
+                connected={connected}
+                disabled={activeIsStreaming}
+                searchResults={marketplaceSearchResults}
+                searchTotal={marketplaceSearchTotal}
+                featuredEntries={marketplaceFeatured}
+                selectedEntry={marketplaceSelected}
+                installStatus={marketplaceInstallStatus}
+                onSearch={(query, tags) => {
+                  send({ type: 'marketplace_search', query, tags });
+                }}
+                onSelectEntry={(name) => {
+                  send({ type: 'marketplace_info', content: name });
+                }}
+                onClearSelection={() => setMarketplaceSelected(null)}
+                onInstall={(name, scope) => {
+                  setMarketplaceInstallStatus(null);
+                  send({ type: 'marketplace_install', content: name, scope });
+                }}
+                onLoadFeatured={() => {
+                  send({ type: 'marketplace_featured' });
+                }}
+              />
+            </section>
+
+            <section className="config-section">
+              <h3>Agent Memory</h3>
+              <MemoryPanel
+                connected={connected}
+                disabled={activeIsStreaming}
+                memories={agentMemories}
+                namespaces={agentMemoryNamespaces}
+                onList={(namespace) => {
+                  send({ type: 'memory_list', namespace: namespace ?? '' });
+                }}
+                onSearch={(query, namespace) => {
+                  send({ type: 'memory_search', query, namespace: namespace ?? '' });
+                }}
+                onSet={(namespace, key, content) => {
+                  send({ type: 'memory_set', namespace, key, content });
+                }}
+                onDelete={(namespace, key) => {
+                  send({ type: 'memory_delete', namespace, key });
+                }}
+                onLoadNamespaces={() => {
+                  send({ type: 'memory_namespaces' });
+                }}
+              />
             </section>
           </aside>
         </div>

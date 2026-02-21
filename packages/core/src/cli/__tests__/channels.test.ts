@@ -28,7 +28,7 @@ describe('channels command', () => {
   it('parses channel name and action', () => {
     expect(parseChannelName('web')).toBe('web');
     expect(parseChannelName('discord')).toBe('discord');
-    expect(parseChannelName('slack')).toBeNull();
+    expect(parseChannelName('slack')).toBe('slack');
 
     expect(parseChannelAction('start')).toBe('start');
     expect(parseChannelAction('stop')).toBe('stop');
@@ -40,7 +40,7 @@ describe('channels command', () => {
 
   it('throws usage for invalid syntax', async () => {
     await expect(runChannelsCommand(makeArgs())).rejects.toThrow(
-      'Usage: keygate channels <web|discord> <start|stop|restart|status|config>'
+      'Usage: keygate channels <web|discord|slack> <start|stop|restart|status|config>'
     );
   });
 
@@ -152,5 +152,65 @@ describe('channels command', () => {
     expect(logs.some((line) => line.includes('Token configured: yes'))).toBe(true);
     expect(logs.some((line) => line.includes('"!kg "'))).toBe(true);
     expect(logs.some((line) => line.includes('Launch command:'))).toBe(true);
+  });
+
+  it('requires slack bot token to start slack channel', async () => {
+    await expect(
+      runChannelsCommand(makeArgs('slack', 'start'), {
+        cwd: '/repo',
+        configDir: '/tmp/test-config',
+        env: {} as NodeJS.ProcessEnv,
+        log: () => undefined,
+        pathExists: () => false,
+      })
+    ).rejects.toThrow('Slack bot token is missing');
+  });
+
+  it('requires slack app token to start slack channel', async () => {
+    await expect(
+      runChannelsCommand(makeArgs('slack', 'start'), {
+        cwd: '/repo',
+        configDir: '/tmp/test-config',
+        env: { SLACK_BOT_TOKEN: 'xoxb-test' } as unknown as NodeJS.ProcessEnv,
+        log: () => undefined,
+        pathExists: () => false,
+      })
+    ).rejects.toThrow('Slack app token is missing');
+  });
+
+  it('prints slack config from environment', async () => {
+    const logs: string[] = [];
+
+    await runChannelsCommand(makeArgs('slack', 'config'), {
+      cwd: '/repo',
+      env: {
+        SLACK_BOT_TOKEN: 'xoxb-test',
+        SLACK_APP_TOKEN: 'xapp-test',
+        KEYGATE_SLACK_START_COMMAND: 'node custom-slack.js',
+      } as NodeJS.ProcessEnv,
+      log: (line: string) => {
+        logs.push(line);
+      },
+    });
+
+    expect(logs.some((line) => line.includes('Bot token configured: yes'))).toBe(true);
+    expect(logs.some((line) => line.includes('App token configured: yes'))).toBe(true);
+    expect(logs.some((line) => line.includes('Launch command:'))).toBe(true);
+  });
+
+  it('reports slack channel status as stopped when no state file exists', async () => {
+    const logs: string[] = [];
+
+    await runChannelsCommand(makeArgs('slack', 'status'), {
+      cwd: '/repo',
+      configDir: '/tmp/test-config',
+      env: {} as NodeJS.ProcessEnv,
+      log: (line: string) => {
+        logs.push(line);
+      },
+      pathExists: () => false,
+    });
+
+    expect(logs.some((line) => line.includes('Slack channel status: stopped'))).toBe(true);
   });
 });

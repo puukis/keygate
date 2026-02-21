@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   WebSocketChannel,
   applyDiscordConfigUpdate,
+  applySlackConfigUpdate,
   applySpicyModeEnable,
   applySpicyObedienceUpdate,
   buildSessionChunkPayload,
@@ -1001,3 +1002,80 @@ function createMockResponse(): {
     }),
   };
 }
+
+describe('applySlackConfigUpdate', () => {
+  it('persists bot token and returns configured true', async () => {
+    const config = {
+      slack: { botToken: '', appToken: '', signingSecret: '' },
+    } as any;
+    const persisted: Record<string, string> = {};
+
+    const result = await applySlackConfigUpdate(
+      config,
+      { botToken: 'xoxb-test', appToken: 'xapp-test', signingSecret: 'secret' },
+      async (updates) => { Object.assign(persisted, updates); }
+    );
+
+    expect(result.configured).toBe(true);
+    expect(persisted['SLACK_BOT_TOKEN']).toBe('xoxb-test');
+    expect(persisted['SLACK_APP_TOKEN']).toBe('xapp-test');
+    expect(persisted['SLACK_SIGNING_SECRET']).toBe('secret');
+    expect(config.slack.botToken).toBe('xoxb-test');
+  });
+
+  it('clears all tokens when clearBotToken is true', async () => {
+    const config = {
+      slack: { botToken: 'xoxb-old', appToken: 'xapp-old', signingSecret: 'old-secret' },
+    } as any;
+    const persisted: Record<string, string> = {};
+
+    const result = await applySlackConfigUpdate(
+      config,
+      { clearBotToken: true },
+      async (updates) => { Object.assign(persisted, updates); }
+    );
+
+    expect(result.configured).toBe(false);
+    expect(persisted['SLACK_BOT_TOKEN']).toBe('');
+    expect(config.slack.botToken).toBe('');
+  });
+
+  it('keeps existing tokens when no update is provided', async () => {
+    const config = {
+      slack: { botToken: 'xoxb-keep', appToken: 'xapp-keep', signingSecret: 'keep-secret' },
+    } as any;
+    let persistCalled = false;
+
+    const result = await applySlackConfigUpdate(
+      config,
+      {},
+      async () => { persistCalled = true; }
+    );
+
+    expect(result.configured).toBe(true);
+    expect(persistCalled).toBe(false);
+    expect(config.slack.botToken).toBe('xoxb-keep');
+  });
+
+  it('returns configured false when no bot token exists', async () => {
+    const config = {} as any;
+    const savedEnv = process.env['SLACK_BOT_TOKEN'];
+    process.env['SLACK_BOT_TOKEN'] = '';
+
+    try {
+      const result = await applySlackConfigUpdate(
+        config,
+        {},
+        async () => {}
+      );
+
+      expect(result.configured).toBe(false);
+    } finally {
+      if (savedEnv === undefined) {
+        delete process.env['SLACK_BOT_TOKEN'];
+      } else {
+        process.env['SLACK_BOT_TOKEN'] = savedEnv;
+      }
+    }
+  });
+});

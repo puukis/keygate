@@ -7,6 +7,19 @@ import { promises as fs } from 'node:fs';
 import { CodexRpcClient } from '../../codex/CodexRpcClient.js';
 import { OpenAICodexProvider } from '../OpenAICodexProvider.js';
 
+// Mock the auth module so all tests get a valid token without disk/network access.
+vi.mock('../../auth/index.js', () => ({
+  readTokens: vi.fn(async () => ({
+    access_token: 'test-access-token',
+    expires_at: Math.floor(Date.now() / 1000) + 3600,
+  })),
+  isTokenExpired: vi.fn(() => false),
+  getValidAccessToken: vi.fn(async () => 'test-access-token'),
+  deleteTokens: vi.fn(async () => {}),
+  runOAuthFlow: vi.fn(async () => ({ tokens: { access_token: 'new-token', expires_at: Math.floor(Date.now() / 1000) + 3600 } })),
+  getTokenEndpoint: vi.fn(() => 'https://auth.openai.com/oauth/token'),
+}));
+
 class FakeChildProcess extends EventEmitter {
   stdin = new PassThrough();
   stdout = new PassThrough();
@@ -25,9 +38,8 @@ class FakeChildProcess extends EventEmitter {
 }
 
 describe('OpenAICodexProvider', () => {
-  it('completes ChatGPT login flow and parses model/list entries', async () => {
+  it('parses model/list entries correctly', async () => {
     const fake = new FakeChildProcess();
-    let loggedIn = false;
 
     fake.stdin.on('data', (chunk) => {
       const lines = String(chunk)
@@ -51,39 +63,6 @@ describe('OpenAICodexProvider', () => {
             id: payload.id,
             result: { sessionId: 'session-1' },
           }) + '\n');
-          continue;
-        }
-
-        if (payload.method === 'account/read') {
-          fake.stdout.write(JSON.stringify({
-            id: payload.id,
-            result: {
-              requiresOpenaiAuth: true,
-              account: loggedIn ? { type: 'chatgpt', email: 'dev@example.com' } : null,
-            },
-          }) + '\n');
-          continue;
-        }
-
-        if (payload.method === 'account/login/start') {
-          fake.stdout.write(JSON.stringify({
-            id: payload.id,
-            result: {
-              loginId: 'login-1',
-              authUrl: 'https://auth.example/login',
-            },
-          }) + '\n');
-
-          loggedIn = true;
-          setTimeout(() => {
-            fake.stdout.write(JSON.stringify({
-              method: 'account/login/completed',
-              params: {
-                loginId: 'login-1',
-                success: true,
-              },
-            }) + '\n');
-          }, 5);
           continue;
         }
 
@@ -117,16 +96,10 @@ describe('OpenAICodexProvider', () => {
       spawnFactory: () => fake as any,
     });
 
-    const openExternalUrl = vi.fn(async () => true);
     const provider = new OpenAICodexProvider('openai-codex/gpt-5.2', {
       rpcClient,
-      openExternalUrl,
       loginTimeoutMs: 5_000,
     });
-
-    await provider.login();
-
-    expect(openExternalUrl).toHaveBeenCalledWith('https://auth.example/login');
 
     const models = await provider.listModels();
 
@@ -169,17 +142,6 @@ describe('OpenAICodexProvider', () => {
           fake.stdout.write(JSON.stringify({
             id: payload.id,
             result: { sessionId: 'session-1' },
-          }) + '\n');
-          continue;
-        }
-
-        if (payload.method === 'account/read') {
-          fake.stdout.write(JSON.stringify({
-            id: payload.id,
-            result: {
-              requiresOpenaiAuth: false,
-              account: null,
-            },
           }) + '\n');
           continue;
         }
@@ -319,17 +281,6 @@ describe('OpenAICodexProvider', () => {
           continue;
         }
 
-        if (payload.method === 'account/read') {
-          fake.stdout.write(JSON.stringify({
-            id: payload.id,
-            result: {
-              requiresOpenaiAuth: false,
-              account: null,
-            },
-          }) + '\n');
-          continue;
-        }
-
         if (payload.method === 'model/list') {
           fake.stdout.write(JSON.stringify({
             id: payload.id,
@@ -455,17 +406,6 @@ describe('OpenAICodexProvider', () => {
           continue;
         }
 
-        if (payload.method === 'account/read') {
-          fake.stdout.write(JSON.stringify({
-            id: payload.id,
-            result: {
-              requiresOpenaiAuth: false,
-              account: null,
-            },
-          }) + '\n');
-          continue;
-        }
-
         if (payload.method === 'model/list') {
           fake.stdout.write(JSON.stringify({
             id: payload.id,
@@ -579,14 +519,6 @@ describe('OpenAICodexProvider', () => {
           continue;
         }
 
-        if (payload.method === 'account/read') {
-          fake.stdout.write(JSON.stringify({
-            id: payload.id,
-            result: { requiresOpenaiAuth: false, account: null },
-          }) + '\n');
-          continue;
-        }
-
         if (payload.method === 'model/list') {
           fake.stdout.write(JSON.stringify({
             id: payload.id,
@@ -678,14 +610,6 @@ describe('OpenAICodexProvider', () => {
 
         if (payload.method === 'initialize') {
           fake.stdout.write(JSON.stringify({ id: payload.id, result: { sessionId: 'session-1' } }) + '\n');
-          continue;
-        }
-
-        if (payload.method === 'account/read') {
-          fake.stdout.write(JSON.stringify({
-            id: payload.id,
-            result: { requiresOpenaiAuth: false, account: null },
-          }) + '\n');
           continue;
         }
 
@@ -783,14 +707,6 @@ describe('OpenAICodexProvider', () => {
           continue;
         }
 
-        if (payload.method === 'account/read') {
-          fake.stdout.write(JSON.stringify({
-            id: payload.id,
-            result: { requiresOpenaiAuth: false, account: null },
-          }) + '\n');
-          continue;
-        }
-
         if (payload.method === 'model/list') {
           fake.stdout.write(JSON.stringify({
             id: payload.id,
@@ -876,14 +792,6 @@ describe('OpenAICodexProvider', () => {
 
         if (payload.method === 'initialize') {
           fake.stdout.write(JSON.stringify({ id: payload.id, result: { sessionId: 'session-1' } }) + '\n');
-          continue;
-        }
-
-        if (payload.method === 'account/read') {
-          fake.stdout.write(JSON.stringify({
-            id: payload.id,
-            result: { requiresOpenaiAuth: false, account: null },
-          }) + '\n');
           continue;
         }
 
@@ -979,14 +887,6 @@ describe('OpenAICodexProvider', () => {
 
         if (payload.method === 'initialize') {
           fake.stdout.write(JSON.stringify({ id: payload.id, result: { sessionId: 'session-1' } }) + '\n');
-          continue;
-        }
-
-        if (payload.method === 'account/read') {
-          fake.stdout.write(JSON.stringify({
-            id: payload.id,
-            result: { requiresOpenaiAuth: false, account: null },
-          }) + '\n');
           continue;
         }
 
@@ -1097,14 +997,6 @@ describe('OpenAICodexProvider', () => {
           continue;
         }
 
-        if (payload.method === 'account/read') {
-          fake.stdout.write(JSON.stringify({
-            id: payload.id,
-            result: { requiresOpenaiAuth: false, account: null },
-          }) + '\n');
-          continue;
-        }
-
         if (payload.method === 'model/list') {
           fake.stdout.write(JSON.stringify({
             id: payload.id,
@@ -1189,14 +1081,6 @@ describe('OpenAICodexProvider', () => {
           continue;
         }
 
-        if (payload.method === 'account/read') {
-          fake.stdout.write(JSON.stringify({
-            id: payload.id,
-            result: { requiresOpenaiAuth: false, account: null },
-          }) + '\n');
-          continue;
-        }
-
         if (payload.method === 'model/list') {
           fake.stdout.write(JSON.stringify({
             id: payload.id,
@@ -1275,14 +1159,6 @@ describe('OpenAICodexProvider', () => {
 
         if (payload.method === 'initialize') {
           fake.stdout.write(JSON.stringify({ id: payload.id, result: { sessionId: 'session-1' } }) + '\n');
-          continue;
-        }
-
-        if (payload.method === 'account/read') {
-          fake.stdout.write(JSON.stringify({
-            id: payload.id,
-            result: { requiresOpenaiAuth: false, account: null },
-          }) + '\n');
           continue;
         }
 
@@ -1376,14 +1252,6 @@ describe('OpenAICodexProvider', () => {
 
         if (payload.method === 'initialize') {
           fake.stdout.write(JSON.stringify({ id: payload.id, result: { sessionId: 'session-1' } }) + '\n');
-          continue;
-        }
-
-        if (payload.method === 'account/read') {
-          fake.stdout.write(JSON.stringify({
-            id: payload.id,
-            result: { requiresOpenaiAuth: false, account: null },
-          }) + '\n');
           continue;
         }
 
@@ -1486,14 +1354,6 @@ describe('OpenAICodexProvider', () => {
           continue;
         }
 
-        if (payload.method === 'account/read') {
-          fake.stdout.write(JSON.stringify({
-            id: payload.id,
-            result: { requiresOpenaiAuth: false, account: null },
-          }) + '\n');
-          continue;
-        }
-
         if (payload.method === 'model/list') {
           fake.stdout.write(JSON.stringify({
             id: payload.id,
@@ -1585,14 +1445,6 @@ describe('OpenAICodexProvider', () => {
 
         if (payload.method === 'initialize') {
           fake.stdout.write(JSON.stringify({ id: payload.id, result: { sessionId: 'session-1' } }) + '\n');
-          continue;
-        }
-
-        if (payload.method === 'account/read') {
-          fake.stdout.write(JSON.stringify({
-            id: payload.id,
-            result: { requiresOpenaiAuth: false, account: null },
-          }) + '\n');
           continue;
         }
 

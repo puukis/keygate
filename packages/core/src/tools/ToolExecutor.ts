@@ -240,7 +240,7 @@ export class ToolExecutor {
       return false;
     }
 
-    if (call.name !== 'write_file' && call.name !== 'delete_file') {
+    if (call.name !== 'write_file' && call.name !== 'delete_file' && call.name !== 'edit_file' && call.name !== 'apply_patch') {
       return false;
     }
 

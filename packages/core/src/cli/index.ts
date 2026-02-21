@@ -10,6 +10,7 @@ import { runChannelsCommand } from './commands/channels.js';
 import { runMcpCommand } from './commands/mcp.js';
 import { runTuiCommand } from './commands/tui.js';
 import { runSkillsCommand } from './commands/skills.js';
+import { runMemoryCommand } from './commands/memory.js';
 
 export async function runCli(argv: string[]): Promise<boolean> {
   if (argv.length === 0) {
@@ -67,6 +68,9 @@ export async function runCli(argv: string[]): Promise<boolean> {
     case 'skills':
       await runSkillsCommand(args);
       return true;
+    case 'memory':
+      await runMemoryCommand(args);
+      return true;
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -81,13 +85,16 @@ Usage:
   keygate onboarding [--no-prompt] [--defaults] [--no-run]
   keygate onboard --auth-choice openai-codex [--device-auth]
   keygate auth login --provider openai-codex [--device-auth]
+  keygate auth logout [--force]
+  keygate auth status
   keygate install codex [--method npm|brew]
   keygate uninstall [--yes] [--remove-config] [--remove-workspace]
   keygate update [--check-only]
   keygate gateway <open|close|status|restart>
-  keygate channels <web|discord> <start|stop|restart|status|config>
+  keygate channels <web|discord|slack> <start|stop|restart|status|config>
   keygate mcp browser <install|status|remove|update>
-  keygate skills <list|doctor|validate|where|install|update|remove>
+  keygate skills <list|doctor|validate|where|install|update|remove|search|info|publish|unpublish|featured>
+  keygate memory <list|get|set|delete|search|namespaces|clear>
 
 Notes:
   - openai-codex uses ChatGPT OAuth through Codex app-server.

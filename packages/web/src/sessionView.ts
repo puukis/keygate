@@ -1,4 +1,4 @@
-export type SessionChannelType = 'web' | 'discord' | 'terminal';
+export type SessionChannelType = 'web' | 'discord' | 'terminal' | 'slack';
 
 export interface SessionAttachment {
   id: string;
@@ -18,6 +18,7 @@ export interface SessionMessage {
 
 export interface SessionMeta {
   channelType: SessionChannelType;
+  title?: string;
   updatedAt: Date;
 }
 
@@ -30,6 +31,7 @@ export interface SessionSnapshotMessage {
 export interface SessionSnapshotEntry {
   sessionId: string;
   channelType: SessionChannelType;
+  title?: string;
   updatedAt: Date;
   messages: SessionSnapshotMessage[];
 }
@@ -131,6 +133,7 @@ export function reduceSessionChatState(state: SessionChatState, event: SessionCh
       for (const session of event.sessions) {
         nextMeta[session.sessionId] = {
           channelType: session.channelType,
+          title: session.title,
           updatedAt: new Date(session.updatedAt),
         };
 
@@ -362,7 +365,7 @@ export function buildSessionOptions(
   const mainOption = mainSessionId && metaBySession[mainSessionId]
     ? [{
       sessionId: mainSessionId,
-      label: 'main:agent',
+      label: metaBySession[mainSessionId].title || 'main:agent',
       channelType: metaBySession[mainSessionId].channelType,
       updatedAt: metaBySession[mainSessionId].updatedAt,
       readOnly: false,
@@ -381,19 +384,20 @@ export function buildSessionOptions(
 
   let discordIndex = 0;
   let terminalIndex = 0;
+  let webIndex = 0;
   const readOnlyOptions = readOnlyEntries.map(([sessionId, meta]) => {
-    const label = meta.channelType === 'discord'
+    const defaultLabel = meta.channelType === 'discord'
       ? `discord:agent-${++discordIndex}`
       : meta.channelType === 'terminal'
         ? `terminal:agent-${++terminalIndex}`
-        : `web:agent`;
+        : `web:agent-${++webIndex}`;
 
     return ({
     sessionId,
-    label,
+    label: meta.title || defaultLabel,
     channelType: meta.channelType,
     updatedAt: meta.updatedAt,
-    readOnly: true,
+    readOnly: meta.channelType !== 'web',
     } satisfies SessionOption);
   });
 
@@ -405,7 +409,8 @@ export function isSessionReadOnly(selectedSessionId: string | null, mainSessionI
     return false;
   }
 
-  return selectedSessionId !== mainSessionId;
+  // All web sessions are writable; non-web sessions are read-only
+  return !selectedSessionId.startsWith('web:');
 }
 
 export function isComposerDisabled(

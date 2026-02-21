@@ -60,7 +60,7 @@ export class CodexRpcClient extends EventEmitter<CodexRpcClientEvents> {
   private readonly command: string;
   private readonly args: string[];
   private readonly cwd?: string;
-  private readonly env?: NodeJS.ProcessEnv;
+  private env?: NodeJS.ProcessEnv;
   private readonly modelReasoningEffort?: string;
   private readonly requestTimeoutMs: number;
   private readonly spawnFactory: SpawnFactory;
@@ -324,6 +324,10 @@ export class CodexRpcClient extends EventEmitter<CodexRpcClientEvents> {
     handler: ((request: IncomingServerRequest) => Promise<ServerRequestResult | null>) | null
   ): void {
     this.serverRequestHandler = handler;
+  }
+
+  setEnv(env: NodeJS.ProcessEnv): void {
+    this.env = env;
   }
 
   private resolveSpawnArgs(): string[] {

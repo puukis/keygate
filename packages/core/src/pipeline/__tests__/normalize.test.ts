@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeDiscordMessage, normalizeTerminalMessage, normalizeWebMessage } from '../normalize.js';
+import { normalizeDiscordMessage, normalizeSlackMessage, normalizeTerminalMessage, normalizeWebMessage } from '../normalize.js';
 import type { Channel } from '../../types.js';
 
 function createChannel(type: Channel['type']): Channel {
@@ -62,5 +62,16 @@ describe('normalize message helpers', () => {
     expect(normalized.sessionId).toBe('terminal:session-1');
     expect(normalized.channelType).toBe('terminal');
     expect(normalized.userId).toBe('user-1');
+  });
+
+  it('normalizes slack messages with slack session prefix', () => {
+    const channel = createChannel('slack');
+    const normalized = normalizeSlackMessage('msg-1', 'C12345', 'U99', 'hello from slack', channel);
+
+    expect(normalized.id).toBe('msg-1');
+    expect(normalized.sessionId).toBe('slack:C12345');
+    expect(normalized.channelType).toBe('slack');
+    expect(normalized.userId).toBe('U99');
+    expect(normalized.content).toBe('hello from slack');
   });
 });

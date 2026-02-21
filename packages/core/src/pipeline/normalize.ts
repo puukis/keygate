@@ -65,6 +65,27 @@ export function normalizeTerminalMessage(
 }
 
 /**
+ * Create a normalized message from Slack
+ */
+export function normalizeSlackMessage(
+  messageId: string,
+  channelId: string,
+  userId: string,
+  content: string,
+  channel: Channel
+): NormalizedMessage {
+  return {
+    id: messageId,
+    sessionId: `slack:${channelId}`,
+    channelType: 'slack',
+    channel,
+    userId,
+    content,
+    timestamp: new Date(),
+  };
+}
+
+/**
  * Abstract channel implementation helper
  */
 export abstract class BaseChannel implements Channel {

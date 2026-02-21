@@ -28,8 +28,10 @@ export {
 } from './mcpBrowserManager.js';
 export type { CodexModel, ProviderModel } from './codexModels.js';
 export type {
+  CodexAccount,
   CodexAccountReadResult,
   CodexLoginCompletedNotification,
+  CodexLoginStartParams,
   CodexLoginStartResult,
   CodexModelEntry,
   CodexModelListResult,

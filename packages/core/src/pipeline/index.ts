@@ -1,5 +1,6 @@
 export {
   normalizeDiscordMessage,
+  normalizeSlackMessage,
   normalizeTerminalMessage,
   normalizeWebMessage,
   BaseChannel,

@@ -5,6 +5,21 @@ export { evaluateSkillEligibility, buildEligibilityContext, getSkillEntryKey } f
 export { parseSlashSkillInvocation, selectActiveSkills } from './matcher.js';
 export { formatSkillsForPrompt, buildActiveSkillsPrompt, computeSkillContextHash } from './prompt.js';
 export { discoverPluginSkillDirs } from './pluginManifest.js';
+export {
+  loadRegistry,
+  saveRegistry,
+  publishSkill,
+  unpublishSkill,
+  searchMarketplace,
+  getMarketplaceEntry,
+  listFeatured,
+  recordDownload,
+} from './marketplace.js';
+export type {
+  MarketplaceEntry,
+  MarketplaceRegistry,
+  MarketplaceSearchResult,
+} from './marketplace.js';
 export type {
   SkillParseResult,
   SkillDiscoverySnapshot,

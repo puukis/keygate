@@ -1,0 +1,168 @@
+.marketplace-search-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.marketplace-search-row input {
+  flex: 1;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  color: var(--text);
+  font-size: 0.85rem;
+}
+
+.marketplace-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.25rem;
+}
+
+.marketplace-tag {
+  display: inline-block;
+  font-size: 0.7rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  background: var(--bg-tertiary, #3a3a3a);
+  color: var(--text-muted);
+}
+
+.marketplace-tag-featured {
+  background: var(--accent, #4a9eff);
+  color: #fff;
+}
+
+.marketplace-results-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.marketplace-result-item {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem 0.6rem;
+  background: var(--bg-secondary);
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.marketplace-result-item:hover {
+  border-color: var(--accent, #4a9eff);
+}
+
+.marketplace-result-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.marketplace-result-name {
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--text);
+}
+
+.marketplace-result-version {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.marketplace-result-desc {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-top: 0.15rem;
+  line-height: 1.3;
+}
+
+.marketplace-result-meta {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 0.25rem;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.marketplace-detail {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.6rem;
+  background: var(--bg-secondary);
+  margin-top: 0.5rem;
+}
+
+.marketplace-detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.marketplace-detail h4 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.marketplace-detail-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.85rem;
+  padding: 0;
+}
+
+.marketplace-detail-close:hover {
+  color: var(--text);
+}
+
+.marketplace-detail-body {
+  margin-top: 0.4rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.marketplace-detail-body p {
+  margin: 0.25rem 0;
+}
+
+.marketplace-detail-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  align-items: center;
+}
+
+.marketplace-detail-actions select {
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  color: var(--text);
+  font-size: 0.8rem;
+}
+
+.marketplace-empty {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 1rem 0;
+}
+
+.marketplace-status {
+  font-size: 0.78rem;
+  margin-top: 0.3rem;
+}
+
+.marketplace-status-success {
+  color: var(--success, #4caf50);
+}
+
+.marketplace-status-error {
+  color: var(--error, #f44336);
+}

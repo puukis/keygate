@@ -149,7 +149,7 @@
 
 .app-main {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+  grid-template-columns: auto minmax(0, 1fr) minmax(280px, 340px);
   gap: clamp(10px, 1.2vw, 16px);
   flex: 1;
   min-height: 0;
@@ -184,6 +184,10 @@
   );
 }
 
+.chat-toolbar:empty {
+  display: none;
+}
+
 .chat-session-control select {
   min-width: 240px;
 }
@@ -200,6 +204,45 @@
   padding: 6px 10px;
   font-weight: 700;
   white-space: nowrap;
+}
+
+/* Context window meter */
+.context-meter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px;
+}
+
+.context-meter-bar {
+  width: 80px;
+  height: 6px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--text-secondary) 18%, transparent);
+  overflow: hidden;
+}
+
+.context-meter-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+
+.context-meter-fill.context-meter-warn {
+  background: var(--warning, #e6a700);
+}
+
+.context-meter-fill.context-meter-critical {
+  background: var(--error, #dc3545);
+}
+
+.context-meter-label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .llm-controls {
@@ -422,7 +465,7 @@
 
 @media (max-width: 1120px) {
   .app-main {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: auto minmax(0, 1fr);
   }
 }
 

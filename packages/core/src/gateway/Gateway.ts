@@ -16,6 +16,7 @@ import { Brain } from '../brain/Brain.js';
 import { formatCapabilitiesAndLimitsForReadability } from '../brain/assistantOutputFormatter.js';
 import { ToolExecutor } from '../tools/ToolExecutor.js';
 import { Database } from '../db/index.js';
+import { AgentMemoryStore } from '../db/agentMemory.js';
 import { createLLMProvider } from '../llm/index.js';
 import { SkillsManager } from '../skills/index.js';
 
@@ -38,6 +39,7 @@ export class Gateway extends EventEmitter<KeygateEvents> {
   public readonly brain: Brain;
   public readonly toolExecutor: ToolExecutor;
   public readonly db: Database;
+  public readonly memory: AgentMemoryStore;
   public readonly config: KeygateConfig;
   public readonly skills: SkillsManager;
 
@@ -51,6 +53,7 @@ export class Gateway extends EventEmitter<KeygateEvents> {
 
     // Initialize database
     this.db = new Database();
+    this.memory = new AgentMemoryStore();
 
     // Initialize tool executor with security settings
     this.toolExecutor = new ToolExecutor(
@@ -61,7 +64,7 @@ export class Gateway extends EventEmitter<KeygateEvents> {
     );
 
     // Initialize brain with LLM provider
-    this.brain = new Brain(config, this.toolExecutor, this);
+    this.brain = new Brain(config, this.toolExecutor, this, this.memory);
     this.skills = new SkillsManager({ config });
     void this.skills.ensureReady();
   }
@@ -275,10 +278,26 @@ export class Gateway extends EventEmitter<KeygateEvents> {
   }
 
   /**
+   * Create a new web session
+   */
+  createWebSession(): Session {
+    const session: Session = {
+      id: `web:${randomUUID()}`,
+      channelType: 'web',
+      messages: [],
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    this.sessions.set(session.id, session);
+    this.persistSessionSnapshot(session);
+    return session;
+  }
+
+  /**
    * Get a session by ID
    */
   getSession(sessionId: string): Session | undefined {
-    return this.sessions.get(sessionId);
+    return this.sessions.get(sessionId) ?? this.db.getSession(sessionId) ?? undefined;
   }
 
   /**
@@ -304,6 +323,11 @@ export class Gateway extends EventEmitter<KeygateEvents> {
           createdAt: new Date(session.createdAt),
           updatedAt: new Date(session.updatedAt),
         });
+      }
+
+      // Preserve title from DB if memory doesn't have one
+      if (existing && !existing.title && session.title) {
+        existing.title = session.title;
       }
     }
 
@@ -458,6 +482,48 @@ export class Gateway extends EventEmitter<KeygateEvents> {
       this.db.clearSession(sessionId);
     } catch (error) {
       console.error('Failed to clear persisted session messages:', error);
+    }
+  }
+
+  /**
+   * Delete a session entirely (memory + database)
+   */
+  deleteSession(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    const attachmentPaths = new Set<string>([
+      ...collectAttachmentPaths(session?.messages ?? []),
+      ...this.db.getSessionAttachmentPaths(sessionId),
+    ]);
+
+    void this.removeAttachmentFiles(attachmentPaths).catch((error) => {
+      console.error('Failed to remove session attachments:', error);
+    });
+
+    this.sessions.delete(sessionId);
+    this.laneQueues.delete(sessionId);
+
+    try {
+      this.db.deleteSession(sessionId);
+    } catch (error) {
+      console.error('Failed to delete persisted session:', error);
+    }
+  }
+
+  /**
+   * Rename a session (update title)
+   */
+  renameSession(sessionId: string, title: string): void {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.title = title;
+      session.updatedAt = new Date();
+      this.persistSessionSnapshot(session);
+    }
+
+    try {
+      this.db.updateSessionTitle(sessionId, title);
+    } catch (error) {
+      console.error('Failed to update session title:', error);
     }
   }
 

@@ -8,7 +8,7 @@ import { OpenAICodexProvider } from './OpenAICodexProvider.js';
 export { OpenAIProvider } from './OpenAIProvider.js';
 export { GeminiProvider } from './GeminiProvider.js';
 export { OllamaProvider } from './OllamaProvider.js';
-export { OpenAICodexProvider, runCodexDeviceAuth } from './OpenAICodexProvider.js';
+export { OpenAICodexProvider } from './OpenAICodexProvider.js';
 
 /**
  * Create an LLM provider based on config

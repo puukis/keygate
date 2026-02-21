@@ -57,6 +57,7 @@ export class KeygateDatabase {
     `);
 
     this.ensureMessagesAttachmentsColumn();
+    this.ensureSessionsTitleColumn();
   }
 
   private ensureMessagesAttachmentsColumn(): void {
@@ -73,17 +74,32 @@ export class KeygateDatabase {
     this.db.exec('ALTER TABLE messages ADD COLUMN attachments TEXT');
   }
 
+  private ensureSessionsTitleColumn(): void {
+    type ColumnInfo = {
+      name: string;
+    };
+
+    const columns = this.db.prepare('PRAGMA table_info(sessions)').all() as ColumnInfo[];
+    const hasTitleColumn = columns.some((column) => column.name === 'title');
+    if (hasTitleColumn) {
+      return;
+    }
+
+    this.db.exec("ALTER TABLE sessions ADD COLUMN title TEXT DEFAULT ''");
+  }
+
   /**
    * Save a session to the database
    */
   saveSession(session: Session): void {
     const stmt = this.db.prepare(`
-      INSERT OR REPLACE INTO sessions (id, channel_type, created_at, updated_at)
-      VALUES (?, ?, ?, ?)
+      INSERT OR REPLACE INTO sessions (id, channel_type, title, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?)
     `);
     stmt.run(
       session.id,
       session.channelType,
+      session.title ?? '',
       session.createdAt.toISOString(),
       session.updatedAt.toISOString()
     );
@@ -96,6 +112,7 @@ export class KeygateDatabase {
     type SessionRow = {
       id: string;
       channel_type: 'web' | 'discord' | 'terminal';
+      title: string | null;
       created_at: string;
       updated_at: string;
     };
@@ -110,6 +127,7 @@ export class KeygateDatabase {
     return {
       id: row.id,
       channelType: row.channel_type,
+      title: row.title || undefined,
       messages,
       createdAt: new Date(row.created_at),
       updatedAt: new Date(row.updated_at),
@@ -123,12 +141,13 @@ export class KeygateDatabase {
     type SessionRow = {
       id: string;
       channel_type: 'web' | 'discord' | 'terminal';
+      title: string | null;
       created_at: string;
       updated_at: string;
     };
 
     const stmt = this.db.prepare(`
-      SELECT id, channel_type, created_at, updated_at
+      SELECT id, channel_type, title, created_at, updated_at
       FROM sessions
       ORDER BY updated_at DESC
       LIMIT ?
@@ -138,6 +157,7 @@ export class KeygateDatabase {
     return rows.map((row) => ({
       id: row.id,
       channelType: row.channel_type,
+      title: row.title || undefined,
       messages: this.getMessages(row.id),
       createdAt: new Date(row.created_at),
       updatedAt: new Date(row.updated_at),
@@ -281,11 +301,28 @@ export class KeygateDatabase {
   }
 
   /**
+   * Update a session's title
+   */
+  updateSessionTitle(sessionId: string, title: string): void {
+    const stmt = this.db.prepare('UPDATE sessions SET title = ? WHERE id = ?');
+    stmt.run(title, sessionId);
+  }
+
+  /**
    * Clear all messages for a session
    */
   clearSession(sessionId: string): void {
     const stmt = this.db.prepare('DELETE FROM messages WHERE session_id = ?');
     stmt.run(sessionId);
+  }
+
+  /**
+   * Delete a session and all its messages
+   */
+  deleteSession(sessionId: string): void {
+    this.db.prepare('DELETE FROM messages WHERE session_id = ?').run(sessionId);
+    this.db.prepare('DELETE FROM tool_logs WHERE session_id = ?').run(sessionId);
+    this.db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
   }
 
   /**

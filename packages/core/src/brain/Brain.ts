@@ -10,6 +10,7 @@ import type {
 } from '../types.js';
 import type { ToolExecutor } from '../tools/ToolExecutor.js';
 import type { Gateway } from '../gateway/Gateway.js';
+import type { AgentMemoryStore } from '../db/agentMemory.js';
 import { createLLMProvider } from '../llm/index.js';
 import { getDefaultWorkspacePath } from '../config/env.js';
 import type { SkillTurnContext } from '../skills/index.js';
@@ -17,6 +18,11 @@ import {
   loadAgentWorkspaceState,
   type WorkspaceContextFile,
 } from '../workspace/agentWorkspace.js';
+import {
+  truncateMessages,
+  getContextWindowLimit,
+  getContextUsage,
+} from './contextWindow.js';
 
 const BASE_SYSTEM_PROMPT = `You are Keygate, a capable AI assistant that can control the user's computer and online services.
 
@@ -57,6 +63,32 @@ export const SPICY_MAX_OBEDIENCE_PROMPT = `\n\nSPICY MAX-OBEDIENCE MODE (BEST-EF
 - Prefer concrete actions (commands, file edits, browser steps) over abstract advice.`;
 
 const MAX_IMAGE_CONTEXT_USER_TURNS = 3;
+const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
+
+/**
+ * Simple concurrency limiter (semaphore).
+ * Allows up to `limit` tasks to run concurrently.
+ */
+export class ConcurrencyLimiter {
+  private running = 0;
+  private queue: Array<() => void> = [];
+
+  constructor(private limit: number) {}
+
+  async run<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.running >= this.limit) {
+      await new Promise<void>((resolve) => this.queue.push(resolve));
+    }
+    this.running++;
+    try {
+      return await fn();
+    } finally {
+      this.running--;
+      const next = this.queue.shift();
+      if (next) next();
+    }
+  }
+}
 
 /**
  * Brain - The ReAct agent loop
@@ -69,13 +101,16 @@ export class Brain {
   private config: KeygateConfig;
   private toolExecutor: ToolExecutor;
   private gateway: Gateway;
+  private memoryStore: AgentMemoryStore | null;
   private maxIterations = 10;
+  private maxConcurrentTools = DEFAULT_MAX_CONCURRENT_TOOLS;
 
-  constructor(config: KeygateConfig, toolExecutor: ToolExecutor, gateway: Gateway) {
+  constructor(config: KeygateConfig, toolExecutor: ToolExecutor, gateway: Gateway, memoryStore?: AgentMemoryStore) {
     this.config = config;
     this.llm = createLLMProvider(config);
     this.toolExecutor = toolExecutor;
     this.gateway = gateway;
+    this.memoryStore = memoryStore ?? null;
   }
 
   /**
@@ -107,11 +142,14 @@ export class Brain {
     // Get tool definitions
     const tools = this.toolExecutor.getToolDefinitions();
 
+    const contextLimit = getContextWindowLimit(this.config.llm.provider, this.config.llm.model);
     let iterations = 0;
 
     while (iterations < this.maxIterations) {
       iterations++;
-      const providerMessages = prepareMessagesForProvider(messages, this.llm.name);
+      const truncated = truncateMessages(messages, contextLimit);
+      const providerMessages = prepareMessagesForProvider(truncated, this.llm.name);
+      this.emitContextUsage(session.id, providerMessages, contextLimit);
 
       // Call LLM with tools
       const response = await this.llm.chat(providerMessages, {
@@ -131,22 +169,25 @@ export class Brain {
         toolCalls: response.toolCalls,
       });
 
-      // Execute each tool call
-      for (const toolCall of response.toolCalls) {
-        const result = await this.executeToolCall(
-          toolCall,
-          channel,
-          session.id,
-          skillTurnContext.envOverlay
-        );
-        
-        // Add tool result to messages
+      // Execute tool calls in parallel with concurrency limit
+      const limiter = new ConcurrencyLimiter(this.maxConcurrentTools);
+      const results = await Promise.all(
+        response.toolCalls.map((toolCall) =>
+          limiter.run(() =>
+            this.executeToolCall(toolCall, channel, session.id, skillTurnContext.envOverlay)
+          )
+        )
+      );
+
+      // Add tool results to messages in original order
+      for (let i = 0; i < response.toolCalls.length; i++) {
+        const result = results[i];
         messages.push({
           role: 'tool',
-          content: result.success 
-            ? result.output 
+          content: result.success
+            ? result.output
             : `Error: ${result.error}`,
-          toolCallId: toolCall.id,
+          toolCallId: response.toolCalls[i].id,
         });
       }
     }
@@ -181,13 +222,16 @@ export class Brain {
     ];
 
     const tools = this.toolExecutor.getToolDefinitions();
+    const contextLimit = getContextWindowLimit(this.config.llm.provider, this.config.llm.model);
     let iterations = 0;
     let pendingToolCalls: ToolCall[] = [];
     const spicyMaxObedience = this.isSpicyMaxObedienceActive();
 
     while (iterations < this.maxIterations) {
       iterations++;
-      const providerMessages = prepareMessagesForProvider(messages, this.llm.name);
+      const truncated = truncateMessages(messages, contextLimit);
+      const providerMessages = prepareMessagesForProvider(truncated, this.llm.name);
+      this.emitContextUsage(session.id, providerMessages, contextLimit);
 
       // Stream LLM response
       let fullContent = '';
@@ -215,7 +259,7 @@ export class Brain {
         }
       }
 
-      // If there are tool calls, execute them
+      // If there are tool calls, execute them in parallel
       if (pendingToolCalls.length > 0) {
         messages.push({
           role: 'assistant',
@@ -223,24 +267,33 @@ export class Brain {
           toolCalls: pendingToolCalls,
         });
 
+        // Announce all tool calls first
         for (const toolCall of pendingToolCalls) {
           yield `\n\n🔧 Executing: ${toolCall.name}...\n`;
-          
-          const result = await this.executeToolCall(
-            toolCall,
-            channel,
-            session.id,
-            skillTurnContext.envOverlay
-          );
-          
-          yield result.success 
-            ? `✅ ${result.output}\n`
-            : `❌ Error: ${result.error}\n`;
+        }
+
+        // Execute in parallel with concurrency limit
+        const limiter = new ConcurrencyLimiter(this.maxConcurrentTools);
+        const toolCallsCopy = [...pendingToolCalls];
+        const results = await Promise.all(
+          toolCallsCopy.map((toolCall) =>
+            limiter.run(() =>
+              this.executeToolCall(toolCall, channel, session.id, skillTurnContext.envOverlay)
+            )
+          )
+        );
+
+        // Yield results and add to messages in original order
+        for (let i = 0; i < toolCallsCopy.length; i++) {
+          const result = results[i];
+          yield result.success
+            ? `✅ ${toolCallsCopy[i].name}: ${result.output}\n`
+            : `❌ ${toolCallsCopy[i].name}: Error: ${result.error}\n`;
 
           messages.push({
             role: 'tool',
             content: result.success ? result.output : `Error: ${result.error}`,
-            toolCallId: toolCall.id,
+            toolCallId: toolCallsCopy[i].id,
           });
         }
 
@@ -445,7 +498,22 @@ ${continuityPathGuidance}`;
     };
     const skillSection = buildSkillPromptSection(effectiveSkillContext);
 
-    return BASE_SYSTEM_PROMPT + modeInfo + workspaceFiles + bootstrapRules + contextSection + skillSection;
+    const memorySummary = this.memoryStore?.buildContextSummary() ?? '';
+    const memorySection = memorySummary
+      ? `\n\nPERSISTENT AGENT MEMORY\nThe following facts were stored across sessions. Reference them when relevant.\n${memorySummary}`
+      : '';
+
+    return BASE_SYSTEM_PROMPT + modeInfo + workspaceFiles + bootstrapRules + contextSection + memorySection + skillSection;
+  }
+
+  private emitContextUsage(sessionId: string, messages: Message[], limitTokens: number): void {
+    const usage = getContextUsage(messages, limitTokens);
+    this.gateway.emit('context:usage', {
+      sessionId,
+      usedTokens: usage.usedTokens,
+      limitTokens: usage.limitTokens,
+      percent: usage.percent,
+    });
   }
 
   private isSpicyMaxObedienceActive(): boolean {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EMPTY_SESSION_CHAT_STATE, reduceSessionChatState } from './sessionView';
+import { EMPTY_SESSION_CHAT_STATE, reduceSessionChatState, buildSessionOptions, isSessionReadOnly } from './sessionView';
 
 describe('reduceSessionChatState session_message_end', () => {
   it('prefers final event content over streamed buffer when non-empty', () => {
@@ -127,5 +127,62 @@ describe('reduceSessionChatState session_message_end', () => {
     const messages = state.messagesBySession['web:main'] ?? [];
     expect(messages).toHaveLength(1);
     expect(messages[0]?.attachments?.[0]?.id).toBe('att-2');
+  });
+});
+
+describe('buildSessionOptions', () => {
+  it('uses session title as label when available', () => {
+    const options = buildSessionOptions('web:main', {
+      'web:main': { channelType: 'web', title: 'My Chat', updatedAt: new Date() },
+    });
+
+    expect(options).toHaveLength(1);
+    expect(options[0]?.label).toBe('My Chat');
+  });
+
+  it('falls back to default label when title is empty', () => {
+    const options = buildSessionOptions('web:main', {
+      'web:main': { channelType: 'web', updatedAt: new Date() },
+    });
+
+    expect(options[0]?.label).toBe('main:agent');
+  });
+
+  it('marks non-main web sessions as writable', () => {
+    const options = buildSessionOptions('web:main', {
+      'web:main': { channelType: 'web', updatedAt: new Date() },
+      'web:other': { channelType: 'web', updatedAt: new Date() },
+    });
+
+    const other = options.find((o) => o.sessionId === 'web:other');
+    expect(other?.readOnly).toBe(false);
+  });
+
+  it('marks discord sessions as read-only', () => {
+    const options = buildSessionOptions('web:main', {
+      'web:main': { channelType: 'web', updatedAt: new Date() },
+      'discord:123': { channelType: 'discord', updatedAt: new Date() },
+    });
+
+    const discord = options.find((o) => o.sessionId === 'discord:123');
+    expect(discord?.readOnly).toBe(true);
+  });
+});
+
+describe('isSessionReadOnly', () => {
+  it('returns false for web sessions', () => {
+    expect(isSessionReadOnly('web:other', 'web:main')).toBe(false);
+  });
+
+  it('returns true for discord sessions', () => {
+    expect(isSessionReadOnly('discord:123', 'web:main')).toBe(true);
+  });
+
+  it('returns true for terminal sessions', () => {
+    expect(isSessionReadOnly('terminal:abc', 'web:main')).toBe(true);
+  });
+
+  it('returns false when selectedSessionId is null', () => {
+    expect(isSessionReadOnly(null, 'web:main')).toBe(false);
   });
 });

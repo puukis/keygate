@@ -34,6 +34,15 @@ import type {
   CodexThreadStartResult,
   CodexTurnStartResult,
 } from '../codex/index.js';
+import {
+  readTokens,
+  isTokenExpired,
+  getValidAccessToken,
+  deleteTokens,
+  runOAuthFlow,
+  getTokenEndpoint,
+  type OAuthConfig,
+} from '../auth/index.js';
 
 export interface OpenAICodexProviderOptions {
   cwd?: string;
@@ -41,14 +50,14 @@ export interface OpenAICodexProviderOptions {
   reasoningEffort?: CodexReasoningEffort;
   rpcClient?: CodexRpcClient;
   openExternalUrl?: (url: string) => Promise<boolean>;
-  allowDeviceAuthFallback?: boolean;
+  readCallbackUrl?: () => Promise<string>;
   loginTimeoutMs?: number;
+  oauthConfig?: OAuthConfig;
 }
 
 interface LoginOptions {
   timeoutMs?: number;
-  useDeviceAuth?: boolean;
-  allowDeviceAuthFallback?: boolean;
+  headless?: boolean;
 }
 
 interface ServerRequestPayload {
@@ -63,9 +72,10 @@ export class OpenAICodexProvider implements LLMProvider {
   private readonly cwd: string;
   private readonly client: CodexRpcClient;
   private readonly openExternalUrl: (url: string) => Promise<boolean>;
-  private readonly allowDeviceAuthFallback: boolean;
+  private readonly readCallbackUrl?: () => Promise<string>;
   private readonly loginTimeoutMs: number;
   private readonly reasoningEffort: CodexReasoningEffort;
+  private readonly oauthConfig: OAuthConfig;
 
   private selectedProviderModelId: string;
   private selectedCodexModelId: string | null = null;
@@ -79,8 +89,13 @@ export class OpenAICodexProvider implements LLMProvider {
     this.selectedProviderModelId = model || 'openai-codex/gpt-5.3';
     this.reasoningEffort = normalizeCodexReasoningEffort(options.reasoningEffort) ?? 'medium';
     this.openExternalUrl = options.openExternalUrl ?? openExternalUrl;
-    this.allowDeviceAuthFallback = options.allowDeviceAuthFallback ?? true;
-    this.loginTimeoutMs = options.loginTimeoutMs ?? 240_000;
+    this.readCallbackUrl = options.readCallbackUrl;
+    this.loginTimeoutMs = options.loginTimeoutMs ?? 300_000;
+    this.oauthConfig = options.oauthConfig ?? {
+      clientId: process.env['OPENAI_OAUTH_CLIENT_ID'] ?? '',
+      redirectPort: parseInt(process.env['OPENAI_OAUTH_REDIRECT_PORT'] ?? '1455', 10),
+      scope: process.env['OPENAI_OAUTH_SCOPE'] ?? 'openai.chat',
+    };
     const codexCommand = resolveCodexCommandFromEnv();
 
     this.client = options.rpcClient ?? new CodexRpcClient({
@@ -295,6 +310,21 @@ export class OpenAICodexProvider implements LLMProvider {
   }
 
   async login(options: LoginOptions = {}): Promise<void> {
+    // If a custom OAuth client is configured, use the standalone PKCE flow.
+    if (this.oauthConfig.clientId) {
+      const existing = await readTokens();
+      if (existing && !isTokenExpired(existing)) {
+        return;
+      }
+      await runOAuthFlow(this.oauthConfig, {
+        openExternalUrl: options.headless ? undefined : this.openExternalUrl,
+        readCallbackUrl: this.readCallbackUrl,
+        timeoutMs: options.timeoutMs ?? this.loginTimeoutMs,
+      });
+      return;
+    }
+
+    // Default: delegate to the Codex CLI's built-in ChatGPT OAuth via RPC.
     await this.ensureConnected();
 
     const accountState = await this.readAccount();
@@ -302,15 +332,10 @@ export class OpenAICodexProvider implements LLMProvider {
       return;
     }
 
-    if (options.useDeviceAuth) {
-      await runCodexDeviceAuth();
-      await this.ensureAuthenticated(false, true);
-      return;
-    }
-
-    const loginStart = await this.client.request<CodexLoginStartResult>('account/login/start', {
-      type: 'chatgpt',
-    });
+    const loginStart = await this.client.request<CodexLoginStartResult>(
+      'account/login/start',
+      { type: 'chatgpt' }
+    );
 
     const loginId = loginStart.loginId;
     const authUrl = loginStart.authUrl;
@@ -320,18 +345,11 @@ export class OpenAICodexProvider implements LLMProvider {
     }
 
     const opened = await this.openExternalUrl(authUrl);
-
     if (!opened) {
-      const shouldFallback = options.allowDeviceAuthFallback ?? this.allowDeviceAuthFallback;
-      if (!shouldFallback) {
-        throw new Error('Unable to open browser for ChatGPT OAuth. Retry with --device-auth.');
-      }
-
-      await runCodexDeviceAuth();
-      await this.ensureAuthenticated(false, true);
-      return;
+      console.log(`Open this URL to sign in:\n${authUrl}`);
     }
 
+    // Wait for the Codex CLI to report login completion.
     const timeoutMs = options.timeoutMs ?? this.loginTimeoutMs;
     const completion = await this.client.waitForNotification('account/login/completed', {
       timeoutMs,
@@ -344,12 +362,9 @@ export class OpenAICodexProvider implements LLMProvider {
     });
 
     const completed = completion as CodexLoginCompletedNotification | undefined;
-
     if (completed?.success === false) {
       throw new Error(completed.error ?? 'ChatGPT OAuth login failed in Codex');
     }
-
-    await this.ensureAuthenticated(false, true);
   }
 
   async dispose(): Promise<void> {
@@ -359,13 +374,39 @@ export class OpenAICodexProvider implements LLMProvider {
   }
 
   async checkAccount(): Promise<CodexAccountReadResult> {
+    // Check local tokens first (custom PKCE flow).
+    const tokens = await readTokens();
+    if (tokens && !isTokenExpired(tokens)) {
+      return { account: { type: 'oauth', email: tokens.account_id } };
+    }
+
+    // Fall through to Codex CLI's built-in account check.
     await this.ensureConnected();
     return this.readAccount();
   }
 
   async ensureAuthenticated(autoLogin = false, refreshToken = false): Promise<void> {
-    const account = await this.readAccount(refreshToken);
+    // 1. Check local tokens (custom PKCE flow).
+    const tokens = await readTokens();
+    if (tokens && !isTokenExpired(tokens)) {
+      return;
+    }
 
+    // Try refresh if we have a refresh token.
+    if (tokens?.refresh_token && this.oauthConfig.clientId) {
+      try {
+        await getValidAccessToken(
+          getTokenEndpoint(this.oauthConfig),
+          this.oauthConfig.clientId
+        );
+        return;
+      } catch {
+        // Refresh failed — fall through.
+      }
+    }
+
+    // 2. Check Codex CLI's built-in auth via account/read RPC.
+    const account = await this.readAccount(refreshToken);
     if (hasActiveAccount(account)) {
       return;
     }
@@ -374,15 +415,36 @@ export class OpenAICodexProvider implements LLMProvider {
       return;
     }
 
+    // 3. Not authenticated anywhere.
     if (autoLogin) {
       await this.login();
       return;
     }
 
-    throw new Error('Not logged in to Codex. Run `keygate auth login --provider openai-codex` first.');
+    throw new Error('Not logged in. Run `keygate auth login --provider openai-codex` first.');
+  }
+
+  async logout(): Promise<void> {
+    await deleteTokens();
+  }
+
+  private async readAccount(refreshToken = false): Promise<CodexAccountReadResult> {
+    try {
+      return await this.client.request<CodexAccountReadResult>('account/read', { refreshToken });
+    } catch {
+      if (refreshToken) {
+        return this.client.request<CodexAccountReadResult>('account/read');
+      }
+      throw new Error('Failed to read Codex account state');
+    }
   }
 
   private async ensureConnected(): Promise<void> {
+    // If we have local tokens (custom PKCE flow), inject them into the codex subprocess.
+    const tokens = await readTokens();
+    if (tokens && !isTokenExpired(tokens)) {
+      this.client.setEnv({ OPENAI_ACCESS_TOKEN: tokens.access_token });
+    }
     await this.client.ensureInitialized();
   }
 
@@ -439,18 +501,6 @@ export class OpenAICodexProvider implements LLMProvider {
     }
 
     return Array.from(deduped.values());
-  }
-
-  private async readAccount(refreshToken = false): Promise<CodexAccountReadResult> {
-    try {
-      return await this.client.request<CodexAccountReadResult>('account/read', { refreshToken });
-    } catch {
-      if (refreshToken) {
-        return this.client.request<CodexAccountReadResult>('account/read');
-      }
-
-      throw new Error('Failed to read Codex account state');
-    }
   }
 
   private async ensureThread(sessionId: string, options?: ChatOptions): Promise<string> {
@@ -649,27 +699,6 @@ export class OpenAICodexProvider implements LLMProvider {
 
     return { result: buildApprovalResult(decision, request.method) };
   }
-}
-
-export async function runCodexDeviceAuth(): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn('codex', ['login', '--device-auth'], {
-      stdio: 'inherit',
-    });
-
-    child.once('error', (error) => {
-      reject(new Error(`Failed to start device auth login: ${error.message}`));
-    });
-
-    child.once('exit', (code) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-
-      reject(new Error(`codex login --device-auth exited with code ${code}`));
-    });
-  });
 }
 
 function hasActiveAccount(accountState: CodexAccountReadResult): boolean {
