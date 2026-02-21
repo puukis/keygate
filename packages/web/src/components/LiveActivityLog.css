@@ -17,7 +17,7 @@
   justify-content: space-between;
   padding: 14px 16px;
   border-bottom: 1px solid var(--border-subtle);
-  background: rgba(255, 255, 255, 0.72);
+  background: color-mix(in srgb, var(--surface-solid) 72%, var(--mix-base));
 }
 
 .activity-header h3 {
@@ -29,7 +29,7 @@
 }
 
 .event-count {
-  background: color-mix(in srgb, var(--brand-200) 40%, white);
+  background: color-mix(in srgb, var(--brand-200) 40%, var(--mix-base));
   border: 1px solid color-mix(in srgb, var(--brand-500) 20%, transparent);
   padding: 3px 8px;
   border-radius: 999px;
@@ -44,7 +44,7 @@
   gap: 6px;
   padding: 10px 14px;
   border-bottom: 1px solid var(--border-subtle);
-  background: rgba(247, 251, 255, 0.8);
+  background: color-mix(in srgb, var(--surface-muted) 86%, var(--mix-base));
 }
 
 .activity-toggle {
@@ -56,14 +56,14 @@
   padding: 6px 9px;
   border-radius: 999px;
   border: 1px solid var(--border-subtle);
-  background: #ffffff;
+  background: var(--surface-solid);
   color: var(--text-tertiary);
 }
 
 .activity-toggle.active {
   color: var(--brand-700);
   border-color: color-mix(in srgb, var(--brand-500) 30%, transparent);
-  background: color-mix(in srgb, var(--brand-200) 38%, white);
+  background: color-mix(in srgb, var(--brand-200) 38%, var(--mix-base));
 }
 
 .provider-summary {
@@ -76,7 +76,11 @@
   padding: 10px;
   border-radius: 12px;
   border: 1px solid color-mix(in srgb, var(--brand-500) 24%, transparent);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(242, 247, 255, 0.95));
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface-solid) 94%, var(--mix-base)),
+    color-mix(in srgb, var(--surface-muted) 95%, var(--mix-base))
+  );
 }
 
 .latest-screenshot-header {
@@ -105,7 +109,7 @@
   width: 100%;
   border-radius: 10px;
   border: 1px solid var(--border-subtle);
-  background: #ffffff;
+  background: var(--surface-solid);
   max-height: 220px;
   object-fit: contain;
 }
@@ -128,7 +132,7 @@
   display: flex;
   gap: 10px;
   padding: 11px;
-  background: rgba(255, 255, 255, 0.88);
+  background: color-mix(in srgb, var(--surface-solid) 88%, var(--mix-base));
   border: 1px solid var(--border-subtle);
   border-radius: 12px;
   margin-bottom: 8px;
@@ -154,7 +158,7 @@
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  background: color-mix(in srgb, var(--brand-200) 44%, white);
+  background: color-mix(in srgb, var(--brand-200) 44%, var(--mix-base));
   color: var(--brand-700);
   font-size: 0.78rem;
   font-weight: 700;
@@ -193,7 +197,7 @@
   padding: 8px;
   font-size: 0.68rem;
   line-height: 1.45;
-  background: rgba(231, 239, 255, 0.84);
+  background: color-mix(in srgb, var(--brand-200) 38%, var(--mix-base));
   border-radius: 8px;
   border: 1px solid color-mix(in srgb, var(--brand-400) 20%, transparent);
   overflow: hidden;
@@ -210,13 +214,13 @@
 }
 
 .event-result.success {
-  background: color-mix(in srgb, var(--success) 12%, white);
+  background: color-mix(in srgb, var(--success) 12%, var(--mix-base));
   color: var(--success-700);
   border: 1px solid color-mix(in srgb, var(--success) 24%, transparent);
 }
 
 .event-result.error {
-  background: color-mix(in srgb, var(--danger) 12%, white);
+  background: color-mix(in srgb, var(--danger) 12%, var(--mix-base));
   color: var(--danger-700);
   border: 1px solid color-mix(in srgb, var(--danger) 24%, transparent);
 }
@@ -227,7 +231,7 @@
   padding: 9px 10px;
   border-radius: 10px;
   border: 1px solid var(--border-subtle);
-  background: rgba(255, 255, 255, 0.9);
+  background: color-mix(in srgb, var(--surface-solid) 90%, var(--mix-base));
   color: var(--text-secondary);
   font-size: 0.78rem;
   font-weight: 600;

@@ -10,7 +10,7 @@
 .chat-readonly-banner {
   margin-top: 16px;
   border: 1px solid color-mix(in srgb, var(--warning) 28%, transparent);
-  background: color-mix(in srgb, var(--warning) 12%, white);
+  background: color-mix(in srgb, var(--warning) 12%, var(--mix-base));
   color: var(--warning-700);
   border-radius: 12px;
   padding: 10px 12px;
@@ -38,7 +38,7 @@
   justify-content: center;
   padding: 6px 10px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--brand-200) 48%, white);
+  background: color-mix(in srgb, var(--brand-200) 48%, var(--mix-base));
   border: 1px solid color-mix(in srgb, var(--brand-500) 18%, transparent);
   color: var(--brand-700);
   font-size: 0.72rem;
@@ -76,7 +76,7 @@
   padding: 13px 14px;
   border-radius: 14px;
   border: 1px solid var(--border-subtle);
-  background: rgba(255, 255, 255, 0.88);
+  background: color-mix(in srgb, var(--surface-solid) 86%, var(--mix-base));
   color: var(--text-secondary);
   font-size: 0.84rem;
   line-height: 1.45;
@@ -85,7 +85,7 @@
 .starter-chip:hover:not(:disabled) {
   transform: translateY(-1px);
   border-color: color-mix(in srgb, var(--brand-500) 30%, transparent);
-  box-shadow: 0 11px 20px rgba(34, 81, 163, 0.14);
+  box-shadow: 0 11px 20px color-mix(in srgb, var(--brand-500) 20%, transparent);
   color: var(--text-primary);
 }
 
@@ -111,14 +111,18 @@
   font-weight: 800;
   letter-spacing: 0.06em;
   color: var(--brand-700);
-  background: linear-gradient(150deg, var(--brand-200), #f4f8ff);
+  background: linear-gradient(150deg, var(--brand-200), var(--mix-base-strong));
   border: 1px solid color-mix(in srgb, var(--brand-500) 20%, transparent);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.7);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--surface-solid) 66%, transparent);
 }
 
 .message.user .message-avatar {
-  color: #ffffff;
-  background: linear-gradient(150deg, var(--brand-500), #5d96ff);
+  color: var(--text-on-brand);
+  background: linear-gradient(
+    150deg,
+    var(--button-primary-start),
+    color-mix(in srgb, var(--button-primary-end) 86%, var(--brand-500))
+  );
   border-color: color-mix(in srgb, var(--brand-700) 30%, transparent);
 }
 
@@ -160,16 +164,20 @@
   line-height: 1.65;
   font-size: 0.93rem;
   color: var(--text-secondary);
-  background: rgba(255, 255, 255, 0.93);
+  background: color-mix(in srgb, var(--surface-solid) 92%, var(--mix-base));
   border: 1px solid var(--border-subtle);
   border-radius: 16px;
   padding: 12px 14px;
-  box-shadow: 0 12px 26px rgba(31, 69, 136, 0.08);
+  box-shadow: 0 12px 26px color-mix(in srgb, var(--brand-500) 14%, transparent);
 }
 
 .message.user .message-bubble {
-  color: #102a5a;
-  background: linear-gradient(175deg, #ecf3ff, #dceaff);
+  color: var(--text-code);
+  background: linear-gradient(
+    175deg,
+    color-mix(in srgb, var(--brand-200) 40%, var(--mix-base)),
+    color-mix(in srgb, var(--brand-300) 44%, var(--mix-base))
+  );
   border-color: color-mix(in srgb, var(--brand-500) 23%, transparent);
   border-top-right-radius: 8px;
 }
@@ -211,13 +219,13 @@
 }
 
 .message-text a {
-  color: var(--brand-700);
+  color: var(--text-link);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 
 .message-text a:hover {
-  color: var(--brand-600);
+  color: var(--text-link-hover);
 }
 
 .message-screenshot-inline {
@@ -238,8 +246,8 @@
   max-width: 100%;
   border-radius: 10px;
   border: 1px solid color-mix(in srgb, var(--brand-500) 20%, var(--border-subtle));
-  background: #ffffff;
-  box-shadow: 0 8px 18px rgba(31, 69, 136, 0.12);
+  background: var(--surface-solid);
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--brand-500) 18%, transparent);
 }
 
 .message-markdown-image {
@@ -247,8 +255,8 @@
   max-width: 100%;
   border-radius: 10px;
   border: 1px solid color-mix(in srgb, var(--brand-500) 20%, var(--border-subtle));
-  background: #ffffff;
-  box-shadow: 0 8px 18px rgba(31, 69, 136, 0.12);
+  background: var(--surface-solid);
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--brand-500) 18%, transparent);
 }
 
 .message-upload-list {
@@ -279,7 +287,7 @@
   object-fit: cover;
   border-radius: 10px;
   border: 1px solid color-mix(in srgb, var(--brand-500) 20%, var(--border-subtle));
-  box-shadow: 0 8px 18px rgba(31, 69, 136, 0.12);
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--brand-500) 18%, transparent);
 }
 
 .message-text strong {
@@ -294,8 +302,8 @@
 .message-text code {
   font-family: var(--font-mono);
   font-size: 0.84em;
-  background: color-mix(in srgb, var(--brand-200) 40%, white);
-  color: #16315f;
+  background: color-mix(in srgb, var(--brand-200) 40%, var(--mix-base));
+  color: var(--text-code);
   border: 1px solid color-mix(in srgb, var(--brand-500) 20%, transparent);
   border-radius: 6px;
   padding: 0.08em 0.35em;
@@ -304,13 +312,13 @@
 .code-block {
   background: linear-gradient(
     180deg,
-    color-mix(in srgb, var(--brand-400) 14%, white),
-    color-mix(in srgb, var(--brand-300) 24%, white)
+    color-mix(in srgb, var(--brand-400) 14%, var(--mix-base)),
+    color-mix(in srgb, var(--brand-300) 24%, var(--mix-base))
   );
   border: 1px solid color-mix(in srgb, var(--brand-600) 22%, var(--border-subtle));
   border-radius: 14px;
   overflow: hidden;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mix-base-strong) 35%, transparent);
 }
 
 .code-block-header {
@@ -320,7 +328,7 @@
   gap: 12px;
   padding: 9px 12px;
   border-bottom: 1px solid color-mix(in srgb, var(--brand-600) 18%, var(--border-subtle));
-  background: color-mix(in srgb, var(--brand-500) 12%, white);
+  background: color-mix(in srgb, var(--brand-500) 12%, var(--mix-base));
 }
 
 .code-block-language {
@@ -332,7 +340,7 @@
 }
 
 .code-copy-btn {
-  background: color-mix(in srgb, var(--surface-strong) 80%, white);
+  background: color-mix(in srgb, var(--surface-strong) 80%, var(--mix-base));
   border: 1px solid color-mix(in srgb, var(--brand-500) 24%, var(--border-subtle));
   color: var(--text-secondary);
   border-radius: 8px;
@@ -343,7 +351,7 @@
 }
 
 .code-copy-btn:hover {
-  background: color-mix(in srgb, var(--brand-300) 24%, white);
+  background: color-mix(in srgb, var(--brand-300) 24%, var(--mix-base));
   border-color: color-mix(in srgb, var(--brand-500) 36%, transparent);
   color: var(--text-primary);
 }
@@ -359,7 +367,7 @@
 }
 
 .code-block code {
-  color: #16315f;
+  color: var(--text-code);
   font-family: var(--font-mono);
   font-size: 0.85rem;
   line-height: 1.65;
@@ -372,7 +380,7 @@
   text-transform: uppercase;
   color: var(--brand-700);
   border: 1px solid color-mix(in srgb, var(--brand-500) 26%, transparent);
-  background: color-mix(in srgb, var(--brand-200) 40%, white);
+  background: color-mix(in srgb, var(--brand-200) 40%, var(--mix-base));
   border-radius: 999px;
   padding: 3px 8px;
   font-weight: 700;
@@ -469,7 +477,7 @@
 .composer-field {
   flex: 1;
   min-width: 0;
-  background: rgba(255, 255, 255, 0.88);
+  background: color-mix(in srgb, var(--surface) 90%, var(--mix-base));
   border-radius: 16px;
   border: 1px solid var(--border-subtle);
   padding: 10px 12px 8px;
@@ -496,7 +504,7 @@
 
 .attach-btn {
   border: 1px solid color-mix(in srgb, var(--brand-500) 24%, var(--border-subtle));
-  background: color-mix(in srgb, var(--brand-200) 32%, white);
+  background: color-mix(in srgb, var(--brand-200) 32%, var(--mix-base));
   color: var(--brand-700);
   border-radius: 10px;
   padding: 6px 10px;
@@ -505,7 +513,7 @@
 }
 
 .attach-btn:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--brand-300) 30%, white);
+  background: color-mix(in srgb, var(--brand-300) 30%, var(--mix-base));
 }
 
 .composer-file-input {
@@ -528,7 +536,7 @@
 .pending-attachment-card {
   border: 1px solid var(--border-subtle);
   border-radius: 10px;
-  background: #fff;
+  background: var(--surface-solid);
   overflow: hidden;
 }
 
@@ -557,7 +565,7 @@
 
 .pending-attachment-meta button {
   border: 1px solid color-mix(in srgb, var(--warning) 26%, var(--border-subtle));
-  background: color-mix(in srgb, var(--warning) 10%, white);
+  background: color-mix(in srgb, var(--warning) 10%, var(--mix-base));
   color: var(--warning-700);
   border-radius: 8px;
   padding: 3px 8px;
@@ -567,7 +575,7 @@
 
 .composer-error {
   margin-top: 8px;
-  color: #a52b2b;
+  color: var(--text-danger-strong);
   font-size: 0.74rem;
   font-weight: 600;
 }
@@ -577,8 +585,8 @@
   min-width: 96px;
   padding: 12px 20px;
   border-radius: 14px;
-  background: linear-gradient(150deg, var(--brand-500), var(--brand-700));
-  color: #ffffff;
+  background: linear-gradient(150deg, var(--button-primary-start), var(--button-primary-end));
+  color: var(--text-on-brand);
   font-weight: 700;
   font-size: 0.86rem;
   letter-spacing: 0.02em;
@@ -590,13 +598,13 @@
 .send-btn:hover:not(:disabled) {
   filter: brightness(1.02);
   transform: translateY(-1px);
-  box-shadow: 0 14px 24px rgba(31, 76, 158, 0.24);
+  box-shadow: 0 14px 24px color-mix(in srgb, var(--button-primary-end) 36%, transparent);
 }
 
 .spinner {
   width: 16px;
   height: 16px;
-  border: 2px solid rgba(255, 255, 255, 0.55);
+  border: 2px solid color-mix(in srgb, var(--text-on-brand) 55%, transparent);
   border-top-color: transparent;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;

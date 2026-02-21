@@ -4,11 +4,34 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
     <title>Keygate</title>
     <meta
       name="description"
       content="Personal AI agent gateway - control your computer via chat"
     />
+    <script>
+      (() => {
+        const STORAGE_KEY = 'keygate.themePreference';
+        const validValues = new Set(['system', 'light', 'dark']);
+
+        let preference = 'system';
+        try {
+          const storedValue = window.localStorage.getItem(STORAGE_KEY);
+          if (validValues.has(String(storedValue))) {
+            preference = String(storedValue);
+          }
+        } catch {
+          preference = 'system';
+        }
+
+        const systemTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        const resolvedTheme = preference === 'system' ? systemTheme : preference;
+
+        document.documentElement.dataset.theme = resolvedTheme;
+        document.documentElement.style.colorScheme = resolvedTheme;
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

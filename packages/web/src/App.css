@@ -45,7 +45,7 @@
   height: 14px;
   border-radius: 50%;
   background: linear-gradient(140deg, var(--brand-500), var(--brand-700));
-  box-shadow: 0 0 0 6px rgba(30, 97, 224, 0.12);
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--brand-500) 16%, transparent);
   flex-shrink: 0;
 }
 
@@ -132,14 +132,18 @@
   font-weight: 600;
   letter-spacing: 0.02em;
   border: 1px solid var(--border-subtle);
-  background: linear-gradient(180deg, #ffffff, #f1f5ff);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface-solid) 95%, var(--mix-base)),
+    color-mix(in srgb, var(--surface-solid) 72%, var(--mix-base-strong))
+  );
   color: var(--text-secondary);
 }
 
 .btn-secondary:hover {
   color: var(--text-primary);
   border-color: color-mix(in srgb, var(--brand-400) 40%, transparent);
-  box-shadow: 0 8px 18px rgba(41, 93, 188, 0.16);
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--brand-500) 24%, transparent);
   transform: translateY(-1px);
 }
 
@@ -157,7 +161,11 @@
   min-height: 0;
   border-radius: 24px;
   border: 1px solid var(--border);
-  background: linear-gradient(180deg, rgba(247, 250, 255, 0.97), rgba(241, 246, 255, 0.96));
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface-strong) 98%, var(--mix-base-strong)),
+    color-mix(in srgb, var(--surface) 92%, var(--mix-base-strong))
+  );
   box-shadow: var(--shadow-soft);
   overflow: hidden;
 }
@@ -169,7 +177,11 @@
   gap: 12px;
   padding: 16px 18px;
   border-bottom: 1px solid var(--border-subtle);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(245, 249, 255, 0.9));
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface-solid) 88%, var(--mix-base-strong)),
+    color-mix(in srgb, var(--surface-muted) 92%, var(--mix-base-strong))
+  );
 }
 
 .chat-session-control select {
@@ -183,7 +195,7 @@
   text-transform: uppercase;
   color: var(--warning-700);
   border: 1px solid color-mix(in srgb, var(--warning) 28%, transparent);
-  background: color-mix(in srgb, var(--warning) 13%, white);
+  background: color-mix(in srgb, var(--warning) 13%, var(--mix-base));
   border-radius: 999px;
   padding: 6px 10px;
   font-weight: 700;
@@ -214,7 +226,7 @@
   padding: 9px 12px;
   border-radius: 12px;
   border: 1px solid var(--border-subtle);
-  background: #ffffff;
+  background: var(--surface-solid);
   color: var(--text-primary);
   font-size: 0.85rem;
   font-weight: 500;
@@ -229,7 +241,7 @@
   font-size: 0.76rem;
   font-weight: 600;
   color: var(--brand-700);
-  background: color-mix(in srgb, var(--brand-200) 50%, white);
+  background: color-mix(in srgb, var(--brand-200) 50%, var(--mix-base));
   border: 1px solid color-mix(in srgb, var(--brand-500) 24%, transparent);
   border-radius: 999px;
   padding: 6px 10px;
@@ -238,7 +250,7 @@
 .config-drawer-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(16, 24, 40, 0.34);
+  background: var(--overlay-scrim);
   backdrop-filter: blur(2px);
   display: flex;
   justify-content: flex-end;
@@ -251,8 +263,12 @@
   height: calc(100dvh - 28px);
   border-radius: 20px;
   border: 1px solid var(--border);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(246, 250, 255, 0.98));
-  box-shadow: 0 16px 46px rgba(15, 23, 42, 0.25);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface-elevated) 96%, var(--mix-base)),
+    color-mix(in srgb, var(--surface-muted) 98%, var(--mix-base-strong))
+  );
+  box-shadow: 0 16px 46px color-mix(in srgb, var(--bg-primary) 52%, black);
   padding: 16px;
   overflow-y: auto;
   display: flex;
@@ -276,7 +292,7 @@
 
 .config-close-btn {
   border: 1px solid var(--border-subtle);
-  background: #fff;
+  background: var(--surface-solid);
   color: var(--text-secondary);
   border-radius: 10px;
   padding: 7px 10px;
@@ -291,7 +307,7 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
-  background: color-mix(in srgb, var(--surface) 92%, white);
+  background: color-mix(in srgb, var(--surface) 92%, var(--mix-base-strong));
 }
 
 .config-section h3 {
@@ -350,7 +366,7 @@
 .config-risk-input {
   width: 100%;
   border: 1px solid color-mix(in srgb, var(--danger) 28%, transparent);
-  background: #fff;
+  background: var(--surface-solid);
   border-radius: 10px;
   padding: 8px 10px;
   font-size: 0.84rem;
@@ -372,7 +388,7 @@
   padding: 9px 12px;
   border-radius: 12px;
   border: 1px solid var(--border-subtle);
-  background: #ffffff;
+  background: var(--surface-solid);
   color: var(--text-primary);
   font-size: 0.85rem;
   font-weight: 500;

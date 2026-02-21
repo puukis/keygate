@@ -19,6 +19,16 @@ import {
   type SessionChannelType,
   type SessionSnapshotEntry,
 } from './sessionView';
+import {
+  applyResolvedTheme,
+  getNextThemePreferenceForToggle,
+  getSystemTheme,
+  readThemePreference,
+  resolveTheme,
+  writeThemePreference,
+  type ResolvedTheme,
+  type ThemePreference,
+} from './theme';
 import './App.css';
 
 export type SecurityMode = 'safe' | 'spicy';
@@ -126,6 +136,12 @@ const PROVIDER_OPTIONS: Array<{ value: LLMProviderId; label: string }> = [
   { value: 'openai-codex', label: 'OpenAI Codex (ChatGPT OAuth)' },
   { value: 'gemini', label: 'Google Gemini' },
   { value: 'ollama', label: 'Ollama (Local)' },
+];
+
+const THEME_PREFERENCE_OPTIONS: Array<{ value: ThemePreference; label: string }> = [
+  { value: 'system', label: 'System' },
+  { value: 'light', label: 'Light' },
+  { value: 'dark', label: 'Dark' },
 ];
 
 const CODEX_REASONING_EFFORT_OPTIONS: Array<{ value: CodexReasoningEffort; label: string }> = [
@@ -709,6 +725,10 @@ function App() {
   const [spicyEnableAck, setSpicyEnableAck] = useState('');
   const [isConfigMenuOpen, setIsConfigMenuOpen] = useState(false);
   const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null);
+  const [themePreference, setThemePreference] = useState<ThemePreference>(() => readThemePreference());
+  const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() => (
+    resolveTheme(readThemePreference(), getSystemTheme())
+  ));
 
   const [llm, setLlm] = useState<LLMState>({ provider: 'openai', model: 'gpt-4o', reasoningEffort: 'medium' });
   const [discordConfig, setDiscordConfig] = useState<DiscordConfigState>({
@@ -749,6 +769,47 @@ function App() {
     () => buildSessionOptions(mainSessionId, sessionState.metaBySession),
     [mainSessionId, sessionState.metaBySession],
   );
+
+  useEffect(() => {
+    writeThemePreference(themePreference);
+    const nextTheme = resolveTheme(themePreference, getSystemTheme());
+    setResolvedTheme((previous) => previous === nextTheme ? previous : nextTheme);
+  }, [themePreference]);
+
+  useEffect(() => {
+    applyResolvedTheme(resolvedTheme);
+  }, [resolvedTheme]);
+
+  useEffect(() => {
+    if (themePreference !== 'system' || typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+      return undefined;
+    }
+
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    const updateFromSystem = (matches: boolean) => {
+      setResolvedTheme(matches ? 'dark' : 'light');
+    };
+
+    updateFromSystem(mediaQuery.matches);
+
+    if (typeof mediaQuery.addEventListener === 'function') {
+      const handleChange = (event: MediaQueryListEvent) => {
+        updateFromSystem(event.matches);
+      };
+      mediaQuery.addEventListener('change', handleChange);
+      return () => {
+        mediaQuery.removeEventListener('change', handleChange);
+      };
+    }
+
+    const handleLegacyChange = (event: MediaQueryListEvent) => {
+      updateFromSystem(event.matches);
+    };
+    mediaQuery.addListener(handleLegacyChange);
+    return () => {
+      mediaQuery.removeListener(handleLegacyChange);
+    };
+  }, [themePreference]);
 
   useEffect(() => {
     if (selectedSessionId && sessionOptions.some((option) => option.sessionId === selectedSessionId)) {
@@ -1509,6 +1570,10 @@ function App() {
     });
   }, [llm.provider, pendingProviderSwitch, selectedModelValue, send]);
 
+  const handleThemeToggle = useCallback(() => {
+    setThemePreference((previous) => getNextThemePreferenceForToggle(previous, resolvedTheme));
+  }, [resolvedTheme]);
+
   const handleDiscordSave = useCallback(() => {
     const normalizedPrefix = normalizeDiscordPrefixInput(discordPrefixDraft);
     if (normalizedPrefix.length === 0) {
@@ -1619,6 +1684,8 @@ function App() {
     : activeIsReadOnly
       ? readOnlyHintText
       : 'Ask Keygate anything...';
+  const themeToggleLabel = resolvedTheme === 'dark' ? 'Light mode' : 'Dark mode';
+  const resolvedThemeLabel = resolvedTheme === 'dark' ? 'Dark' : 'Light';
 
   return (
     <div className="app">
@@ -1642,6 +1709,16 @@ function App() {
             <span className="status-dot" />
             {connected ? 'Connected' : connecting ? 'Connecting...' : 'Disconnected'}
           </div>
+          <button
+            className="btn-secondary"
+            onClick={handleThemeToggle}
+            title={themePreference === 'system'
+              ? `Following system (${resolvedThemeLabel})`
+              : `Using ${resolvedThemeLabel} theme`
+            }
+          >
+            {themeToggleLabel}
+          </button>
           <button
             className="btn-secondary"
             onClick={() => setIsConfigMenuOpen((open) => !open)}
@@ -1717,6 +1794,26 @@ function App() {
                 Close
               </button>
             </div>
+
+            <section className="config-section">
+              <h3>Appearance</h3>
+              <label className="llm-control config-control">
+                <span>Theme</span>
+                <select
+                  value={themePreference}
+                  onChange={(event) => setThemePreference(event.target.value as ThemePreference)}
+                >
+                  {THEME_PREFERENCE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </label>
+              <small className="config-note">
+                Current theme: {resolvedThemeLabel}. {themePreference === 'system'
+                  ? 'Following your OS preference.'
+                  : 'Using manual override.'}
+              </small>
+            </section>
 
             <section className="config-section">
               <h3>Security</h3>

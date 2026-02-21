@@ -8,13 +8,13 @@
   font-weight: 700;
   letter-spacing: 0.02em;
   border: 1px solid transparent;
-  background: rgba(255, 255, 255, 0.82);
+  background: color-mix(in srgb, var(--surface-solid) 82%, var(--mix-base));
   color: var(--text-secondary);
   position: relative;
 }
 
 .security-badge.safe {
-  background: color-mix(in srgb, var(--success) 11%, white);
+  background: color-mix(in srgb, var(--success) 11%, var(--mix-base));
   color: var(--success-700);
   border-color: color-mix(in srgb, var(--success) 26%, transparent);
 }
@@ -29,10 +29,10 @@
 }
 
 .security-badge.spicy {
-  background: color-mix(in srgb, var(--danger) 12%, white);
+  background: color-mix(in srgb, var(--danger) 12%, var(--mix-base));
   color: var(--danger-700);
   border-color: color-mix(in srgb, var(--danger) 30%, transparent);
-  box-shadow: 0 0 0 0 rgba(217, 75, 87, 0.28);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 28%, transparent);
   animation: badgePulse 2.4s ease-in-out infinite;
 }
 
@@ -73,10 +73,10 @@
 @keyframes badgePulse {
   0%,
   100% {
-    box-shadow: 0 0 0 0 rgba(217, 75, 87, 0.24);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 24%, transparent);
   }
   50% {
-    box-shadow: 0 0 0 10px rgba(217, 75, 87, 0);
+    box-shadow: 0 0 0 10px transparent;
   }
 }
 
