@@ -639,24 +639,55 @@ export class OpenAICodexProvider implements LLMProvider {
     }
 
     if (approvalKind === 'exec') {
-      const command = formatCommandPreview(params?.['command']);
+      const commandParam = params?.['command'];
+      const command = formatCommandPreview(commandParam);
+      const cwd = firstString(params?.['cwd']);
+      const reason = firstString(params?.['reason']);
+      const riskSummary = summarizeRisk(params?.['risk']);
+      const hasElevatedContext =
+        Boolean(reason) || (params?.['risk'] !== undefined && params?.['risk'] !== null);
       let baseCommand = '';
+      let baseCommandKey = '';
+      let canUseGlobalCommandApproval = false;
       if (command) {
-        const { extractBaseCommand, getAllowedCommandsSet } = await import('../config/allowedCommands.js');
-        baseCommand = extractBaseCommand(command);
-        if (baseCommand) {
+        const {
+          extractBaseCommand,
+          extractBaseCommandFromCommandValue,
+          getAllowedCommandsSet,
+          isGlobalAutoApprovalEligible,
+          normalizeBaseCommand,
+        } = await import('../config/allowedCommands.js');
+        baseCommand = extractBaseCommandFromCommandValue(commandParam);
+        if (!baseCommand) {
+          baseCommand = extractBaseCommand(command);
+        }
+        baseCommandKey = normalizeBaseCommand(baseCommand);
+        canUseGlobalCommandApproval =
+          baseCommandKey.length > 0 &&
+          isGlobalAutoApprovalEligible(baseCommandKey);
+        if (canUseGlobalCommandApproval) {
           const globalAllowed = await getAllowedCommandsSet();
-          if (globalAllowed.has(baseCommand)) {
-            return { result: buildApprovalResult('allow_always', request.method) };
+          if (globalAllowed.has(baseCommandKey)) {
+            return { result: buildApprovalResult('allow_once', request.method) };
           }
         }
       }
 
-      const cwd = firstString(params?.['cwd']);
-      const reason = firstString(params?.['reason']);
-      const summary = command
-        ? `Run command \`${command}\`${cwd ? ` in \`${cwd}\`` : ''}.${reason ? ` ${reason}` : ''}`
-        : 'Approve command execution requested by Codex.';
+      const summary = [
+        command
+          ? `Run command \`${command}\`${cwd ? ` in \`${cwd}\`` : ''}.`
+          : 'Approve command execution requested by Codex.',
+        reason,
+        riskSummary
+          ? `Risk: ${riskSummary}.`
+          : (
+            hasElevatedContext && !reason
+              ? 'Codex provided additional risk context for this request.'
+              : undefined
+          ),
+      ]
+        .filter((part): part is string => typeof part === 'string' && part.trim().length > 0)
+        .join(' ');
 
       const decision = await options.requestConfirmation({
         tool: 'codex.exec',
@@ -669,7 +700,7 @@ export class OpenAICodexProvider implements LLMProvider {
 
       if (decision === 'allow_always') {
         this.allowAlwaysApprovalSignatures.add(signature);
-        if (baseCommand) {
+        if (baseCommand && canUseGlobalCommandApproval) {
           const { addAllowedCommand } = await import('../config/allowedCommands.js');
           await addAllowedCommand(baseCommand);
         }
@@ -1279,6 +1310,24 @@ function firstString(value: unknown): string | undefined {
 
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function summarizeRisk(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    return firstString(value);
+  }
+
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  return (
+    firstString(record['label']) ??
+    firstString(record['level']) ??
+    firstString(record['name']) ??
+    firstString(record['message'])
+  );
 }
 
 function formatCommandPreview(value: unknown): string | undefined {

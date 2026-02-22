@@ -386,7 +386,7 @@ export class Brain {
       cwd: executionWorkspace,
       contextHash,
       securityMode: this.gateway.getSecurityMode(),
-      approvalPolicy: spicyMaxObedience ? 'never' : undefined,
+      approvalPolicy: spicyMaxObedience ? 'never' : (isCodexProvider ? 'on-request' : undefined),
       sandboxPolicy: safeModeCodexSandbox,
       requestConfirmation: (details: import('../types.js').ConfirmationDetails) => {
         if (spicyMaxObedience) {

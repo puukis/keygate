@@ -177,12 +177,21 @@ export class ToolExecutor {
       }
       
       let baseCommand = '';
+      let baseCommandKey = '';
+      let canPersistGlobalCommand = false;
       if (tool.type === 'shell' && typeof call.arguments['command'] === 'string') {
-        const { extractBaseCommand, getAllowedCommandsSet, addAllowedCommand } = await import('../config/allowedCommands.js');
+        const {
+          extractBaseCommand,
+          getAllowedCommandsSet,
+          isGlobalAutoApprovalEligible,
+          normalizeBaseCommand,
+        } = await import('../config/allowedCommands.js');
         baseCommand = extractBaseCommand(call.arguments['command']);
-        if (baseCommand) {
+        baseCommandKey = normalizeBaseCommand(baseCommand);
+        canPersistGlobalCommand = isGlobalAutoApprovalEligible(baseCommandKey);
+        if (baseCommandKey && canPersistGlobalCommand) {
           const globalAllowed = await getAllowedCommandsSet();
-          if (globalAllowed.has(baseCommand)) {
+          if (globalAllowed.has(baseCommandKey)) {
             return; // Auto-allowed by global base command registry
           }
         }
@@ -192,7 +201,7 @@ export class ToolExecutor {
       if (decision === 'allow_always') {
         this.allowAlwaysSignatures.add(this.buildConfirmationSignature(call));
         
-        if (baseCommand) {
+        if (baseCommand && canPersistGlobalCommand) {
           const { addAllowedCommand } = await import('../config/allowedCommands.js');
           await addAllowedCommand(baseCommand);
         }

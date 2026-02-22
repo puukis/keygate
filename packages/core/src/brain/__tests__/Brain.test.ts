@@ -117,4 +117,26 @@ describe('Brain refusal rewriting', () => {
     expect(requestConfirmation).not.toHaveBeenCalled();
     expect(options.approvalPolicy).toBe('never');
   });
+
+  it('uses on-request approval policy for Codex provider when obedience mode is off', () => {
+    const brain = createBrain('safe', false);
+    (brain as any).llm = { name: 'openai-codex' };
+
+    const options = (brain as any).buildProviderOptions('session-1', {
+      requestConfirmation: vi.fn(async () => 'allow_once' as const),
+    });
+
+    expect(options.approvalPolicy).toBe('on-request');
+  });
+
+  it('keeps approval policy unset for non-Codex providers when obedience mode is off', () => {
+    const brain = createBrain('safe', false);
+    (brain as any).llm = { name: 'ollama' };
+
+    const options = (brain as any).buildProviderOptions('session-1', {
+      requestConfirmation: vi.fn(async () => 'allow_once' as const),
+    });
+
+    expect(options.approvalPolicy).toBeUndefined();
+  });
 });
