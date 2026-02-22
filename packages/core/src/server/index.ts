@@ -6,7 +6,6 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { Gateway } from '../gateway/index.js';
 import { normalizeWebMessage, BaseChannel } from '../pipeline/index.js';
-import { allBuiltinTools } from '../tools/index.js';
 import { updateKeygateFile } from '../config/env.js';
 import { MCPBrowserManager, type MCPBrowserStatus } from '../codex/mcpBrowserManager.js';
 import {
@@ -320,11 +319,6 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
       console.warn('Failed periodic uploaded image cleanup:', error);
     });
   }, IMAGE_UPLOAD_RETENTION_CLEANUP_INTERVAL_MS);
-
-  // Register all built-in tools
-  for (const tool of allBuiltinTools) {
-    gateway.toolExecutor.registerTool(tool);
-  }
 
   const server = createServer((req, res) => {
     // CORS headers

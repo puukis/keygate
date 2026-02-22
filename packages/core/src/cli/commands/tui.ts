@@ -3,7 +3,6 @@ import { stdin as input, stdout as output } from 'node:process';
 import { getDefaultWorkspacePath, loadConfigFromEnv } from '../../config/env.js';
 import { ensureAgentWorkspaceFiles } from '../../workspace/agentWorkspace.js';
 import { Gateway } from '../../gateway/index.js';
-import { allBuiltinTools } from '../../tools/index.js';
 import { BaseChannel, normalizeTerminalMessage } from '../../pipeline/index.js';
 import type {
   ConfirmationDecision,
@@ -996,11 +995,6 @@ export async function runTuiCommand(_args: ParsedArgs): Promise<void> {
   const config = loadConfigFromEnv();
   await ensureAgentWorkspaceFiles(getDefaultWorkspacePath());
   const gateway = Gateway.getInstance(config);
-
-  for (const tool of allBuiltinTools) {
-    gateway.toolExecutor.registerTool(tool);
-  }
-
   const tui = new KeygateTui(config, gateway);
   await tui.run();
 }

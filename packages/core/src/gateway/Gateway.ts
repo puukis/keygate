@@ -19,6 +19,7 @@ import { Database } from '../db/index.js';
 import { AgentMemoryStore } from '../db/agentMemory.js';
 import { createLLMProvider } from '../llm/index.js';
 import { SkillsManager } from '../skills/index.js';
+import { allBuiltinTools } from '../tools/builtin/index.js';
 
 /**
  * Gateway - The central hub of Keygate
@@ -62,6 +63,11 @@ export class Gateway extends EventEmitter<KeygateEvents> {
       config.security.allowedBinaries,
       this
     );
+
+    // Register all built-in tools
+    for (const tool of allBuiltinTools) {
+      this.toolExecutor.registerTool(tool);
+    }
 
     // Initialize brain with LLM provider
     this.brain = new Brain(config, this.toolExecutor, this, this.memory);

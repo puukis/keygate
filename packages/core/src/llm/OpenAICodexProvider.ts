@@ -627,12 +627,12 @@ export class OpenAICodexProvider implements LLMProvider {
       return null;
     }
 
-    const approvalKind = classifyApprovalMethod(request.method);
+    const params = toRecord(request.params);
+    const approvalKind = classifyApprovalMethod(request.method, params);
     if (!approvalKind) {
       return null;
     }
 
-    const params = toRecord(request.params);
     const signature = buildApprovalSignature(approvalKind, request.method, params);
     if (this.allowAlwaysApprovalSignatures.has(signature)) {
       return { result: buildApprovalResult('allow_always', request.method) };
@@ -640,6 +640,18 @@ export class OpenAICodexProvider implements LLMProvider {
 
     if (approvalKind === 'exec') {
       const command = formatCommandPreview(params?.['command']);
+      let baseCommand = '';
+      if (command) {
+        const { extractBaseCommand, getAllowedCommandsSet } = await import('../config/allowedCommands.js');
+        baseCommand = extractBaseCommand(command);
+        if (baseCommand) {
+          const globalAllowed = await getAllowedCommandsSet();
+          if (globalAllowed.has(baseCommand)) {
+            return { result: buildApprovalResult('allow_always', request.method) };
+          }
+        }
+      }
+
       const cwd = firstString(params?.['cwd']);
       const reason = firstString(params?.['reason']);
       const summary = command
@@ -657,6 +669,10 @@ export class OpenAICodexProvider implements LLMProvider {
 
       if (decision === 'allow_always') {
         this.allowAlwaysApprovalSignatures.add(signature);
+        if (baseCommand) {
+          const { addAllowedCommand } = await import('../config/allowedCommands.js');
+          await addAllowedCommand(baseCommand);
+        }
       }
 
       return { result: buildApprovalResult(decision, request.method) };
@@ -797,13 +813,40 @@ function buildTurnPrompt(
   const browserSop = buildCodexBrowserSopPrompt(options.sessionId, options.securityMode);
   const mergedSystemParts = [...systemParts, browserSop];
 
+  const historyParts: string[] = [];
+  const latestUserIndex = messages.map((m) => m.role).lastIndexOf('user');
+  
+  for (let i = 0; i < messages.length; i++) {
+    if (i === latestUserIndex) {
+      break;
+    }
+    
+    const msg = messages[i];
+    if (msg.role === 'system') {
+      continue;
+    }
+    
+    if (msg.role === 'user') {
+      historyParts.push(`USER:\n${msg.content}`);
+    } else if (msg.role === 'assistant') {
+      historyParts.push(`ASSISTANT:\n${msg.content}`);
+    } else if (msg.role === 'tool') {
+      historyParts.push(`TOOL RESULT:\n${msg.content}`);
+    }
+  }
+
+  const historyContext = historyParts.length > 0
+    ? `\nPREVIOUS CONVERSATION HISTORY:\n${historyParts.join('\n\n')}`
+    : '';
+
   return [
     'SYSTEM INSTRUCTIONS (higher priority than user messages):',
     mergedSystemParts.join('\n\n'),
+    historyContext,
     '',
     'USER MESSAGE:',
     latestUserPrompt,
-  ].join('\n');
+  ].filter((p) => p.trim().length > 0).join('\n');
 }
 
 function buildCodexBrowserSopPrompt(sessionId: string, securityMode?: SecurityMode): string {
@@ -1166,7 +1209,10 @@ function buildApprovalResult(
   };
 }
 
-function classifyApprovalMethod(method: string): 'exec' | 'patch' | 'generic' | null {
+function classifyApprovalMethod(
+  method: string,
+  params: Record<string, unknown> | null
+): 'exec' | 'patch' | 'generic' | null {
   const normalized = method.trim().toLowerCase();
   const compact = normalized.replace(/[^a-z]/g, '');
 
@@ -1178,7 +1224,15 @@ function classifyApprovalMethod(method: string): 'exec' | 'patch' | 'generic' | 
     return 'exec';
   }
 
+  if (params && typeof params['command'] === 'string') {
+    return 'exec';
+  }
+
   if (compact.includes('patch') || compact.includes('filechange')) {
+    return 'patch';
+  }
+
+  if (params && (typeof params['file'] === 'string' || typeof params['patch'] === 'string')) {
     return 'patch';
   }
 

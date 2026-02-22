@@ -17,6 +17,9 @@ dist/
 *.swp
 *.swo
 
+# Agent workflows
+.agents/
+
 # OS
 .DS_Store
 Thumbs.db

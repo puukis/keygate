@@ -175,10 +175,28 @@ export class ToolExecutor {
       if (this.isAlwaysAllowed(call)) {
         return;
       }
+      
+      let baseCommand = '';
+      if (tool.type === 'shell' && typeof call.arguments['command'] === 'string') {
+        const { extractBaseCommand, getAllowedCommandsSet, addAllowedCommand } = await import('../config/allowedCommands.js');
+        baseCommand = extractBaseCommand(call.arguments['command']);
+        if (baseCommand) {
+          const globalAllowed = await getAllowedCommandsSet();
+          if (globalAllowed.has(baseCommand)) {
+            return; // Auto-allowed by global base command registry
+          }
+        }
+      }
 
       const decision = await this.requestConfirmation(call, channel);
       if (decision === 'allow_always') {
         this.allowAlwaysSignatures.add(this.buildConfirmationSignature(call));
+        
+        if (baseCommand) {
+          const { addAllowedCommand } = await import('../config/allowedCommands.js');
+          await addAllowedCommand(baseCommand);
+        }
+        
         return;
       }
 
