@@ -206,6 +206,12 @@ pnpm lint
 pnpm format
 ```
 
+## Docker
+
+Docker files are available in the repository root (`Dockerfile`, `docker-compose.yml`, `.dockerignore`).
+
+See [`docs/DOCKER.md`](docs/DOCKER.md) for setup and usage, including automatic Playwright MCP browser configuration on container startup.
+
 ## Security Warning
 
 > ⚠️ **Spicy Mode grants the AI full access to your system.** Only enable this if you understand the risks and are in a sandboxed environment.

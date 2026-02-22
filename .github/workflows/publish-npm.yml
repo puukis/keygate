@@ -55,6 +55,9 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Prepare publish manifests
+        run: node ./scripts/prepare-publish-manifests.mjs
+
       - name: Validate publish manifests
         run: node ./scripts/check-publish-manifests.mjs
 

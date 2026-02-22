@@ -1,0 +1,52 @@
+services:
+  keygate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: keygate
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${PORT:-18790}:18790"
+    environment:
+      PORT: "${PORT:-18790}"
+      KEYGATE_OPEN_CHAT_ON_START: "${KEYGATE_OPEN_CHAT_ON_START:-false}"
+      KEYGATE_CHAT_URL: "${KEYGATE_CHAT_URL:-http://localhost:18790}"
+      WORKSPACE_PATH: "${WORKSPACE_PATH:-/workspace}"
+      LLM_PROVIDER: "${LLM_PROVIDER:-openai-codex}"
+      LLM_MODEL: "${LLM_MODEL:-openai-codex/gpt-5.3}"
+      LLM_API_KEY: "${LLM_API_KEY:-}"
+      LLM_OLLAMA_HOST: "${LLM_OLLAMA_HOST:-http://host.docker.internal:11434}"
+      SPICY_MODE_ENABLED: "${SPICY_MODE_ENABLED:-false}"
+      SPICY_MAX_OBEDIENCE_ENABLED: "${SPICY_MAX_OBEDIENCE_ENABLED:-false}"
+      MCP_PLAYWRIGHT_VERSION: "${MCP_PLAYWRIGHT_VERSION:-0.0.64}"
+      BROWSER_DOMAIN_POLICY: "${BROWSER_DOMAIN_POLICY:-none}"
+      BROWSER_DOMAIN_ALLOWLIST: "${BROWSER_DOMAIN_ALLOWLIST:-}"
+      BROWSER_DOMAIN_BLOCKLIST: "${BROWSER_DOMAIN_BLOCKLIST:-}"
+      BROWSER_TRACE_RETENTION_DAYS: "${BROWSER_TRACE_RETENTION_DAYS:-7}"
+      KEYGATE_AUTO_SETUP_MCP_BROWSER: "${KEYGATE_AUTO_SETUP_MCP_BROWSER:-true}"
+      KEYGATE_AUTO_SETUP_MCP_BROWSER_STRICT: "${KEYGATE_AUTO_SETUP_MCP_BROWSER_STRICT:-false}"
+      KEYGATE_CODEX_BIN: "/usr/local/bin/codex"
+      DISCORD_TOKEN: "${DISCORD_TOKEN:-}"
+      DISCORD_PREFIX: "${DISCORD_PREFIX:-!keygate }"
+      SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN:-}"
+      SLACK_APP_TOKEN: "${SLACK_APP_TOKEN:-}"
+      SLACK_SIGNING_SECRET: "${SLACK_SIGNING_SECRET:-}"
+      TAVILY_API_KEY: "${TAVILY_API_KEY:-}"
+    volumes:
+      - keygate-config:/home/node/.config/keygate
+      - keygate-codex:/home/node/.codex
+      - keygate-playwright-cache:/home/node/.cache/ms-playwright
+      - keygate-workspace:/workspace
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:18790/api/status >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  keygate-config:
+  keygate-codex:
+  keygate-playwright-cache:
+  keygate-workspace:

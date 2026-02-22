@@ -66,6 +66,84 @@ async function withAllowedCommands(
 }
 
 describe('OpenAICodexProvider', () => {
+  it('prints auth URL in headless codex login flow without trying to open browser', async () => {
+    const fake = new FakeChildProcess();
+    const openExternalUrl = vi.fn(async () => true);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    fake.stdin.on('data', (chunk) => {
+      const lines = String(chunk)
+        .split(/\n/g)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+
+      for (const line of lines) {
+        const payload = JSON.parse(line) as {
+          id?: number;
+          method: string;
+          params?: Record<string, unknown>;
+        };
+
+        if (payload.method === 'initialized') {
+          continue;
+        }
+
+        if (payload.method === 'initialize') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: { sessionId: 'session-login' },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'account/read') {
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: { account: null, requiresOpenaiAuth: true },
+          }) + '\n');
+          continue;
+        }
+
+        if (payload.method === 'account/login/start') {
+          const loginId = 'login-1';
+          fake.stdout.write(JSON.stringify({
+            id: payload.id,
+            result: { loginId, authUrl: 'https://example.test/login' },
+          }) + '\n');
+
+          setTimeout(() => {
+            fake.stdout.write(JSON.stringify({
+              jsonrpc: '2.0',
+              method: 'account/login/completed',
+              params: { loginId, success: true },
+            }) + '\n');
+          }, 0);
+          continue;
+        }
+      }
+    });
+
+    const rpcClient = new CodexRpcClient({
+      requestTimeoutMs: 5_000,
+      spawnFactory: () => fake as any,
+    });
+
+    const provider = new OpenAICodexProvider('openai-codex/gpt-5.3', {
+      rpcClient,
+      openExternalUrl,
+      loginTimeoutMs: 5_000,
+    });
+
+    try {
+      await provider.login({ headless: true, timeoutMs: 5_000 });
+      expect(openExternalUrl).not.toHaveBeenCalled();
+      expect(logSpy).toHaveBeenCalledWith('Open this URL to sign in:\nhttps://example.test/login');
+    } finally {
+      logSpy.mockRestore();
+      await provider.dispose();
+    }
+  });
+
   it('parses model/list entries correctly', async () => {
     const fake = new FakeChildProcess();
 

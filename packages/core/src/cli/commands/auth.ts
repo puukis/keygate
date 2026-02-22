@@ -1,6 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { OpenAICodexProvider } from '../../llm/OpenAICodexProvider.js';
 import { ensureCodexInstalled, getCodexInstallHelp } from '../codexInstall.js';
 import { getFlagString, hasFlag, type ParsedArgs } from '../argv.js';
@@ -30,6 +31,8 @@ async function runAuthLogin(args: ParsedArgs): Promise<void> {
     throw new Error('Only --provider openai-codex is currently supported for auth login');
   }
 
+  const useDeviceAuth = hasFlag(args.flags, 'device-auth');
+
   const codexStatus = await ensureCodexInstalled({ autoInstall: false });
   if (!codexStatus.installed) {
     throw new Error(`${codexStatus.error ?? 'Codex CLI is not installed'}\n${getCodexInstallHelp()}`);
@@ -49,7 +52,11 @@ async function runAuthLogin(args: ParsedArgs): Promise<void> {
   });
 
   try {
-    await codexProvider.login({ headless });
+    if (useDeviceAuth) {
+      await runCodexDeviceAuthLogin();
+    } else {
+      await codexProvider.login({ headless });
+    }
 
     let selectedModel = initialModel;
 
@@ -70,6 +77,29 @@ async function runAuthLogin(args: ParsedArgs): Promise<void> {
     console.log(`Selected model: ${selectedModel}`);
   } finally {
     await codexProvider.dispose();
+  }
+}
+
+async function runCodexDeviceAuthLogin(): Promise<void> {
+  const codexBin = process.env['KEYGATE_CODEX_BIN']?.trim() || 'codex';
+  const args = ['login', '--device-auth'];
+
+  const exitCode = await new Promise<number | null>((resolve, reject) => {
+    const child = spawn(codexBin, args, {
+      stdio: 'inherit',
+    });
+
+    child.once('error', (error) => {
+      reject(error);
+    });
+
+    child.once('exit', (code) => {
+      resolve(code);
+    });
+  });
+
+  if (exitCode !== 0) {
+    throw new Error(`Codex device auth login failed with exit code ${String(exitCode)}.`);
   }
 }
 

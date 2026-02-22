@@ -344,7 +344,9 @@ export class OpenAICodexProvider implements LLMProvider {
       throw new Error('Codex account/login/start did not return authUrl for ChatGPT login');
     }
 
-    const opened = await this.openExternalUrl(authUrl);
+    const opened = options.headless
+      ? false
+      : await this.openExternalUrl(authUrl);
     if (!opened) {
       console.log(`Open this URL to sign in:\n${authUrl}`);
     }
