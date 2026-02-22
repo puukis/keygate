@@ -6,7 +6,7 @@ struct KeygateApp: App {
     @StateObject private var gateway = GatewayService.shared
     @StateObject private var store = SessionStore.shared
 
-    @StateObject private var companionPanelManager = FloatingPanelManager<CompanionChatView>()
+    @StateObject private var companionPanelManager = FloatingPanelManager()
 
     var body: some Scene {
         MenuBarExtra {
@@ -23,16 +23,27 @@ struct KeygateApp: App {
                                     CompanionChatView()
                                         .environmentObject(gateway)
                                         .environmentObject(store)
+                                        .environmentObject(companionPanelManager)
                                 }
                             }) {
-                                Image(systemName: "pin")
-                                    .font(.system(size: 13))
-                                    .foregroundStyle(.purple)
-                                    .padding(8)
+                                Image(systemName: "sparkles")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundStyle(
+                                        .linearGradient(
+                                            colors: [.purple, .indigo],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
+                                    )
+                                    .symbolEffect(.pulse.wholeSymbol, options: .repeating)
+                                    .frame(width: 32, height: 32)
                                     .background(.ultraThinMaterial)
                                     .clipShape(Circle())
+                                    .shadow(color: .purple.opacity(0.25), radius: 4, y: 1)
                                     .help("Open Companion Chat Window")
                             }
+                            .buttonStyle(.plain)
+                            .padding(8)
                         }
                     }
                 )

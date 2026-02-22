@@ -29,6 +29,7 @@
   - 🔴 **Spicy Mode**: Full host access, unrestricted execution (requires explicit opt-in)
   - 🌶️ **Spicy Max Obedience (optional toggle)**: Spicy-only, best-effort reduction of avoidable refusals
 - **Built-in Tools**: Filesystem, Shell, Code Sandbox (JS/Python), Web Search, Browser Automation
+- **Companion Chat Widget** (macOS): Floating always-on-top mini chat window — keeps the AI assistant visible while you work
 
 ## Quick Start
 

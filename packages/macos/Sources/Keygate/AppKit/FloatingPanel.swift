@@ -27,10 +27,11 @@ final class FloatingPanel: NSPanel {
 
 /// Manages showing/hiding a SwiftUI view in a floating panel.
 @MainActor
-final class FloatingPanelManager<Content: View>: ObservableObject {
+final class FloatingPanelManager: ObservableObject {
     private var panel: FloatingPanel?
+    @Published var alwaysOnTop: Bool = true
 
-    func show(size: CGSize = CGSize(width: 380, height: 520), content: () -> Content) {
+    func show<V: View>(size: CGSize = CGSize(width: 380, height: 520), @ViewBuilder content: () -> V) {
         if let panel, panel.isVisible {
             panel.orderOut(nil)
             return
@@ -38,11 +39,17 @@ final class FloatingPanelManager<Content: View>: ObservableObject {
 
         let rect = NSRect(origin: .zero, size: size)
         let panel = FloatingPanel(contentRect: rect)
-        let host = NSHostingView(rootView: content())
+        panel.level = alwaysOnTop ? .floating : .normal
+        let host = NSHostingView(rootView: AnyView(content()))
         panel.contentView = host
         panel.center()
         panel.makeKeyAndOrderFront(nil)
         self.panel = panel
+    }
+
+    func setAlwaysOnTop(_ value: Bool) {
+        alwaysOnTop = value
+        panel?.level = value ? .floating : .normal
     }
 
     func close() {
