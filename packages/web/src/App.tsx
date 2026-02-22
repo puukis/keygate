@@ -2000,15 +2000,16 @@ function App() {
             {themeToggleLabel}
           </button>
           <button
-            className="btn-secondary"
+            className="btn-icon"
             onClick={() => setIsConfigMenuOpen((open) => !open)}
             aria-expanded={isConfigMenuOpen}
             aria-controls="config-drawer"
+            title="Settings"
+            aria-label="Settings"
           >
-            Config
-          </button>
-          <button className="btn-secondary" onClick={handleClearSession} disabled={!canClearMainSession}>
-            Clear main session
+            <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M8.325 2.317a1 1 0 0 1 .98-.804h1.39a1 1 0 0 1 .98.804l.232 1.16a5.98 5.98 0 0 1 1.308.754l1.116-.372a1 1 0 0 1 1.177.481l.694 1.202a1 1 0 0 1-.196 1.284l-.884.788a6.1 6.1 0 0 1 0 1.512l.884.788a1 1 0 0 1 .196 1.284l-.694 1.202a1 1 0 0 1-1.177.481l-1.116-.372a5.98 5.98 0 0 1-1.308.754l-.231 1.16a1 1 0 0 1-.981.804H9.305a1 1 0 0 1-.98-.804l-.232-1.16a5.98 5.98 0 0 1-1.308-.754l-1.116.372a1 1 0 0 1-1.177-.481l-.694-1.202a1 1 0 0 1 .196-1.284l.884-.788a6.1 6.1 0 0 1 0-1.512l-.884-.788a1 1 0 0 1-.196-1.284l.694-1.202a1 1 0 0 1 1.177-.481l1.116.372a5.98 5.98 0 0 1 1.308-.754l.231-1.16ZM10 13a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" fill="currentColor" />
+            </svg>
           </button>
         </div>
       </header>
@@ -2021,6 +2022,7 @@ function App() {
           onNewSession={handleNewSession}
           onDeleteSession={handleDeleteSession}
           onRenameSession={handleRenameSession}
+          onOpenSettings={() => setIsConfigMenuOpen(true)}
           disabled={!connected}
         />
         <section className="chat-shell">

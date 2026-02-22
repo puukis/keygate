@@ -129,6 +129,30 @@
   border-color: var(--accent);
 }
 
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-solid);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.btn-icon:hover {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+
+.btn-icon svg {
+  display: block;
+}
+
 .app-main {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;

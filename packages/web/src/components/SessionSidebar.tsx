@@ -9,6 +9,7 @@ interface SessionSidebarProps {
   onNewSession: () => void;
   onDeleteSession: (sessionId: string) => void;
   onRenameSession: (sessionId: string, title: string) => void;
+  onOpenSettings?: () => void;
   disabled?: boolean;
 }
 
@@ -19,6 +20,7 @@ export function SessionSidebar({
   onNewSession,
   onDeleteSession,
   onRenameSession,
+  onOpenSettings,
   disabled,
 }: SessionSidebarProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -156,6 +158,21 @@ export function SessionSidebar({
           );
         })}
       </ul>
+      {onOpenSettings && (
+        <div className="session-sidebar__footer">
+          <button
+            className="session-sidebar__settings-btn"
+            onClick={onOpenSettings}
+            title="Settings"
+            aria-label="Settings"
+          >
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M8.325 2.317a1 1 0 0 1 .98-.804h1.39a1 1 0 0 1 .98.804l.232 1.16a5.98 5.98 0 0 1 1.308.754l1.116-.372a1 1 0 0 1 1.177.481l.694 1.202a1 1 0 0 1-.196 1.284l-.884.788a6.1 6.1 0 0 1 0 1.512l.884.788a1 1 0 0 1 .196 1.284l-.694 1.202a1 1 0 0 1-1.177.481l-1.116-.372a5.98 5.98 0 0 1-1.308.754l-.231 1.16a1 1 0 0 1-.981.804H9.305a1 1 0 0 1-.98-.804l-.232-1.16a5.98 5.98 0 0 1-1.308-.754l-1.116.372a1 1 0 0 1-1.177-.481l-.694-1.202a1 1 0 0 1 .196-1.284l.884-.788a6.1 6.1 0 0 1 0-1.512l-.884-.788a1 1 0 0 1-.196-1.284l.694-1.202a1 1 0 0 1 1.177-.481l1.116.372a5.98 5.98 0 0 1 1.308-.754l.231-1.16ZM10 13a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" fill="currentColor" />
+            </svg>
+            <span>Settings</span>
+          </button>
+        </div>
+      )}
     </aside>
   );
 }

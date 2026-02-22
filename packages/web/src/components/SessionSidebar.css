@@ -175,3 +175,31 @@
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+.session-sidebar__footer {
+  border-top: 1px solid var(--border);
+  padding: 8px 10px;
+}
+
+.session-sidebar__settings-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.session-sidebar__settings-btn:hover {
+  color: var(--text-primary);
+  background: var(--surface-muted);
+}
+
+.session-sidebar__settings-btn svg {
+  flex-shrink: 0;
+}
