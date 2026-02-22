@@ -1,6 +1,22 @@
-# Keygate
+<p align="center">
+  <img src="docs/assets/banner.png" alt="Keygate" width="800" />
+</p>
 
-Personal AI agent gateway - control your computer and online services via a single "Brain" connected to multiple chat interfaces.
+<p align="center">
+  <strong>Personal AI agent gateway — control your computer and online services via a single "Brain" connected to multiple chat interfaces.</strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/puukis/keygate/actions/workflows/publish-npm.yml"><img src="https://github.com/puukis/keygate/actions/workflows/publish-npm.yml/badge.svg" alt="Build" /></a>
+  <a href="https://www.npmjs.com/package/@puukis/cli"><img src="https://img.shields.io/npm/v/@puukis/cli?color=cb3837&label=npm" alt="npm" /></a>
+  <a href="https://github.com/puukis/keygate"><img src="https://img.shields.io/github/stars/puukis/keygate?style=social" alt="GitHub Stars" /></a>
+  <a href="https://github.com/puukis/keygate/blob/main/LICENSE"><img src="https://img.shields.io/github/license/puukis/keygate?color=blue" alt="License" /></a>
+  <a href="https://github.com/puukis/keygate/issues"><img src="https://img.shields.io/github/issues/puukis/keygate?color=yellow" alt="Issues" /></a>
+  <a href="https://github.com/puukis/keygate/commits/main"><img src="https://img.shields.io/github/last-commit/puukis/keygate?color=green" alt="Last Commit" /></a>
+  <img src="https://img.shields.io/node/v/@puukis/cli?color=339933" alt="Node" />
+</p>
+
+---
 
 ## Features
 
