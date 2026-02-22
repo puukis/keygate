@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/banner.png" alt="Keygate" width="600" />
+  <img src="docs/assets/banner.png" alt="Keygate" width="420" />
 </p>
 
 <p align="center">
