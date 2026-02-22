@@ -1,10 +1,10 @@
 .session-sidebar {
   display: flex;
   flex-direction: column;
-  width: 240px;
-  min-width: 240px;
-  background: var(--bg-secondary, #f5f5f5);
-  border-right: 1px solid var(--border-color, #ddd);
+  width: 220px;
+  min-width: 220px;
+  background: var(--surface-solid);
+  border-right: 1px solid var(--border);
   overflow: hidden;
 }
 
@@ -17,43 +17,45 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px;
-  border-bottom: 1px solid var(--border-color, #ddd);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
 }
 
 .session-sidebar__title {
   flex: 1;
   font-weight: 600;
-  font-size: 0.85rem;
+  font-size: 0.8rem;
+  color: var(--text-primary);
 }
 
 .session-sidebar__toggle {
   background: none;
   border: none;
   cursor: pointer;
-  font-size: 0.75rem;
+  font-size: 0.72rem;
   padding: 2px 4px;
-  color: var(--text-secondary, #666);
+  color: var(--text-tertiary);
   border-radius: 4px;
 }
 
 .session-sidebar__toggle:hover {
-  background: var(--bg-hover, rgba(0,0,0,0.05));
+  color: var(--text-primary);
 }
 
 .session-sidebar__new-btn {
   background: none;
-  border: 1px solid var(--border-color, #ddd);
+  border: 1px solid var(--border);
   border-radius: 4px;
   cursor: pointer;
-  font-size: 1rem;
+  font-size: 0.9rem;
   line-height: 1;
   padding: 2px 8px;
-  color: var(--text-primary, #333);
+  color: var(--text-secondary);
 }
 
 .session-sidebar__new-btn:hover:not(:disabled) {
-  background: var(--bg-hover, rgba(0,0,0,0.05));
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .session-sidebar__new-btn:disabled {
@@ -72,11 +74,11 @@
 .session-sidebar__item {
   position: relative;
   border-radius: 6px;
-  margin-bottom: 2px;
+  margin-bottom: 1px;
 }
 
 .session-sidebar__item--active {
-  background: var(--bg-active, rgba(0,0,0,0.08));
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface-solid));
 }
 
 .session-sidebar__item-btn {
@@ -89,19 +91,24 @@
   border: none;
   cursor: pointer;
   text-align: left;
-  font-size: 0.8rem;
-  color: var(--text-primary, #333);
+  font-size: 0.78rem;
+  color: var(--text-secondary);
   border-radius: 6px;
   overflow: hidden;
 }
 
 .session-sidebar__item-btn:hover:not(:disabled) {
-  background: var(--bg-hover, rgba(0,0,0,0.04));
+  color: var(--text-primary);
+  background: var(--surface-muted);
+}
+
+.session-sidebar__item--active .session-sidebar__item-btn {
+  color: var(--text-primary);
 }
 
 .session-sidebar__item-icon {
   flex-shrink: 0;
-  font-size: 0.85rem;
+  font-size: 0.8rem;
 }
 
 .session-sidebar__item-label {
@@ -113,27 +120,27 @@
 
 .session-sidebar__readonly-badge {
   flex-shrink: 0;
-  font-size: 0.65rem;
-  background: var(--badge-bg, rgba(0,0,0,0.1));
+  font-size: 0.62rem;
+  background: var(--surface-muted);
   padding: 1px 4px;
   border-radius: 3px;
-  color: var(--text-secondary, #666);
+  color: var(--text-tertiary);
 }
 
 .session-sidebar__rename-input {
   flex: 1;
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   padding: 2px 4px;
-  border: 1px solid var(--border-color, #ddd);
-  border-radius: 3px;
-  background: var(--bg-primary, #fff);
-  color: var(--text-primary, #333);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-solid);
+  color: var(--text-primary);
   outline: none;
   min-width: 0;
 }
 
 .session-sidebar__rename-input:focus {
-  border-color: var(--accent-color, #0066cc);
+  border-color: var(--accent);
 }
 
 .session-sidebar__item-actions {
@@ -153,14 +160,15 @@
   background: none;
   border: none;
   cursor: pointer;
-  font-size: 0.7rem;
+  font-size: 0.68rem;
   padding: 2px;
   border-radius: 3px;
   line-height: 1;
+  color: var(--text-tertiary);
 }
 
 .session-sidebar__action-btn:hover:not(:disabled) {
-  background: var(--bg-hover, rgba(0,0,0,0.08));
+  color: var(--text-primary);
 }
 
 .session-sidebar__action-btn:disabled {

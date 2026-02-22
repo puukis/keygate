@@ -1,59 +1,46 @@
 .security-badge {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border-radius: 999px;
-  font-size: 0.8rem;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  border: 1px solid transparent;
-  background: color-mix(in srgb, var(--surface-solid) 82%, var(--mix-base));
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  background: transparent;
   color: var(--text-secondary);
   position: relative;
 }
 
 .security-badge.safe {
-  background: color-mix(in srgb, var(--success) 11%, var(--mix-base));
   color: var(--success-700);
-  border-color: color-mix(in srgb, var(--success) 26%, transparent);
+  border-color: color-mix(in srgb, var(--success) 20%, var(--border));
 }
 
 .security-badge.safe:disabled {
-  opacity: 0.72;
+  opacity: 0.6;
   cursor: default;
 }
 
 .security-badge.safe:hover:not(:disabled) {
-  filter: brightness(1.02);
+  border-color: var(--success);
 }
 
 .security-badge.spicy {
-  background: color-mix(in srgb, var(--danger) 12%, var(--mix-base));
   color: var(--danger-700);
-  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
-  box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 28%, transparent);
-  animation: badgePulse 2.4s ease-in-out infinite;
+  border-color: color-mix(in srgb, var(--danger) 24%, var(--border));
 }
 
 .security-badge.spicy:hover {
-  filter: brightness(1.02);
+  border-color: var(--danger);
 }
 
 .badge-icon {
-  width: 9px;
-  height: 9px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   flex-shrink: 0;
   background: currentColor;
-}
-
-.security-badge.safe .badge-icon {
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--success) 22%, transparent);
-}
-
-.security-badge.spicy .badge-icon {
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--danger) 22%, transparent);
 }
 
 .badge-text {
@@ -61,22 +48,22 @@
 }
 
 .badge-toggle {
-  font-size: 0.67rem;
-  letter-spacing: 0.05em;
+  font-size: 0.65rem;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   color: inherit;
-  border: 1px solid color-mix(in srgb, currentColor 26%, transparent);
-  padding: 2px 6px;
-  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  padding: 1px 5px;
+  border-radius: 4px;
 }
 
 @keyframes badgePulse {
   0%,
   100% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 24%, transparent);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 20%, transparent);
   }
   50% {
-    box-shadow: 0 0 0 10px transparent;
+    box-shadow: 0 0 0 6px transparent;
   }
 }
 

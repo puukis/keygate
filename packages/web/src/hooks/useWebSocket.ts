@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 
 interface UseWebSocketResult {
-  send: (data: object) => void;
+  send: (data: object) => boolean;
   connected: boolean;
   connecting: boolean;
 }
@@ -123,12 +123,13 @@ export function useWebSocket(
     };
   }, [connect]);
 
-  const send = useCallback((data: object) => {
+  const send = useCallback((data: object): boolean => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify(data));
-    } else {
-      console.warn('WebSocket not connected, message not sent');
+      return true;
     }
+    console.warn('WebSocket not connected, message not sent');
+    return false;
   }, []);
 
   return { send, connected, connecting };

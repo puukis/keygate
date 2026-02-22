@@ -80,6 +80,11 @@ export async function runGatewayCommand(
 
   if (action === 'restart') {
     await adapter.close();
+    // launchd needs time to fully tear down the service domain after bootout.
+    // Without this, the subsequent bootstrap races and hits a transient I/O error.
+    if (deps.platform === 'darwin') {
+      await delay(800);
+    }
     await adapter.open();
     const after = await adapter.status();
     deps.log('Gateway restart requested.');
@@ -282,7 +287,16 @@ function createMacOSAdapter(deps: GatewayDeps): GatewayManagerAdapter {
       if (bootstrap.status !== 0) {
         const message = commandOutput(bootstrap);
         if (!isLaunchdAlreadyLoadedMessage(message)) {
-          throw new Error(`Failed to bootstrap launchd service: ${message}`);
+          // Bootstrap failed — bootout any stale entry, wait for launchd cleanup, then retry
+          deps.runCommand('launchctl', ['bootout', `${domain}/${MACOS_LABEL}`]);
+          await delay(1000);
+          const retry = deps.runCommand('launchctl', ['bootstrap', domain, plistPath]);
+          if (retry.status !== 0) {
+            const retryMessage = commandOutput(retry);
+            if (!isLaunchdAlreadyLoadedMessage(retryMessage)) {
+              throw new Error(`Failed to bootstrap launchd service: ${retryMessage}`);
+            }
+          }
         }
       }
 
@@ -695,6 +709,10 @@ function isWindowsTaskMissingOrStoppedMessage(message: string): boolean {
   return /cannot find the file|cannot find the task|not currently running|task does not exist|cannot find path/i.test(
     message
   );
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function unsupportedManagerError(platform: NodeJS.Platform | string, reason: string): Error {

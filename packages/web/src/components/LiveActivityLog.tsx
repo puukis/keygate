@@ -9,6 +9,8 @@ interface LiveActivityLogProps {
     imageUrl: string;
     capturedAt: Date | null;
   } | null;
+  collapsed?: boolean;
+  onToggleCollapsed?: () => void;
 }
 
 const MAX_VISIBLE_EVENTS = 24;
@@ -21,7 +23,7 @@ function truncateText(value: string, maxLength: number): string {
   return `${value.slice(0, maxLength)}...`;
 }
 
-export function LiveActivityLog({ events, latestScreenshot }: LiveActivityLogProps) {
+export function LiveActivityLog({ events, latestScreenshot, collapsed, onToggleCollapsed }: LiveActivityLogProps) {
   const [showProviderEvents, setShowProviderEvents] = useState(false);
   const [showAllEvents, setShowAllEvents] = useState(false);
 
@@ -40,13 +42,27 @@ export function LiveActivityLog({ events, latestScreenshot }: LiveActivityLogPro
     : filteredEvents.slice(0, MAX_VISIBLE_EVENTS);
 
   return (
-    <aside className="live-activity">
+    <aside className={`live-activity${collapsed ? ' live-activity-collapsed' : ''}`}>
       <div className="activity-header">
         <h3>Activity Feed</h3>
-        <span className="event-count">{events.length}</span>
+        <div className="activity-header-right">
+          <span className="event-count">{events.length}</span>
+          {onToggleCollapsed && (
+            <button
+              type="button"
+              className="activity-collapse-btn"
+              onClick={onToggleCollapsed}
+              aria-label={collapsed ? 'Expand activity feed' : 'Collapse activity feed'}
+            >
+              {collapsed ? '◀' : '▶'}
+            </button>
+          )}
+        </div>
       </div>
 
-      <div className="activity-controls">
+      {!collapsed && (
+        <>
+          <div className="activity-controls">
         <button
           type="button"
           className={`activity-toggle ${showProviderEvents ? 'active' : ''}`}
@@ -150,6 +166,8 @@ export function LiveActivityLog({ events, latestScreenshot }: LiveActivityLogPro
           </button>
         )}
       </div>
+      </>
+      )}
     </aside>
   );
 }

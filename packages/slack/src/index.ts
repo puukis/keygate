@@ -172,7 +172,7 @@ export async function startSlackBot(config: KeygateConfig): Promise<App> {
   const gateway = Gateway.getInstance(config);
 
   // Respond to direct mentions
-  app.event('app_mention', async ({ event, say }) => {
+  app.event('app_mention', async ({ event, say, client }) => {
     const text = event.text.replace(/<@[A-Z0-9]+>/g, '').trim();
     if (!text) return;
 
@@ -181,6 +181,7 @@ export async function startSlackBot(config: KeygateConfig): Promise<App> {
     const userId = event.user ?? '';
 
     try {
+      await client.reactions.add({ channel: channelId, timestamp: event.ts, name: 'eyes' }).catch(() => {});
       const channel = new SlackChannel(say, channelId, threadTs);
       const normalized = normalizeSlackMessage(
         event.ts,
@@ -198,7 +199,7 @@ export async function startSlackBot(config: KeygateConfig): Promise<App> {
   });
 
   // Respond to direct messages
-  app.event('message', async ({ event, say }) => {
+  app.event('message', async ({ event, say, client }) => {
     // Ignore bot messages, subtypes (edits, joins, etc.)
     if ('bot_id' in event && event.bot_id) return;
     if (event.subtype) return;
@@ -214,6 +215,7 @@ export async function startSlackBot(config: KeygateConfig): Promise<App> {
     const userId = 'user' in event ? (event.user ?? '') : '';
 
     try {
+      await client.reactions.add({ channel: channelId, timestamp: event.ts, name: 'eyes' }).catch(() => {});
       const channel = new SlackChannel(say, channelId, threadTs);
       const normalized = normalizeSlackMessage(
         event.ts,

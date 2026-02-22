@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { ChatView } from './components/ChatView';
 import { LiveActivityLog } from './components/LiveActivityLog';
 import { SecurityBadge } from './components/SecurityBadge';
@@ -65,6 +65,10 @@ interface LatestScreenshotPreview {
 interface DiscordConfigState {
   configured: boolean;
   prefix: string;
+}
+
+interface SlackConfigState {
+  configured: boolean;
 }
 
 interface LLMState {
@@ -316,6 +320,14 @@ function parseDiscordConfig(value: unknown): DiscordConfigState | undefined {
     configured,
     prefix: normalizeDiscordPrefixInput(rawPrefix, true),
   };
+}
+
+function parseSlackConfig(value: unknown): SlackConfigState | undefined {
+  const payload = asRecord(value);
+  if (!payload) {
+    return undefined;
+  }
+  return { configured: payload['configured'] === true };
 }
 
 function parseBrowserConfig(value: unknown): BrowserConfigState | undefined {
@@ -746,6 +758,16 @@ function App() {
   const [discordClearToken, setDiscordClearToken] = useState(false);
   const [discordSaving, setDiscordSaving] = useState(false);
 
+  const [slackConfig, setSlackConfig] = useState<SlackConfigState>({ configured: false });
+  const [slackBotTokenDraft, setSlackBotTokenDraft] = useState('');
+  const [slackAppTokenDraft, setSlackAppTokenDraft] = useState('');
+  const [slackSigningSecretDraft, setSlackSigningSecretDraft] = useState('');
+  const [slackClearToken, setSlackClearToken] = useState(false);
+  const [slackSaving, setSlackSaving] = useState(false);
+  const slackSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const [activityCollapsed, setActivityCollapsed] = useState(false);
+
   const [browserConfig, setBrowserConfig] = useState<BrowserConfigState>(DEFAULT_BROWSER_CONFIG_STATE);
   const [browserPolicyDraft, setBrowserPolicyDraft] = useState<BrowserDomainPolicy>('none');
   const [browserAllowlistDraft, setBrowserAllowlistDraft] = useState('');
@@ -907,6 +929,16 @@ function App() {
           setDiscordClearToken(false);
         }
         setDiscordSaving(false);
+
+        const slackState = parseSlackConfig(data['slack']);
+        if (slackState) {
+          setSlackConfig(slackState);
+          setSlackBotTokenDraft('');
+          setSlackAppTokenDraft('');
+          setSlackSigningSecretDraft('');
+          setSlackClearToken(false);
+        }
+        setSlackSaving(false);
         setBrowserSaving(false);
         setBrowserActionPending(null);
 
@@ -1250,6 +1282,23 @@ function App() {
         break;
       }
 
+      case 'slack_config_updated': {
+        const slackState = parseSlackConfig(data['slack']);
+        if (slackState) {
+          setSlackConfig(slackState);
+        }
+        setSlackBotTokenDraft('');
+        setSlackAppTokenDraft('');
+        setSlackSigningSecretDraft('');
+        setSlackClearToken(false);
+        setSlackSaving(false);
+        if (slackSaveTimeoutRef.current) {
+          clearTimeout(slackSaveTimeoutRef.current);
+          slackSaveTimeoutRef.current = null;
+        }
+        break;
+      }
+
       case 'mcp_browser_status': {
         const browserState = parseBrowserConfig(data['browser']);
         if (browserState) {
@@ -1445,6 +1494,7 @@ function App() {
 
       case 'error': {
         setDiscordSaving(false);
+        setSlackSaving(false);
         setBrowserSaving(false);
         setBrowserActionPending(null);
 
@@ -1486,6 +1536,16 @@ function App() {
 
   const { send, connected, connecting } = useWebSocket(getWebSocketUrl(), handleMessage);
 
+
+  // Reset saving/pending states when connection drops so UI never gets stuck.
+  useEffect(() => {
+    if (!connected) {
+      setDiscordSaving(false);
+      setSlackSaving(false);
+      setBrowserSaving(false);
+      setBrowserActionPending(null);
+    }
+  }, [connected]);
 
   useEffect(() => {
     if (!connected) {
@@ -1774,13 +1834,35 @@ function App() {
     }
 
     setDiscordSaving(true);
-    send({
+    const sent = send({
       type: 'set_discord_config',
       prefix: normalizedPrefix,
       token: discordTokenDraft.trim().length > 0 ? discordTokenDraft.trim() : undefined,
       clearToken: discordClearToken,
     });
+    if (!sent) {
+      setDiscordSaving(false);
+    }
   }, [discordClearToken, discordPrefixDraft, discordTokenDraft, send]);
+
+  const handleSlackSave = useCallback(() => {
+    setSlackSaving(true);
+    if (slackSaveTimeoutRef.current) {
+      clearTimeout(slackSaveTimeoutRef.current);
+    }
+    const sent = send({
+      type: 'set_slack_config',
+      botToken: slackBotTokenDraft.trim().length > 0 ? slackBotTokenDraft.trim() : undefined,
+      appToken: slackAppTokenDraft.trim().length > 0 ? slackAppTokenDraft.trim() : undefined,
+      signingSecret: slackSigningSecretDraft.trim().length > 0 ? slackSigningSecretDraft.trim() : undefined,
+      clearBotToken: slackClearToken,
+    });
+    if (!sent) {
+      setSlackSaving(false);
+    } else {
+      slackSaveTimeoutRef.current = setTimeout(() => setSlackSaving(false), 10000);
+    }
+  }, [slackBotTokenDraft, slackAppTokenDraft, slackSigningSecretDraft, slackClearToken, send]);
 
 
   const handleInstallMcpBrowser = useCallback(() => {
@@ -1843,6 +1925,12 @@ function App() {
     discordPrefixDraft !== discordConfig.prefix ||
     discordTokenDraft.trim().length > 0 ||
     discordClearToken;
+
+  const slackHasChanges =
+    slackBotTokenDraft.trim().length > 0 ||
+    slackAppTokenDraft.trim().length > 0 ||
+    slackSigningSecretDraft.trim().length > 0 ||
+    slackClearToken;
 
   const browserPolicyHasChanges =
     browserPolicyDraft !== browserConfig.domainPolicy ||
@@ -1965,7 +2053,12 @@ function App() {
           />
         </section>
 
-        <LiveActivityLog events={activeToolEvents} latestScreenshot={activeLatestScreenshot} />
+        <LiveActivityLog
+          events={activeToolEvents}
+          latestScreenshot={activeLatestScreenshot}
+          collapsed={activityCollapsed}
+          onToggleCollapsed={() => setActivityCollapsed((prev) => !prev)}
+        />
       </main>
 
       {isConfigMenuOpen && (
@@ -2320,6 +2413,91 @@ function App() {
                 {discordSaving ? 'Saving...' : 'Save Discord Config'}
               </button>
               <small className="config-note">Restart the Discord bot process to apply updated settings.</small>
+            </section>
+
+            <section className="config-section">
+              <h3>Slack Bot</h3>
+              <p className="config-note">
+                Status: {slackConfig.configured ? 'Token configured' : 'Token not configured'}
+              </p>
+
+              <label className="llm-control config-control">
+                <span>Bot Token</span>
+                <input
+                  className="config-text-input"
+                  type="password"
+                  value={slackBotTokenDraft}
+                  onChange={(event) => {
+                    setSlackBotTokenDraft(event.target.value);
+                    if (event.target.value.trim().length > 0) {
+                      setSlackClearToken(false);
+                    }
+                  }}
+                  placeholder={
+                    slackConfig.configured
+                      ? 'Leave blank to keep current token'
+                      : 'Paste Slack bot token (xoxb-...)'
+                  }
+                  autoComplete="off"
+                  disabled={!connected || activeIsStreaming || slackSaving}
+                />
+              </label>
+
+              <label className="llm-control config-control">
+                <span>App Token</span>
+                <input
+                  className="config-text-input"
+                  type="password"
+                  value={slackAppTokenDraft}
+                  onChange={(event) => setSlackAppTokenDraft(event.target.value)}
+                  placeholder="Paste Slack app token (xapp-...)"
+                  autoComplete="off"
+                  disabled={!connected || activeIsStreaming || slackSaving}
+                />
+              </label>
+
+              <label className="llm-control config-control">
+                <span>Signing Secret</span>
+                <input
+                  className="config-text-input"
+                  type="password"
+                  value={slackSigningSecretDraft}
+                  onChange={(event) => setSlackSigningSecretDraft(event.target.value)}
+                  placeholder="Paste Slack signing secret"
+                  autoComplete="off"
+                  disabled={!connected || activeIsStreaming || slackSaving}
+                />
+              </label>
+
+              <label className="config-switch-row">
+                <span className="config-switch-copy">
+                  <strong>Clear saved tokens</strong>
+                  <small>Remove all Slack tokens from local config on save.</small>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={slackClearToken}
+                  onChange={(event) => {
+                    const checked = event.target.checked;
+                    setSlackClearToken(checked);
+                    if (checked) {
+                      setSlackBotTokenDraft('');
+                      setSlackAppTokenDraft('');
+                      setSlackSigningSecretDraft('');
+                    }
+                  }}
+                  disabled={!connected || activeIsStreaming || slackSaving || !slackConfig.configured}
+                />
+              </label>
+
+              <button
+                className="btn-secondary"
+                onClick={handleSlackSave}
+                disabled={!connected || activeIsStreaming || slackSaving || !slackHasChanges}
+              >
+                {slackSaving ? 'Saving...' : 'Save Slack Config'}
+              </button>
+              <small className="config-note">Restart the Slack bot process to apply updated settings.</small>
             </section>
 
             <section className="config-section">
