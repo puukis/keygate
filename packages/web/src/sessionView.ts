@@ -91,6 +91,11 @@ export type SessionChatEvent =
     sessionId: string;
     content: string;
     timestamp: Date;
+  }
+  | {
+    type: 'session_cancelled';
+    sessionId: string;
+    timestamp: Date;
   };
 
 export interface SessionOption {
@@ -339,6 +344,39 @@ export function reduceSessionChatState(state: SessionChatState, event: SessionCh
           ...state.metaBySession,
           [event.sessionId]: {
             channelType,
+            updatedAt: new Date(event.timestamp),
+          },
+        },
+        streamingBySession: {
+          ...state.streamingBySession,
+          [event.sessionId]: false,
+        },
+        streamBuffersBySession: {
+          ...state.streamBuffersBySession,
+          [event.sessionId]: '',
+        },
+      };
+    }
+
+    case 'session_cancelled': {
+      const channelType = state.metaBySession[event.sessionId]?.channelType ?? inferChannelType(event.sessionId);
+      const prevMessages = state.messagesBySession[event.sessionId] ?? [];
+      const last = prevMessages[prevMessages.length - 1];
+      const nextMessages =
+        last?.id === 'streaming' && last.role === 'assistant'
+          ? prevMessages.slice(0, -1)
+          : prevMessages;
+
+      return {
+        messagesBySession: {
+          ...state.messagesBySession,
+          [event.sessionId]: nextMessages,
+        },
+        metaBySession: {
+          ...state.metaBySession,
+          [event.sessionId]: {
+            channelType,
+            title: state.metaBySession[event.sessionId]?.title,
             updatedAt: new Date(event.timestamp),
           },
         },

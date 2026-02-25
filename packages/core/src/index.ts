@@ -11,6 +11,7 @@ export * from './config/index.js';
 export * from './skills/index.js';
 export * from './runtime/index.js';
 export { normalizeDiscordMessage, normalizeSlackMessage, normalizeTerminalMessage, normalizeWebMessage, BaseChannel } from './pipeline/index.js';
+export * from './attachments/uploadStore.js';
 export { Database } from './db/index.js';
 export { startWebServer, WebSocketChannel } from './server/index.js';
 export {

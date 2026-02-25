@@ -9,6 +9,7 @@ import './ChatView.css';
 interface ChatViewProps {
   messages: Message[];
   onSendMessage: (content: string, attachments?: Message['attachments']) => void;
+  onStop?: () => void;
   isStreaming: boolean;
   streamActivities: StreamActivity[];
   disabled: boolean;
@@ -250,6 +251,7 @@ function isNearBottom(container: HTMLDivElement): boolean {
 export function ChatView({
   messages,
   onSendMessage,
+  onStop,
   isStreaming,
   streamActivities,
   disabled,
@@ -487,6 +489,11 @@ export function ChatView({
     || disabled
     || isStreaming
     || isUploading;
+  const isStopButton = isStreaming && !isUploading;
+  const sendButtonType = isStopButton ? 'button' : 'submit';
+  const isSendButtonDisabled = isStopButton
+    ? !onStop
+    : isSubmitDisabled;
 
   return (
     <div className="chat-view">
@@ -641,12 +648,15 @@ export function ChatView({
           )}
         </div>
         <button
-          type="submit"
-          disabled={isSubmitDisabled}
-          className="send-btn"
+          type={sendButtonType}
+          disabled={isSendButtonDisabled}
+          className={`send-btn${isStopButton ? ' send-btn-stop' : ''}`}
+          onClick={isStopButton ? onStop : undefined}
         >
-          {(isStreaming || isUploading) ? (
+          {isUploading ? (
             <span className="spinner" />
+          ) : isStopButton ? (
+            <span>Stop</span>
           ) : (
             <span>Send</span>
           )}

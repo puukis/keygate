@@ -10,6 +10,8 @@ struct SessionSidebar: View {
     @AppStorage("windowOpacity") private var windowOpacity: Double = 1.0
     @AppStorage("backgroundBlur") private var backgroundBlur: Double = 0.0
     @State private var hoveredSession: String?
+    @State private var renamingSession: SessionState?
+    @State private var renameDraft: String = ""
 
     private var sidebarMaterial: NSVisualEffectView.Material {
         (AppearanceMaterial(rawValue: backgroundMaterial) ?? .headerView).nsMaterial
@@ -33,6 +35,29 @@ struct SessionSidebar: View {
                 Color(nsColor: .windowBackgroundColor)
                     .opacity(windowOpacity)
             }
+        }
+        .sheet(item: $renamingSession) { session in
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Rename Session")
+                    .font(.system(size: 14, weight: .semibold))
+                TextField("Session title", text: $renameDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit {
+                        commitRename(for: session)
+                    }
+                HStack {
+                    Spacer()
+                    Button("Cancel") {
+                        renamingSession = nil
+                    }
+                    Button("Save") {
+                        commitRename(for: session)
+                    }
+                    .keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(20)
+            .frame(width: 340)
         }
     }
 
@@ -89,9 +114,12 @@ struct SessionSidebar: View {
                         }
                         .contextMenu {
                             Button("Rename…") {
-                                // TODO: rename sheet
+                                renameDraft = session.title ?? ""
+                                renamingSession = session
                             }
                             Button("Clear Messages") {
+                                gateway.switchSession(session.sessionId)
+                                store.activeSessionId = session.sessionId
                                 gateway.clearSession()
                             }
                             Divider()
@@ -161,6 +189,11 @@ struct SessionSidebar: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(Color.primary.opacity(0.02))
+    }
+
+    private func commitRename(for session: SessionState) {
+        gateway.renameSession(session.sessionId, title: renameDraft)
+        renamingSession = nil
     }
 }
 

@@ -6,6 +6,7 @@ import type {
   SecurityMode,
   Tool,
   ToolCall,
+  ToolExecutionContext,
   ToolResult,
   Channel,
 } from '../types.js';
@@ -20,6 +21,11 @@ const MANAGED_CONTEXT_FILES = new Set([
   'identity.md',
   'memory.md',
 ]);
+
+const DEFAULT_EXECUTION_CONTEXT: ToolExecutionContext = {
+  signal: new AbortController().signal,
+  registerAbortCleanup: () => {},
+};
 
 /**
  * ToolExecutor - Mode-switching security middleware
@@ -84,8 +90,10 @@ export class ToolExecutor {
     call: ToolCall,
     channel: Channel,
     sessionId: string,
-    envOverlay: Record<string, string> = {}
+    envOverlay: Record<string, string> = {},
+    context: ToolExecutionContext = DEFAULT_EXECUTION_CONTEXT,
   ): Promise<ToolResult> {
+    throwIfAborted(context.signal);
     const tool = this.toolRegistry.get(call.name);
     
     if (!tool) {
@@ -106,6 +114,7 @@ export class ToolExecutor {
     try {
       // Normalize filesystem path arguments before validation and execution.
       this.normalizeFilesystemCallPath(tool, call);
+      this.normalizeShellCallWorkingDirectory(tool, call);
 
       // Apply security checks in Safe Mode
       if (this.mode === 'safe') {
@@ -113,7 +122,8 @@ export class ToolExecutor {
       }
 
       // Execute the tool with turn-scoped env overlay (no global env mutation).
-      const result = await withEnvOverlay(envOverlay, () => tool.handler(call.arguments));
+      const result = await withEnvOverlay(envOverlay, () => tool.handler(call.arguments, context));
+      throwIfAborted(context.signal);
 
       // Emit tool:end event
       this.gateway.emit('tool:end', {
@@ -124,6 +134,9 @@ export class ToolExecutor {
 
       return result;
     } catch (error) {
+      if (isAbortError(error)) {
+        throw error;
+      }
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       const result: ToolResult = {
         success: false,
@@ -163,6 +176,11 @@ export class ToolExecutor {
       if (command) {
         this.assertManagedContinuityFilesNotEditedViaShell(command);
         this.assertBinaryAllowed(command);
+      }
+
+      const cwd = call.arguments['cwd'] as string | undefined;
+      if (cwd) {
+        this.assertShellWorkingDirectoryAllowedInSafeMode(cwd);
       }
     }
 
@@ -246,6 +264,37 @@ export class ToolExecutor {
     }
 
     call.arguments['path'] = this.resolveFilesystemPath(targetPath);
+  }
+
+  private normalizeShellCallWorkingDirectory(tool: Tool, call: ToolCall): void {
+    if (tool.type !== 'shell') {
+      return;
+    }
+
+    const cwd = call.arguments['cwd'];
+    if (typeof cwd !== 'string' || cwd.trim().length === 0) {
+      call.arguments['cwd'] = this.workspacePath;
+      return;
+    }
+
+    const expandedPath = this.expandPath(cwd.trim());
+    if (path.isAbsolute(expandedPath)) {
+      call.arguments['cwd'] = path.normalize(expandedPath);
+      return;
+    }
+
+    call.arguments['cwd'] = path.resolve(this.workspacePath, expandedPath);
+  }
+
+  private assertShellWorkingDirectoryAllowedInSafeMode(cwd: string): void {
+    const resolvedPath = path.normalize(cwd);
+    if (this.isPathWithinRoot(resolvedPath, this.workspacePath)) {
+      return;
+    }
+
+    throw new Error(
+      `Access denied: Shell cwd "${cwd}" is outside Safe Mode workspace "${this.workspacePath}".`
+    );
   }
 
   private resolveFilesystemPath(inputPath: string): string {
@@ -488,4 +537,22 @@ function stableStringify(value: unknown): string {
   }
 
   return JSON.stringify(value);
+}
+
+function throwIfAborted(signal: AbortSignal): void {
+  if (!signal.aborted) {
+    return;
+  }
+
+  throw createAbortError();
+}
+
+function createAbortError(): Error {
+  const error = new Error('Session cancelled');
+  error.name = 'AbortError';
+  return error;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
 }

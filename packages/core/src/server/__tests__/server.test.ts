@@ -97,7 +97,7 @@ describe('server spicy obedience payloads', () => {
 });
 
 describe('session snapshot payload', () => {
-  it('always includes current web session and all read-only channel sessions', () => {
+  it('always includes current web session plus every visible channel session', () => {
     const gateway = {
       listSessions: () => [
         {
@@ -132,6 +132,7 @@ describe('session snapshot payload', () => {
       'web:current',
       'terminal:alpha',
       'discord:alpha',
+      'web:other',
     ]);
   });
 

@@ -7,6 +7,7 @@ enum ServerMessage: Decodable {
     case sessionSnapshot(SessionSnapshotPayload)
     case sessionChunk(SessionChunkPayload)
     case sessionMessageEnd(SessionMessageEndPayload)
+    case sessionCancelled(SessionCancelledPayload)
     case sessionUserMessage(SessionUserMessagePayload)
     case messageReceived(MessageReceivedPayload)
     case confirmRequest(ConfirmRequestPayload)
@@ -38,6 +39,7 @@ enum ServerMessage: Decodable {
         case "session_snapshot":    self = .sessionSnapshot(try single.decode(SessionSnapshotPayload.self))
         case "session_chunk":       self = .sessionChunk(try single.decode(SessionChunkPayload.self))
         case "session_message_end": self = .sessionMessageEnd(try single.decode(SessionMessageEndPayload.self))
+        case "session_cancelled":   self = .sessionCancelled(try single.decode(SessionCancelledPayload.self))
         case "session_user_message":self = .sessionUserMessage(try single.decode(SessionUserMessagePayload.self))
         case "message_received":    self = .messageReceived(try single.decode(MessageReceivedPayload.self))
         case "confirm_request":     self = .confirmRequest(try single.decode(ConfirmRequestPayload.self))
@@ -85,6 +87,11 @@ struct SessionChunkPayload: Decodable {
 struct SessionMessageEndPayload: Decodable {
     let sessionId: String
     let content: String
+}
+
+struct SessionCancelledPayload: Decodable {
+    let sessionId: String
+    let reason: String?
 }
 
 struct SessionUserMessagePayload: Decodable {

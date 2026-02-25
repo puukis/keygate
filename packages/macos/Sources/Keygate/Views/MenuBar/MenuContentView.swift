@@ -214,22 +214,32 @@ struct MenuContentView: View {
                 )
                 .onSubmit { sendMessage() }
 
-            Button(action: sendMessage) {
-                Image(systemName: "arrow.up")
+            Button(action: {
+                if isStreaming {
+                    stopStreaming()
+                } else {
+                    sendMessage()
+                }
+            }) {
+                Image(systemName: isStreaming ? "stop.fill" : "arrow.up")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.white)
                     .frame(width: 30, height: 30)
                     .background(
-                        .linearGradient(
-                            colors: [.purple, .indigo],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
+                        isStreaming
+                            ? AnyShapeStyle(Color.red)
+                            : AnyShapeStyle(
+                                LinearGradient(
+                                    colors: [.purple, .indigo],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
                     )
                     .clipShape(RoundedRectangle(cornerRadius: 8))
             }
             .buttonStyle(.plain)
-            .disabled(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(!isStreaming && input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -259,6 +269,10 @@ struct MenuContentView: View {
             gateway.sendMessage(trimmed)
         }
         input = ""
+    }
+
+    private func stopStreaming() {
+        gateway.cancelActiveSessionRun()
     }
 }
 
@@ -312,5 +326,4 @@ struct KeyboardShortcutLabel: View {
             .foregroundStyle(.tertiary)
     }
 }
-
 

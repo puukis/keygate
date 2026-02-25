@@ -192,22 +192,32 @@ struct CompanionChatView: View {
                 )
                 .onSubmit { sendMessage() }
 
-            Button(action: sendMessage) {
-                Image(systemName: "arrow.up")
+            Button(action: {
+                if isStreaming {
+                    stopStreaming()
+                } else {
+                    sendMessage()
+                }
+            }) {
+                Image(systemName: isStreaming ? "stop.fill" : "arrow.up")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.white)
                     .frame(width: 26, height: 26)
                     .background(
-                        .linearGradient(
-                            colors: [.purple, .indigo],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
+                        isStreaming
+                            ? AnyShapeStyle(Color.red)
+                            : AnyShapeStyle(
+                                LinearGradient(
+                                    colors: [.purple, .indigo],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
                     )
                     .clipShape(RoundedRectangle(cornerRadius: 7))
             }
             .buttonStyle(.plain)
-            .disabled(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(!isStreaming && input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -225,5 +235,9 @@ struct CompanionChatView: View {
             gateway.sendMessage(trimmed)
         }
         input = ""
+    }
+
+    private func stopStreaming() {
+        gateway.cancelActiveSessionRun()
     }
 }

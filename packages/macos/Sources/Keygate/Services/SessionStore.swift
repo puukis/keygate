@@ -81,9 +81,18 @@ final class SessionStore: ObservableObject {
 
     private init() {}
 
-    /// Strip "web:" prefix the server adds to session IDs.
+    /// Canonicalize session IDs so web sessions always use the "web:" prefix.
     static func normalizeSessionId(_ id: String) -> String {
-        id.hasPrefix("web:") ? String(id.dropFirst(4)) : id
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return id }
+        return trimmed.contains(":") ? trimmed : "web:\(trimmed)"
+    }
+
+    private static func inferredChannelType(for sessionId: String) -> ChannelType {
+        if sessionId.hasPrefix("discord:") { return .discord }
+        if sessionId.hasPrefix("terminal:") { return .terminal }
+        if sessionId.hasPrefix("slack:") { return .slack }
+        return .web
     }
 
     /// Sync the flat published properties from the active session.
@@ -105,7 +114,7 @@ final class SessionStore: ObservableObject {
     func ensureSession(id: String) {
         let normalized = Self.normalizeSessionId(id)
         guard !sessions.contains(where: { $0.sessionId == normalized }) else { return }
-        let stub = SessionState(sessionId: normalized, channelType: .web)
+        let stub = SessionState(sessionId: normalized, channelType: Self.inferredChannelType(for: normalized))
         sessions.append(stub)
         syncActive()
     }
@@ -117,9 +126,22 @@ final class SessionStore: ObservableObject {
             newMap[nid] = info
         }
 
+        let snapshotWebSessionCount = infos.filter { $0.channel == .web }.count
+
         // Remove sessions that no longer exist, but never remove the active session
+        // Compatibility: older gateways send snapshots with only the active web session.
+        // In that case, preserve existing web sessions and rely on explicit delete events.
+        let normalizedActive = activeSessionId.map(Self.normalizeSessionId)
         sessions.removeAll { session in
-            session.sessionId != activeSessionId && newMap[session.sessionId] == nil
+            if normalizedActive == session.sessionId {
+                return false
+            }
+
+            if snapshotWebSessionCount <= 1 && session.channelType == .web && newMap[session.sessionId] == nil {
+                return false
+            }
+
+            return newMap[session.sessionId] == nil
         }
 
         // Update existing and add new
@@ -142,27 +164,31 @@ final class SessionStore: ObservableObject {
     }
 
     func appendMessage(sessionId: String, message: ChatMessage) {
-        ensureSession(id: sessionId)
-        guard let session = sessions.first(where: { $0.sessionId == sessionId }) else { return }
+        let normalized = Self.normalizeSessionId(sessionId)
+        ensureSession(id: normalized)
+        guard let session = sessions.first(where: { $0.sessionId == normalized }) else { return }
         session.messages.append(message)
         syncActive()
     }
 
     func lastMessage(sessionId: String, role: String) -> ChatMessage? {
-        guard let session = sessions.first(where: { $0.sessionId == sessionId }) else { return nil }
+        let normalized = Self.normalizeSessionId(sessionId)
+        guard let session = sessions.first(where: { $0.sessionId == normalized }) else { return nil }
         return session.messages.last { $0.role == role }
     }
 
     func setThinking(sessionId: String, _ value: Bool) {
-        ensureSession(id: sessionId)
-        guard let session = sessions.first(where: { $0.sessionId == sessionId }) else { return }
+        let normalized = Self.normalizeSessionId(sessionId)
+        ensureSession(id: normalized)
+        guard let session = sessions.first(where: { $0.sessionId == normalized }) else { return }
         session.isThinking = value
         syncActive()
     }
 
     func appendStreamChunk(sessionId: String, chunk: String) {
-        ensureSession(id: sessionId)
-        guard let session = sessions.first(where: { $0.sessionId == sessionId }) else { return }
+        let normalized = Self.normalizeSessionId(sessionId)
+        ensureSession(id: normalized)
+        guard let session = sessions.first(where: { $0.sessionId == normalized }) else { return }
         session.isStreaming = true
         session.isThinking = false
         session.streamContent += chunk
@@ -170,8 +196,9 @@ final class SessionStore: ObservableObject {
     }
 
     func finalizeStream(sessionId: String, content: String) {
-        ensureSession(id: sessionId)
-        guard let session = sessions.first(where: { $0.sessionId == sessionId }) else { return }
+        let normalized = Self.normalizeSessionId(sessionId)
+        ensureSession(id: normalized)
+        guard let session = sessions.first(where: { $0.sessionId == normalized }) else { return }
         session.isStreaming = false
         session.isThinking = false
         session.streamContent = ""
@@ -179,8 +206,19 @@ final class SessionStore: ObservableObject {
         syncActive()
     }
 
+    func cancelStream(sessionId: String) {
+        let normalized = Self.normalizeSessionId(sessionId)
+        ensureSession(id: normalized)
+        guard let session = sessions.first(where: { $0.sessionId == normalized }) else { return }
+        session.isStreaming = false
+        session.isThinking = false
+        session.streamContent = ""
+        syncActive()
+    }
+
     func clearMessages(sessionId: String) {
-        guard let session = sessions.first(where: { $0.sessionId == sessionId }) else { return }
+        let normalized = Self.normalizeSessionId(sessionId)
+        guard let session = sessions.first(where: { $0.sessionId == normalized }) else { return }
         session.messages.removeAll()
         session.toolEvents.removeAll()
         session.streamContent = ""
@@ -189,9 +227,29 @@ final class SessionStore: ObservableObject {
         syncActive()
     }
 
+    func renameSession(sessionId: String, title: String) {
+        let normalized = Self.normalizeSessionId(sessionId)
+        guard let session = sessions.first(where: { $0.sessionId == normalized }) else { return }
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        session.title = trimmed.isEmpty ? nil : trimmed
+        syncActive()
+    }
+
     func addToolEvent(sessionId: String, tool: String, isStart: Bool, result: ToolResult? = nil) {
-        guard let session = sessions.first(where: { $0.sessionId == sessionId }) else { return }
+        let normalized = Self.normalizeSessionId(sessionId)
+        guard let session = sessions.first(where: { $0.sessionId == normalized }) else { return }
         session.toolEvents.append(ToolEvent(tool: tool, isStart: isStart, result: result))
+        syncActive()
+    }
+
+    func removeSession(sessionId: String) {
+        let normalized = Self.normalizeSessionId(sessionId)
+        sessions.removeAll { $0.sessionId == normalized }
+
+        if activeSessionId == normalized {
+            activeSessionId = sessions.first?.sessionId
+        }
+
         syncActive()
     }
 }

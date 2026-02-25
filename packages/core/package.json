@@ -1,6 +1,6 @@
 {
   "name": "@puukis/core",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "Keygate core - Gateway, Brain, and Tool executor",
   "type": "module",
   "main": "dist/index.js",
@@ -32,6 +32,9 @@
     "playwright": "^1.49.0",
     "ws": "^8.18.0",
     "zod": "^3.24.0"
+  },
+  "optionalDependencies": {
+    "keytar": "^7.9.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",

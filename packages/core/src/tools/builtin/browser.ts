@@ -38,14 +38,25 @@ export const navigateTool: Tool = {
   },
   requiresConfirmation: false,
   type: 'browser',
-  handler: async (args): Promise<ToolResult> => {
+  handler: async (args, context): Promise<ToolResult> => {
+    if (context.signal.aborted) {
+      return cancelledBrowserResult();
+    }
+
+    context.registerAbortCleanup(() => closeCurrentPage());
     const url = args['url'] as string;
     try {
       const page = await getPage();
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      if (context.signal.aborted) {
+        return cancelledBrowserResult();
+      }
       const title = await page.title();
       return { success: true, output: `Navigated to: ${title} (${url})` };
     } catch (error) {
+      if (context.signal.aborted) {
+        return cancelledBrowserResult();
+      }
       return {
         success: false,
         output: '',
@@ -77,15 +88,26 @@ export const screenshotTool: Tool = {
   },
   requiresConfirmation: false,
   type: 'browser',
-  handler: async (args): Promise<ToolResult> => {
+  handler: async (args, context): Promise<ToolResult> => {
+    if (context.signal.aborted) {
+      return cancelledBrowserResult();
+    }
+
+    context.registerAbortCleanup(() => closeCurrentPage());
     try {
       const page = await getPage();
       const outputPath = (args['path'] as string) || `/tmp/screenshot-${Date.now()}.png`;
       const fullPage = (args['fullPage'] as boolean) ?? false;
       
       await page.screenshot({ path: outputPath, fullPage });
+      if (context.signal.aborted) {
+        return cancelledBrowserResult();
+      }
       return { success: true, output: `Screenshot saved to: ${outputPath}` };
     } catch (error) {
+      if (context.signal.aborted) {
+        return cancelledBrowserResult();
+      }
       return {
         success: false,
         output: '',
@@ -113,13 +135,24 @@ export const clickTool: Tool = {
   },
   requiresConfirmation: true,
   type: 'browser',
-  handler: async (args): Promise<ToolResult> => {
+  handler: async (args, context): Promise<ToolResult> => {
+    if (context.signal.aborted) {
+      return cancelledBrowserResult();
+    }
+
+    context.registerAbortCleanup(() => closeCurrentPage());
     const selector = args['selector'] as string;
     try {
       const page = await getPage();
       await page.click(selector, { timeout: 10000 });
+      if (context.signal.aborted) {
+        return cancelledBrowserResult();
+      }
       return { success: true, output: `Clicked element: ${selector}` };
     } catch (error) {
+      if (context.signal.aborted) {
+        return cancelledBrowserResult();
+      }
       return {
         success: false,
         output: '',
@@ -151,14 +184,25 @@ export const typeTool: Tool = {
   },
   requiresConfirmation: true,
   type: 'browser',
-  handler: async (args): Promise<ToolResult> => {
+  handler: async (args, context): Promise<ToolResult> => {
+    if (context.signal.aborted) {
+      return cancelledBrowserResult();
+    }
+
+    context.registerAbortCleanup(() => closeCurrentPage());
     const selector = args['selector'] as string;
     const text = args['text'] as string;
     try {
       const page = await getPage();
       await page.fill(selector, text);
+      if (context.signal.aborted) {
+        return cancelledBrowserResult();
+      }
       return { success: true, output: `Typed "${text}" into ${selector}` };
     } catch (error) {
+      if (context.signal.aborted) {
+        return cancelledBrowserResult();
+      }
       return {
         success: false,
         output: '',
@@ -186,7 +230,12 @@ export const getContentTool: Tool = {
   },
   requiresConfirmation: false,
   type: 'browser',
-  handler: async (args): Promise<ToolResult> => {
+  handler: async (args, context): Promise<ToolResult> => {
+    if (context.signal.aborted) {
+      return cancelledBrowserResult();
+    }
+
+    context.registerAbortCleanup(() => closeCurrentPage());
     const selector = (args['selector'] as string) || 'body';
     try {
       const page = await getPage();
@@ -195,10 +244,16 @@ export const getContentTool: Tool = {
         return { success: false, output: '', error: `Element not found: ${selector}` };
       }
       const text = await element.innerText();
+      if (context.signal.aborted) {
+        return cancelledBrowserResult();
+      }
       // Truncate very long content
       const truncated = text.length > 5000 ? text.slice(0, 5000) + '...(truncated)' : text;
       return { success: true, output: truncated };
     } catch (error) {
+      if (context.signal.aborted) {
+        return cancelledBrowserResult();
+      }
       return {
         success: false,
         output: '',
@@ -226,3 +281,25 @@ export const browserTools: Tool[] = [
   typeTool,
   getContentTool,
 ];
+
+async function closeCurrentPage(): Promise<void> {
+  if (!currentPage || currentPage.isClosed()) {
+    return;
+  }
+
+  try {
+    await currentPage.close();
+  } catch {
+    // Ignore page shutdown races.
+  } finally {
+    currentPage = null;
+  }
+}
+
+function cancelledBrowserResult(): ToolResult {
+  return {
+    success: false,
+    output: '',
+    error: 'Browser action cancelled.',
+  };
+}

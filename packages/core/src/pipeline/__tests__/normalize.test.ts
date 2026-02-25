@@ -48,11 +48,26 @@ describe('normalize message helpers', () => {
 
   it('normalizes discord messages with discord session prefix', () => {
     const channel = createChannel('discord');
-    const normalized = normalizeDiscordMessage('msg-1', 'chan-1', 'user-1', 'hello', channel);
+    const normalized = normalizeDiscordMessage(
+      'msg-1',
+      'chan-1',
+      'user-1',
+      'hello',
+      channel,
+      [{
+        id: 'd-att-1',
+        filename: 'discord.png',
+        contentType: 'image/png',
+        sizeBytes: 42,
+        path: '/tmp/discord.png',
+        url: '/api/uploads/image?sessionId=discord%3Achan-1&id=d-att-1',
+      }],
+    );
 
     expect(normalized.id).toBe('msg-1');
     expect(normalized.sessionId).toBe('discord:chan-1');
     expect(normalized.channelType).toBe('discord');
+    expect(normalized.attachments?.[0]?.id).toBe('d-att-1');
   });
 
   it('normalizes terminal messages with terminal session prefix', () => {
@@ -66,12 +81,27 @@ describe('normalize message helpers', () => {
 
   it('normalizes slack messages with slack session prefix', () => {
     const channel = createChannel('slack');
-    const normalized = normalizeSlackMessage('msg-1', 'C12345', 'U99', 'hello from slack', channel);
+    const normalized = normalizeSlackMessage(
+      'msg-1',
+      'C12345',
+      'U99',
+      'hello from slack',
+      channel,
+      [{
+        id: 's-att-1',
+        filename: 'slack.png',
+        contentType: 'image/png',
+        sizeBytes: 64,
+        path: '/tmp/slack.png',
+        url: '/api/uploads/image?sessionId=slack%3AC12345&id=s-att-1',
+      }],
+    );
 
     expect(normalized.id).toBe('msg-1');
     expect(normalized.sessionId).toBe('slack:C12345');
     expect(normalized.channelType).toBe('slack');
     expect(normalized.userId).toBe('U99');
     expect(normalized.content).toBe('hello from slack');
+    expect(normalized.attachments?.[0]?.id).toBe('s-att-1');
   });
 });

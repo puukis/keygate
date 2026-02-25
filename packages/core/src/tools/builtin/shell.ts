@@ -24,14 +24,36 @@ export const shellTool: Tool = {
   },
   requiresConfirmation: true,
   type: 'shell',
-  handler: async (args): Promise<ToolResult> => {
+  handler: async (args, context): Promise<ToolResult> => {
+    if (context.signal.aborted) {
+      return cancelledToolResult();
+    }
+
     const command = args['command'] as string;
     const cwd = args['cwd'] as string | undefined;
     
     return new Promise((resolve) => {
+      let settled = false;
+
+      const finish = (result: ToolResult) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        resolve(result);
+      };
+
       // Parse command into binary and args
       const parts = command.match(/(?:[^\s"]+|"[^"]*")+/g) ?? [];
       const binary = parts[0] ?? '';
+      if (!binary) {
+        finish({
+          success: false,
+          output: '',
+          error: 'Command is empty.',
+        });
+        return;
+      }
       const cmdArgs = parts.slice(1).map(arg => arg.replace(/^"|"$/g, ''));
 
       const proc = spawn(binary, cmdArgs, {
@@ -40,6 +62,33 @@ export const shellTool: Tool = {
         env: buildToolProcessEnv(),
         timeout: 60000, // 60 second timeout
       });
+
+      const abortNow = () => {
+        if (proc.killed) {
+          return;
+        }
+
+        try {
+          proc.kill('SIGTERM');
+        } catch {
+          // Ignore cancellation races.
+        }
+      };
+
+      const forceStop = () => {
+        if (proc.killed) {
+          return;
+        }
+
+        try {
+          proc.kill('SIGKILL');
+        } catch {
+          // Ignore force-stop races.
+        }
+      };
+
+      context.registerAbortCleanup(forceStop);
+      context.signal.addEventListener('abort', abortNow, { once: true });
 
       let stdout = '';
       let stderr = '';
@@ -53,13 +102,19 @@ export const shellTool: Tool = {
       });
 
       proc.on('close', (code) => {
+        context.signal.removeEventListener('abort', abortNow);
+        if (context.signal.aborted) {
+          finish(cancelledToolResult(stdout));
+          return;
+        }
+
         if (code === 0) {
-          resolve({
+          finish({
             success: true,
             output: stdout || '(no output)',
           });
         } else {
-          resolve({
+          finish({
             success: false,
             output: stdout,
             error: stderr || `Command exited with code ${code}`,
@@ -68,7 +123,13 @@ export const shellTool: Tool = {
       });
 
       proc.on('error', (error) => {
-        resolve({
+        context.signal.removeEventListener('abort', abortNow);
+        if (context.signal.aborted) {
+          finish(cancelledToolResult(stdout));
+          return;
+        }
+
+        finish({
           success: false,
           output: '',
           error: error.message,
@@ -79,3 +140,11 @@ export const shellTool: Tool = {
 };
 
 export const shellTools: Tool[] = [shellTool];
+
+function cancelledToolResult(output = ''): ToolResult {
+  return {
+    success: false,
+    output,
+    error: 'Command cancelled.',
+  };
+}

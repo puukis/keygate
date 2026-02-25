@@ -4,6 +4,7 @@ import Foundation
 
 enum ClientMessage {
     case message(content: String, attachments: [Attachment]? = nil)
+    case cancelSession(sessionId: String)
     case confirmResponse(decision: ConfirmDecision)
     case getSessionSnapshot
     case newSession
@@ -28,6 +29,8 @@ enum ClientMessage {
                 }
             }
             return dict
+        case .cancelSession(let sessionId):
+            return ["type": "cancel_session", "sessionId": sessionId]
         case .confirmResponse(let decision):
             return ["type": "confirm_response", "decision": decision.rawValue]
         case .getSessionSnapshot:

@@ -1,7 +1,6 @@
 import { createServer } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { Gateway } from '../gateway/index.js';
@@ -27,18 +26,26 @@ import type {
   Session,
   SecurityMode,
 } from '../types.js';
+import {
+  IMAGE_UPLOAD_MAX_BYTES,
+  cleanupExpiredUploadedImages as cleanupExpiredUploadedImagesFromStore,
+  getUploadContentType,
+  isUploadPathAllowedForSession,
+  normalizeUploadMimeType,
+  persistUploadedImage,
+  resolveMessageAttachmentRefs,
+  resolveUploadPathByAttachmentId as resolveUploadPathByAttachmentIdFromStore,
+  sanitizeUploadAttachmentId as sanitizeUploadAttachmentIdFromStore,
+  sanitizeUploadSessionId as sanitizeUploadSessionIdFromStore,
+  type UploadAttachmentRef,
+} from '../attachments/uploadStore.js';
 
-interface WSAttachmentRef {
-  id: string;
-  filename: string;
-  contentType: string;
-  sizeBytes: number;
-  url: string;
-}
+type WSAttachmentRef = UploadAttachmentRef;
 
 interface WSMessage {
   type:
     | 'message'
+    | 'cancel_session'
     | 'get_session_snapshot'
     | 'confirm_response'
     | 'set_mode'
@@ -159,14 +166,6 @@ const DEFAULT_DISCORD_PREFIX = '!keygate ';
 const BROWSER_RETENTION_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const IMAGE_UPLOAD_RETENTION_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const IMAGE_UPLOAD_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
-const IMAGE_UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
-const MAX_MESSAGE_ATTACHMENTS = 5;
-const IMAGE_UPLOAD_ALLOWED_MIME_TYPES = new Set([
-  'image/png',
-  'image/jpeg',
-  'image/webp',
-  'image/gif',
-]);
 
 /**
  * WebSocket Channel adapter
@@ -310,12 +309,12 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
     });
   }, BROWSER_RETENTION_CLEANUP_INTERVAL_MS);
 
-  void cleanupExpiredUploadedImages(config.security.workspacePath, IMAGE_UPLOAD_RETENTION_MS).catch((error) => {
+  void cleanupExpiredUploadedImagesFromStore(config.security.workspacePath, IMAGE_UPLOAD_RETENTION_MS).catch((error) => {
     console.warn('Failed initial uploaded image cleanup:', error);
   });
 
   const uploadCleanupInterval = setInterval(() => {
-    void cleanupExpiredUploadedImages(config.security.workspacePath, IMAGE_UPLOAD_RETENTION_MS).catch((error) => {
+    void cleanupExpiredUploadedImagesFromStore(config.security.workspacePath, IMAGE_UPLOAD_RETENTION_MS).catch((error) => {
       console.warn('Failed periodic uploaded image cleanup:', error);
     });
   }, IMAGE_UPLOAD_RETENTION_CLEANUP_INTERVAL_MS);
@@ -433,6 +432,14 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
 
           case 'get_session_snapshot': {
             ws.send(JSON.stringify(buildSessionSnapshotPayload(gateway, webSessionId)));
+            break;
+          }
+
+          case 'cancel_session': {
+            const cancelSessionId = typeof msg.sessionId === 'string' && msg.sessionId.trim().length > 0
+              ? msg.sessionId.trim()
+              : webSessionId;
+            gateway.cancelSessionRun(cancelSessionId, 'user');
             break;
           }
 
@@ -583,22 +590,26 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
               break;
             }
 
-            gateway.deleteSession(targetSessionId);
+            const deletedSessionId = gateway.deleteSession(targetSessionId);
 
-            // If the deleted session was the active one, create a new session
-            if (targetSessionId === webSessionId) {
-              const replacement = gateway.createWebSession();
-              channel.setSessionId(replacement.id);
-              webSessionId = replacement.id;
+            // If the deleted session was active, switch to another web session or create one.
+            if (deletedSessionId === webSessionId) {
+              const fallbackWebSession = gateway
+                .listSessions()
+                .find((session) => session.channelType === 'web');
+
+              const nextSession = fallbackWebSession ?? gateway.createWebSession();
+              channel.setSessionId(nextSession.id);
+              webSessionId = nextSession.id;
               ws.send(JSON.stringify({
                 type: 'session_switched',
-                sessionId: replacement.id,
+                sessionId: nextSession.id,
               }));
             }
 
             ws.send(JSON.stringify({
               type: 'session_deleted',
-              sessionId: targetSessionId,
+              sessionId: deletedSessionId,
             }));
             ws.send(JSON.stringify(buildSessionSnapshotPayload(gateway, webSessionId)));
             break;
@@ -977,6 +988,7 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
     });
 
     ws.on('close', () => {
+      gateway.cancelSessionRun(webSessionId, 'disconnect');
       channel.handleDisconnect();
       console.log(`Client disconnected: ${sessionId}`);
       channels.delete(sessionId);
@@ -1022,6 +1034,10 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
 
   gateway.on('context:usage', (event) => {
     broadcast(wss, { type: 'context_usage', ...event });
+  });
+
+  gateway.on('session:cancelled', (event) => {
+    broadcast(wss, { type: 'session_cancelled', ...event });
   });
 
   server.listen(config.server.port, () => {
@@ -1097,7 +1113,7 @@ export function buildSessionSnapshotPayload(
 ): Record<string, unknown> {
   const sessions = gateway.listSessions();
   const visibleSessions = sessions.filter((session) => (
-    session.id === webSessionId || session.channelType === 'discord' || session.channelType === 'terminal' || session.channelType === 'slack'
+    session.channelType === 'web' || session.channelType === 'discord' || session.channelType === 'terminal' || session.channelType === 'slack'
   ));
 
   if (!visibleSessions.some((session) => session.id === webSessionId)) {
@@ -1743,11 +1759,6 @@ export async function handleImageUploadRequest(
   }
 
   const contentType = normalizeUploadMimeType(req.headers['content-type']);
-  if (!IMAGE_UPLOAD_ALLOWED_MIME_TYPES.has(contentType)) {
-    res.writeHead(415, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Only png, jpeg, webp, and gif images are supported.' }));
-    return;
-  }
 
   let body: Buffer;
   try {
@@ -1760,37 +1771,22 @@ export async function handleImageUploadRequest(
     return;
   }
 
-  if (body.length === 0) {
-    res.writeHead(400, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Image payload cannot be empty.' }));
+  let attachment: MessageAttachment;
+  try {
+    attachment = await persistUploadedImage(workspacePath, sessionId, {
+      bytes: body,
+      contentType,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Image upload failed.';
+    const statusCode = message.includes('supported') ? 415 : 400;
+    res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: message }));
     return;
   }
-
-  const attachmentId = randomUUID();
-  const extension = imageExtensionForMimeType(contentType);
-  const filename = `upload-${attachmentId}${extension}`;
-  const sessionUploadsDir = getSessionUploadsDir(workspacePath, sessionId);
-  const targetPath = path.resolve(path.join(sessionUploadsDir, `${attachmentId}${extension}`));
-
-  if (!isPathWithinRoot(sessionUploadsDir, targetPath)) {
-    res.writeHead(400, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Invalid upload path.' }));
-    return;
-  }
-
-  await fs.mkdir(sessionUploadsDir, { recursive: true });
-  await fs.writeFile(targetPath, body);
-
-  const attachment = {
-    id: attachmentId,
-    filename,
-    contentType,
-    sizeBytes: body.length,
-    url: buildUploadedImageUrl(sessionId, attachmentId),
-  };
 
   res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify(attachment));
+  res.end(JSON.stringify(mapUploadedAttachmentForTransport(attachment)));
 }
 
 export async function serveUploadedImageById(
@@ -1820,15 +1816,14 @@ export async function serveUploadedImageById(
     return;
   }
 
-  const sessionUploadsDir = getSessionUploadsDir(workspacePath, sessionId);
-  if (!isPathWithinRoot(sessionUploadsDir, imagePath)) {
+  if (!isUploadPathAllowedForSession(workspacePath, sessionId, imagePath)) {
     res.writeHead(403, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Upload path is outside the allowed root.' }));
     return;
   }
 
   res.writeHead(200, {
-    'Content-Type': getContentType(imagePath),
+    'Content-Type': getUploadContentType(imagePath),
     'Cache-Control': 'no-cache',
   });
 
@@ -1846,66 +1841,7 @@ export async function resolveWebMessageAttachments(
   sessionId: string,
   refs: WSAttachmentRef[] | undefined
 ): Promise<MessageAttachment[]> {
-  if (!refs) {
-    return [];
-  }
-
-  if (refs.length > MAX_MESSAGE_ATTACHMENTS) {
-    throw new Error(`A maximum of ${MAX_MESSAGE_ATTACHMENTS} image attachments are allowed per message.`);
-  }
-
-  const seen = new Set<string>();
-  const attachments: MessageAttachment[] = [];
-
-  for (const ref of refs) {
-    if (!ref || typeof ref !== 'object') {
-      throw new Error('Attachment payload is invalid.');
-    }
-
-    const attachmentId = sanitizeUploadAttachmentId(ref.id);
-    if (!attachmentId) {
-      throw new Error('Attachment id is invalid.');
-    }
-
-    if (seen.has(attachmentId)) {
-      continue;
-    }
-    seen.add(attachmentId);
-
-    const imagePath = await resolveUploadPathByAttachmentId(workspacePath, sessionId, attachmentId);
-    if (!imagePath) {
-      throw new Error(`Attachment ${attachmentId} no longer exists. Please upload it again.`);
-    }
-
-    const stat = await fs.stat(imagePath);
-    if (!stat.isFile()) {
-      throw new Error(`Attachment ${attachmentId} is invalid.`);
-    }
-
-    if (stat.size > IMAGE_UPLOAD_MAX_BYTES) {
-      throw new Error(`Attachment ${attachmentId} exceeds the ${IMAGE_UPLOAD_MAX_BYTES} byte limit.`);
-    }
-
-    const contentType = normalizeUploadMimeType(getContentType(imagePath));
-    if (!IMAGE_UPLOAD_ALLOWED_MIME_TYPES.has(contentType)) {
-      throw new Error(`Attachment ${attachmentId} has an unsupported content type.`);
-    }
-
-    const filename = typeof ref.filename === 'string' && ref.filename.trim().length > 0
-      ? ref.filename.trim()
-      : path.basename(imagePath);
-
-    attachments.push({
-      id: attachmentId,
-      filename,
-      contentType,
-      sizeBytes: stat.size,
-      path: imagePath,
-      url: buildUploadedImageUrl(sessionId, attachmentId),
-    });
-  }
-
-  return attachments;
+  return resolveMessageAttachmentRefs(workspacePath, sessionId, refs);
 }
 
 async function readRequestBody(
@@ -1939,120 +1875,15 @@ async function readRequestBody(
 }
 
 export async function cleanupExpiredUploadedImages(workspacePath: string, retentionMs: number): Promise<void> {
-  const uploadsRoot = getUploadsRoot(workspacePath);
-  const expiryCutoff = Date.now() - retentionMs;
-  await cleanupUploadDirectory(uploadsRoot, uploadsRoot, expiryCutoff);
-}
-
-async function cleanupUploadDirectory(rootDir: string, currentDir: string, cutoffTimeMs: number): Promise<void> {
-  let entries: import('node:fs').Dirent[] = [];
-
-  try {
-    entries = await fs.readdir(currentDir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-
-  for (const entry of entries) {
-    const resolvedPath = path.resolve(path.join(currentDir, entry.name));
-    if (!isPathWithinRoot(rootDir, resolvedPath)) {
-      continue;
-    }
-
-    if (entry.isDirectory()) {
-      await cleanupUploadDirectory(rootDir, resolvedPath, cutoffTimeMs);
-      continue;
-    }
-
-    if (!entry.isFile()) {
-      continue;
-    }
-
-    try {
-      const stat = await fs.stat(resolvedPath);
-      if (stat.mtimeMs < cutoffTimeMs) {
-        await fs.unlink(resolvedPath);
-      }
-    } catch {
-      // Ignore files that disappear during cleanup.
-    }
-  }
-
-  if (currentDir !== rootDir) {
-    try {
-      const remaining = await fs.readdir(currentDir);
-      if (remaining.length === 0) {
-        await fs.rmdir(currentDir);
-      }
-    } catch {
-      // Ignore cleanup races.
-    }
-  }
-}
-
-function getUploadsRoot(workspacePath: string): string {
-  return path.resolve(path.join(workspacePath, '.keygate-uploads'));
-}
-
-function getSessionUploadsDir(workspacePath: string, sessionId: string): string {
-  return path.resolve(path.join(getUploadsRoot(workspacePath), sessionId));
-}
-
-function normalizeUploadMimeType(value: string | undefined): string {
-  if (!value) {
-    return '';
-  }
-
-  return value.split(';', 1)[0]?.trim().toLowerCase() ?? '';
-}
-
-function imageExtensionForMimeType(contentType: string): string {
-  switch (contentType) {
-    case 'image/png':
-      return '.png';
-    case 'image/jpeg':
-      return '.jpg';
-    case 'image/webp':
-      return '.webp';
-    case 'image/gif':
-      return '.gif';
-    default:
-      return '.bin';
-  }
+  await cleanupExpiredUploadedImagesFromStore(workspacePath, retentionMs);
 }
 
 export function sanitizeUploadSessionId(value: string | null): string | null {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  if (!/^[A-Za-z0-9:_-]+$/.test(trimmed)) {
-    return null;
-  }
-
-  return trimmed;
+  return sanitizeUploadSessionIdFromStore(value);
 }
 
 export function sanitizeUploadAttachmentId(value: string | null): string | null {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  if (!/^[A-Za-z0-9_-]+$/.test(trimmed)) {
-    return null;
-  }
-
-  return trimmed;
+  return sanitizeUploadAttachmentIdFromStore(value);
 }
 
 export async function resolveUploadPathByAttachmentId(
@@ -2060,32 +1891,17 @@ export async function resolveUploadPathByAttachmentId(
   sessionId: string,
   attachmentId: string
 ): Promise<string | null> {
-  const sessionUploadsDir = getSessionUploadsDir(workspacePath, sessionId);
-  const extensions = ['.png', '.jpg', '.jpeg', '.webp', '.gif'];
-
-  for (const extension of extensions) {
-    const candidate = path.resolve(path.join(sessionUploadsDir, `${attachmentId}${extension}`));
-    if (!isPathWithinRoot(sessionUploadsDir, candidate)) {
-      continue;
-    }
-
-    try {
-      const stat = await fs.stat(candidate);
-      if (stat.isFile()) {
-        return candidate;
-      }
-    } catch {
-      // Try next extension.
-    }
-  }
-
-  return null;
+  return resolveUploadPathByAttachmentIdFromStore(workspacePath, sessionId, attachmentId);
 }
 
-function buildUploadedImageUrl(sessionId: string, attachmentId: string): string {
-  const sessionParam = encodeURIComponent(sessionId);
-  const idParam = encodeURIComponent(attachmentId);
-  return `/api/uploads/image?sessionId=${sessionParam}&id=${idParam}`;
+function mapUploadedAttachmentForTransport(attachment: MessageAttachment): WSAttachmentRef {
+  return {
+    id: attachment.id,
+    filename: attachment.filename,
+    contentType: attachment.contentType,
+    sizeBytes: attachment.sizeBytes,
+    url: attachment.url,
+  };
 }
 
 

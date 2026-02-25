@@ -573,6 +573,17 @@
   background: var(--accent-hover);
 }
 
+.send-btn.send-btn-stop {
+  border: 1px solid color-mix(in srgb, var(--text-danger-strong) 35%, var(--border));
+  background: color-mix(in srgb, var(--text-danger-strong) 10%, var(--surface-solid));
+  color: var(--text-danger-strong);
+}
+
+.send-btn.send-btn-stop:hover:not(:disabled) {
+  border-color: var(--text-danger-strong);
+  background: color-mix(in srgb, var(--text-danger-strong) 16%, var(--surface-solid));
+}
+
 .spinner {
   width: 16px;
   height: 16px;

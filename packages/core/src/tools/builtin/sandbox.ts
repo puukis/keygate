@@ -23,7 +23,11 @@ export const runJavaScriptTool: Tool = {
   },
   requiresConfirmation: true,
   type: 'sandbox',
-  handler: async (args): Promise<ToolResult> => {
+  handler: async (args, context): Promise<ToolResult> => {
+    if (context.signal.aborted) {
+      return cancelledToolResult();
+    }
+
     const code = args['code'] as string;
     
     // Create a temp file for the code
@@ -47,11 +51,46 @@ __result.then(r => {
       await fs.writeFile(tmpFile, wrappedCode, 'utf-8');
       
       return new Promise((resolve) => {
+        let settled = false;
+        const finish = async (result: ToolResult) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+          resolve(result);
+        };
+
         const proc = spawn('node', [tmpFile], {
           timeout: 30000, // 30 second timeout
           cwd: tmpDir,
           env: buildToolProcessEnv(),
         });
+
+        const abortNow = () => {
+          if (proc.killed) {
+            return;
+          }
+
+          try {
+            proc.kill('SIGTERM');
+          } catch {
+            // Ignore cancellation races.
+          }
+        };
+        const forceStop = () => {
+          if (proc.killed) {
+            return;
+          }
+
+          try {
+            proc.kill('SIGKILL');
+          } catch {
+            // Ignore force-stop races.
+          }
+        };
+        context.registerAbortCleanup(forceStop);
+        context.signal.addEventListener('abort', abortNow, { once: true });
 
         let stdout = '';
         let stderr = '';
@@ -65,16 +104,20 @@ __result.then(r => {
         });
 
         proc.on('close', async (code) => {
-          // Cleanup
-          await fs.rm(tmpDir, { recursive: true, force: true });
+          context.signal.removeEventListener('abort', abortNow);
+
+          if (context.signal.aborted) {
+            await finish(cancelledToolResult(stdout.trim()));
+            return;
+          }
 
           if (code === 0) {
-            resolve({
+            await finish({
               success: true,
               output: stdout.trim() || '(no output)',
             });
           } else {
-            resolve({
+            await finish({
               success: false,
               output: stdout,
               error: stderr || `Script exited with code ${code}`,
@@ -83,8 +126,13 @@ __result.then(r => {
         });
 
         proc.on('error', async (error) => {
-          await fs.rm(tmpDir, { recursive: true, force: true });
-          resolve({
+          context.signal.removeEventListener('abort', abortNow);
+          if (context.signal.aborted) {
+            await finish(cancelledToolResult(stdout.trim()));
+            return;
+          }
+
+          await finish({
             success: false,
             output: '',
             error: error.message,
@@ -120,7 +168,11 @@ export const runPythonTool: Tool = {
   },
   requiresConfirmation: true,
   type: 'sandbox',
-  handler: async (args): Promise<ToolResult> => {
+  handler: async (args, context): Promise<ToolResult> => {
+    if (context.signal.aborted) {
+      return cancelledToolResult();
+    }
+
     const code = args['code'] as string;
     
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'keygate-py-'));
@@ -130,11 +182,46 @@ export const runPythonTool: Tool = {
       await fs.writeFile(tmpFile, code, 'utf-8');
       
       return new Promise((resolve) => {
+        let settled = false;
+        const finish = async (result: ToolResult) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+          resolve(result);
+        };
+
         const proc = spawn('python3', [tmpFile], {
           timeout: 30000,
           cwd: tmpDir,
           env: buildToolProcessEnv(),
         });
+
+        const abortNow = () => {
+          if (proc.killed) {
+            return;
+          }
+
+          try {
+            proc.kill('SIGTERM');
+          } catch {
+            // Ignore cancellation races.
+          }
+        };
+        const forceStop = () => {
+          if (proc.killed) {
+            return;
+          }
+
+          try {
+            proc.kill('SIGKILL');
+          } catch {
+            // Ignore force-stop races.
+          }
+        };
+        context.registerAbortCleanup(forceStop);
+        context.signal.addEventListener('abort', abortNow, { once: true });
 
         let stdout = '';
         let stderr = '';
@@ -148,15 +235,20 @@ export const runPythonTool: Tool = {
         });
 
         proc.on('close', async (code) => {
-          await fs.rm(tmpDir, { recursive: true, force: true });
+          context.signal.removeEventListener('abort', abortNow);
+
+          if (context.signal.aborted) {
+            await finish(cancelledToolResult(stdout.trim()));
+            return;
+          }
 
           if (code === 0) {
-            resolve({
+            await finish({
               success: true,
               output: stdout.trim() || '(no output)',
             });
           } else {
-            resolve({
+            await finish({
               success: false,
               output: stdout,
               error: stderr || `Script exited with code ${code}`,
@@ -165,8 +257,13 @@ export const runPythonTool: Tool = {
         });
 
         proc.on('error', async (error) => {
-          await fs.rm(tmpDir, { recursive: true, force: true });
-          resolve({
+          context.signal.removeEventListener('abort', abortNow);
+          if (context.signal.aborted) {
+            await finish(cancelledToolResult(stdout.trim()));
+            return;
+          }
+
+          await finish({
             success: false,
             output: '',
             error: error.message,
@@ -185,3 +282,11 @@ export const runPythonTool: Tool = {
 };
 
 export const sandboxTools: Tool[] = [runJavaScriptTool, runPythonTool];
+
+function cancelledToolResult(output = ''): ToolResult {
+  return {
+    success: false,
+    output,
+    error: 'Execution cancelled.',
+  };
+}

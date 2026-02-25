@@ -9,7 +9,9 @@ import type {
   NormalizedMessage,
   ProviderModelOption,
   SecurityMode,
+  SessionCancelReason,
   Session,
+  ToolExecutionContext,
 } from '../types.js';
 import { LaneQueue } from './LaneQueue.js';
 import { Brain } from '../brain/Brain.js';
@@ -20,6 +22,16 @@ import { AgentMemoryStore } from '../db/agentMemory.js';
 import { createLLMProvider } from '../llm/index.js';
 import { SkillsManager } from '../skills/index.js';
 import { allBuiltinTools } from '../tools/builtin/index.js';
+
+const CANCEL_HARD_STOP_TIMEOUT_MS = 2_000;
+
+interface ActiveSessionRun {
+  sessionId: string;
+  controller: AbortController;
+  abortCleanups: Set<() => void | Promise<void>>;
+  hardStopTimer: NodeJS.Timeout | null;
+  cancelledReason: SessionCancelReason | null;
+}
 
 /**
  * Gateway - The central hub of Keygate
@@ -35,6 +47,7 @@ export class Gateway extends EventEmitter<KeygateEvents> {
 
   private sessions = new Map<string, Session>();
   private laneQueues = new Map<string, LaneQueue>();
+  private activeRuns = new Map<string, ActiveSessionRun>();
   private securityMode: SecurityMode = 'safe';
 
   public readonly brain: Brain;
@@ -92,7 +105,12 @@ export class Gateway extends EventEmitter<KeygateEvents> {
    * Reset the singleton (for testing)
    */
   static reset(): void {
-    Gateway.instance?.skills.stop();
+    if (Gateway.instance) {
+      Gateway.instance.skills.stop();
+      for (const sessionId of Gateway.instance.activeRuns.keys()) {
+        Gateway.instance.cancelSessionRun(sessionId, 'disconnect');
+      }
+    }
     Gateway.instance = null;
   }
 
@@ -131,6 +149,19 @@ export class Gateway extends EventEmitter<KeygateEvents> {
         attachments: message.attachments,
       });
 
+      const run = this.startSessionRun(message.sessionId);
+      const runContext: ToolExecutionContext = {
+        signal: run.controller.signal,
+        registerAbortCleanup: (cleanup) => {
+          if (run.controller.signal.aborted) {
+            this.runAbortCleanup(cleanup);
+            return;
+          }
+
+          run.abortCleanups.add(cleanup);
+        },
+      };
+
       // Emit start event
       this.emit('message:start', {
         sessionId: message.sessionId,
@@ -139,7 +170,7 @@ export class Gateway extends EventEmitter<KeygateEvents> {
 
       try {
         if (slashResolution.kind === 'dispatch') {
-          await this.handleSlashToolDispatch(message, session, slashResolution);
+          await this.handleSlashToolDispatch(message, session, slashResolution, runContext);
           return;
         }
 
@@ -147,6 +178,7 @@ export class Gateway extends EventEmitter<KeygateEvents> {
         let response = '';
         const stream = this.brain.runStream(session, message.channel, {
           explicitSkillInvocation,
+          runContext,
         });
         const gateway = this;
 
@@ -162,6 +194,9 @@ export class Gateway extends EventEmitter<KeygateEvents> {
         };
 
         await message.channel.sendStream(captureStream());
+        if (runContext.signal.aborted) {
+          return;
+        }
         const finalResponse = formatCapabilitiesAndLimitsForReadability(response || '(No response)');
 
         // Add assistant response to history
@@ -181,6 +216,10 @@ export class Gateway extends EventEmitter<KeygateEvents> {
           content: finalResponse,
         });
       } catch (error) {
+        if (isAbortError(error) || runContext.signal.aborted) {
+          return;
+        }
+
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         const errorResponse = `Error: ${errorMessage}`;
 
@@ -200,12 +239,73 @@ export class Gateway extends EventEmitter<KeygateEvents> {
           sessionId: message.sessionId,
           content: errorResponse,
         });
+      } finally {
+        this.finishSessionRun(message.sessionId, run);
       }
     });
   }
 
   getSkillsStatus(sessionId = 'default'): { loadedCount: number; eligibleCount: number; snapshotVersion: string } {
     return this.skills.getStatusSync(sessionId);
+  }
+
+  cancelSessionRun(sessionId: string, reason: SessionCancelReason): void {
+    const run = this.activeRuns.get(sessionId);
+    if (!run) {
+      return;
+    }
+
+    if (run.controller.signal.aborted) {
+      return;
+    }
+
+    run.cancelledReason = reason;
+    run.controller.abort();
+
+    if (!run.hardStopTimer) {
+      run.hardStopTimer = setTimeout(() => {
+        for (const cleanup of run.abortCleanups) {
+          this.runAbortCleanup(cleanup);
+        }
+        run.abortCleanups.clear();
+      }, CANCEL_HARD_STOP_TIMEOUT_MS);
+    }
+
+    this.emit('session:cancelled', { sessionId, reason });
+  }
+
+  private startSessionRun(sessionId: string): ActiveSessionRun {
+    const previous = this.activeRuns.get(sessionId);
+    if (previous) {
+      this.finishSessionRun(sessionId, previous);
+    }
+
+    const run: ActiveSessionRun = {
+      sessionId,
+      controller: new AbortController(),
+      abortCleanups: new Set(),
+      hardStopTimer: null,
+      cancelledReason: null,
+    };
+    this.activeRuns.set(sessionId, run);
+    return run;
+  }
+
+  private finishSessionRun(sessionId: string, run: ActiveSessionRun): void {
+    if (run.hardStopTimer) {
+      clearTimeout(run.hardStopTimer);
+    }
+    run.abortCleanups.clear();
+
+    if (this.activeRuns.get(sessionId) === run) {
+      this.activeRuns.delete(sessionId);
+    }
+  }
+
+  private runAbortCleanup(cleanup: () => void | Promise<void>): void {
+    Promise.resolve(cleanup()).catch((error) => {
+      console.warn('Failed to run abort cleanup:', error);
+    });
   }
 
   private async handleSlashToolDispatch(
@@ -216,7 +316,8 @@ export class Gateway extends EventEmitter<KeygateEvents> {
       toolName: string;
       args: Record<string, string>;
       envOverlay: Record<string, string>;
-    }
+    },
+    runContext?: ToolExecutionContext,
   ): Promise<void> {
     const toolCall = {
       id: randomUUID(),
@@ -228,7 +329,8 @@ export class Gateway extends EventEmitter<KeygateEvents> {
       toolCall,
       message.channel,
       message.sessionId,
-      slashResolution.envOverlay
+      slashResolution.envOverlay,
+      runContext,
     );
 
     const finalResponse = formatCapabilitiesAndLimitsForReadability(
@@ -468,6 +570,8 @@ export class Gateway extends EventEmitter<KeygateEvents> {
    * Clear a session's message history
    */
   clearSession(sessionId: string): void {
+    this.cancelSessionRun(sessionId, 'user');
+
     const session = this.sessions.get(sessionId);
     const attachmentPaths = new Set<string>([
       ...collectAttachmentPaths(session?.messages ?? []),
@@ -494,25 +598,31 @@ export class Gateway extends EventEmitter<KeygateEvents> {
   /**
    * Delete a session entirely (memory + database)
    */
-  deleteSession(sessionId: string): void {
-    const session = this.sessions.get(sessionId);
+  deleteSession(sessionId: string): string {
+    const resolvedSessionId = this.resolveSessionIdForMutation(sessionId);
+
+    this.cancelSessionRun(resolvedSessionId, 'user');
+
+    const session = this.sessions.get(resolvedSessionId);
     const attachmentPaths = new Set<string>([
       ...collectAttachmentPaths(session?.messages ?? []),
-      ...this.db.getSessionAttachmentPaths(sessionId),
+      ...this.db.getSessionAttachmentPaths(resolvedSessionId),
     ]);
 
     void this.removeAttachmentFiles(attachmentPaths).catch((error) => {
       console.error('Failed to remove session attachments:', error);
     });
 
-    this.sessions.delete(sessionId);
-    this.laneQueues.delete(sessionId);
+    this.sessions.delete(resolvedSessionId);
+    this.laneQueues.delete(resolvedSessionId);
 
     try {
-      this.db.deleteSession(sessionId);
+      this.db.deleteSession(resolvedSessionId);
     } catch (error) {
       console.error('Failed to delete persisted session:', error);
     }
+
+    return resolvedSessionId;
   }
 
   /**
@@ -531,6 +641,34 @@ export class Gateway extends EventEmitter<KeygateEvents> {
     } catch (error) {
       console.error('Failed to update session title:', error);
     }
+  }
+
+  private resolveSessionIdForMutation(sessionId: string): string {
+    const trimmed = sessionId.trim();
+    if (!trimmed) {
+      return sessionId;
+    }
+
+    if (this.sessionExists(trimmed)) {
+      return trimmed;
+    }
+
+    if (!trimmed.includes(':')) {
+      const prefixed = `web:${trimmed}`;
+      if (this.sessionExists(prefixed)) {
+        return prefixed;
+      }
+    }
+
+    return trimmed;
+  }
+
+  private sessionExists(sessionId: string): boolean {
+    if (this.sessions.has(sessionId)) {
+      return true;
+    }
+
+    return this.db.getSession(sessionId) !== null;
   }
 
   private persistSessionSnapshot(
@@ -621,4 +759,8 @@ function isPathWithinRoot(rootDir: string, targetPath: string): boolean {
   }
 
   return resolvedTarget.startsWith(`${resolvedRoot}${path.sep}`);
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
 }

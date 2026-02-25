@@ -7,6 +7,7 @@ import type {
   ProviderModelOption,
   Session,
   ToolCall,
+  ToolExecutionContext,
 } from '../types.js';
 import type { ToolExecutor } from '../tools/ToolExecutor.js';
 import type { Gateway } from '../gateway/Gateway.js';
@@ -46,6 +47,9 @@ Trust and safety:
 - Be careful with external/public actions and ask when in doubt.
 - Keep private information private.
 - Never claim you completed an action unless a tool result confirms it.
+- For file searches, stay inside the active workspace unless the user explicitly asks for another path.
+- Do not assume paths exist (for example /home/node/Documents or ~/Documents). Verify with tool output first.
+- Skip heavy dependency/build folders by default when searching: node_modules, .git, dist, build, .next, coverage, vendor.
 - When summarizing capabilities or limits, use section headings with one bullet per line.
 - Never format lists inline like "Heading: - item - item".`;
 
@@ -66,6 +70,11 @@ export const SPICY_MAX_OBEDIENCE_PROMPT = `\n\nSPICY MAX-OBEDIENCE MODE (BEST-EF
 
 const MAX_IMAGE_CONTEXT_USER_TURNS = 3;
 const DEFAULT_MAX_CONCURRENT_TOOLS = 4;
+
+interface BrainRunOptions {
+  explicitSkillInvocation?: { name: string; commandName: string; rawArgs: string };
+  runContext?: ToolExecutionContext;
+}
 
 /**
  * Simple concurrency limiter (semaphore).
@@ -121,8 +130,9 @@ export class Brain {
   async run(
     session: Session,
     channel: Channel,
-    options: { explicitSkillInvocation?: { name: string; commandName: string; rawArgs: string } } = {}
+    options: BrainRunOptions = {}
   ): Promise<string> {
+    throwIfAborted(options.runContext?.signal);
     if (await this.shouldSendDeterministicBootstrap(session)) {
       return FIRST_CHAT_BOOTSTRAP_MESSAGE;
     }
@@ -148,16 +158,19 @@ export class Brain {
     let iterations = 0;
 
     while (iterations < this.maxIterations) {
+      throwIfAborted(options.runContext?.signal);
       iterations++;
       const truncated = truncateMessages(messages, contextLimit);
       const providerMessages = prepareMessagesForProvider(truncated, this.llm.name);
       this.emitContextUsage(session.id, providerMessages, contextLimit);
 
       // Call LLM with tools
+      throwIfAborted(options.runContext?.signal);
       const response = await this.llm.chat(providerMessages, {
         tools,
         ...this.buildProviderOptions(session.id, channel, skillTurnContext.contextHash),
       });
+      throwIfAborted(options.runContext?.signal);
 
       // If no tool calls, return the response content
       if (!response.toolCalls || response.toolCalls.length === 0) {
@@ -176,10 +189,11 @@ export class Brain {
       const results = await Promise.all(
         response.toolCalls.map((toolCall) =>
           limiter.run(() =>
-            this.executeToolCall(toolCall, channel, session.id, skillTurnContext.envOverlay)
+            this.executeToolCall(toolCall, channel, session.id, skillTurnContext.envOverlay, options.runContext)
           )
         )
       );
+      throwIfAborted(options.runContext?.signal);
 
       // Add tool results to messages in original order
       for (let i = 0; i < response.toolCalls.length; i++) {
@@ -203,8 +217,9 @@ export class Brain {
   async *runStream(
     session: Session,
     channel: Channel,
-    options: { explicitSkillInvocation?: { name: string; commandName: string; rawArgs: string } } = {}
+    options: BrainRunOptions = {}
   ): AsyncIterable<string> {
+    throwIfAborted(options.runContext?.signal);
     if (await this.shouldSendDeterministicBootstrap(session)) {
       yield FIRST_CHAT_BOOTSTRAP_MESSAGE;
       return;
@@ -230,6 +245,7 @@ export class Brain {
     const spicyMaxObedience = this.isSpicyMaxObedienceActive();
 
     while (iterations < this.maxIterations) {
+      throwIfAborted(options.runContext?.signal);
       iterations++;
       const truncated = truncateMessages(messages, contextLimit);
       const providerMessages = prepareMessagesForProvider(truncated, this.llm.name);
@@ -237,29 +253,44 @@ export class Brain {
 
       // Stream LLM response
       let fullContent = '';
-      
-      for await (const chunk of this.llm.stream(providerMessages, {
+      const streamIterator = this.llm.stream(providerMessages, {
         tools,
         ...this.buildProviderOptions(session.id, channel, skillTurnContext.contextHash),
-      })) {
-        if (chunk.content) {
-          fullContent += chunk.content;
-          if (!spicyMaxObedience) {
-            yield chunk.content;
-          }
-        }
-        
-        if (chunk.toolCalls) {
-          pendingToolCalls = chunk.toolCalls;
-        }
+      })[Symbol.asyncIterator]();
 
-        if (chunk.done && pendingToolCalls.length === 0) {
-          if (spicyMaxObedience) {
-            yield this.finalizeAssistantContent(fullContent, messages);
+      try {
+        while (true) {
+          const next = await nextStreamChunk(streamIterator, options.runContext?.signal);
+          if (next.done) {
+            break;
           }
-          return;
+          const chunk = next.value;
+          throwIfAborted(options.runContext?.signal);
+          if (chunk.content) {
+            fullContent += chunk.content;
+            if (!spicyMaxObedience) {
+              yield chunk.content;
+            }
+          }
+          
+          if (chunk.toolCalls) {
+            pendingToolCalls = chunk.toolCalls;
+          }
+
+          if (chunk.done && pendingToolCalls.length === 0) {
+            if (spicyMaxObedience) {
+              yield this.finalizeAssistantContent(fullContent, messages);
+            }
+            return;
+          }
+        }
+      } finally {
+        if (typeof streamIterator.return === 'function') {
+          await streamIterator.return();
         }
       }
+
+      throwIfAborted(options.runContext?.signal);
 
       // If there are tool calls, execute them in parallel
       if (pendingToolCalls.length > 0) {
@@ -280,10 +311,11 @@ export class Brain {
         const results = await Promise.all(
           toolCallsCopy.map((toolCall) =>
             limiter.run(() =>
-              this.executeToolCall(toolCall, channel, session.id, skillTurnContext.envOverlay)
+              this.executeToolCall(toolCall, channel, session.id, skillTurnContext.envOverlay, options.runContext)
             )
           )
         );
+        throwIfAborted(options.runContext?.signal);
 
         // Yield results and add to messages in original order
         for (let i = 0; i < toolCallsCopy.length; i++) {
@@ -314,9 +346,10 @@ export class Brain {
     toolCall: ToolCall,
     channel: Channel,
     sessionId: string,
-    envOverlay: Record<string, string>
+    envOverlay: Record<string, string>,
+    runContext?: ToolExecutionContext
   ) {
-    return this.toolExecutor.execute(toolCall, channel, sessionId, envOverlay);
+    return this.toolExecutor.execute(toolCall, channel, sessionId, envOverlay, runContext);
   }
 
   private async shouldSendDeterministicBootstrap(session: Session): Promise<boolean> {
@@ -676,5 +709,51 @@ function prepareMessagesForProvider(messages: Message[], providerName: string): 
       ...message,
       attachments: undefined,
     };
+  });
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal || !signal.aborted) {
+    return;
+  }
+
+  throw createAbortError();
+}
+
+function createAbortError(): Error {
+  const error = new Error('Session cancelled');
+  error.name = 'AbortError';
+  return error;
+}
+
+async function nextStreamChunk<T>(
+  iterator: AsyncIterator<T>,
+  signal: AbortSignal | undefined
+): Promise<IteratorResult<T>> {
+  if (!signal) {
+    return iterator.next();
+  }
+
+  if (signal.aborted) {
+    throw createAbortError();
+  }
+
+  return new Promise<IteratorResult<T>>((resolve, reject) => {
+    const handleAbort = () => {
+      signal.removeEventListener('abort', handleAbort);
+      reject(createAbortError());
+    };
+
+    signal.addEventListener('abort', handleAbort, { once: true });
+    iterator.next().then(
+      (result) => {
+        signal.removeEventListener('abort', handleAbort);
+        resolve(result);
+      },
+      (error) => {
+        signal.removeEventListener('abort', handleAbort);
+        reject(error);
+      },
+    );
   });
 }

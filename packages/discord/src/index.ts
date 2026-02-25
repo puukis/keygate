@@ -7,7 +7,12 @@ import {
 } from 'discord.js';
 import {
   Gateway,
+  IMAGE_UPLOAD_ALLOWED_MIME_TYPES,
+  IMAGE_UPLOAD_MAX_BYTES,
+  MAX_MESSAGE_ATTACHMENTS,
   normalizeDiscordMessage,
+  normalizeUploadMimeType,
+  persistUploadedImage,
   BaseChannel,
   getBrowserScreenshotAllowedRoots,
   isPathWithinRoot,
@@ -18,6 +23,7 @@ import {
   type ConfirmationDetails,
   type ConfirmationDecision,
   type KeygateConfig,
+  type MessageAttachment,
 } from '@puukis/core';
 
 loadEnvironment();
@@ -313,16 +319,26 @@ export async function startDiscordBot(config: KeygateConfig): Promise<Client> {
     if (!matchedPrefix) return;
 
     const content = message.content.slice(matchedPrefix.length).trim();
-    if (!content) return;
 
     try {
+      const sessionId = `discord:${message.channelId}`;
+      const attachments = await ingestDiscordImageAttachments(
+        config.security.workspacePath,
+        sessionId,
+        message,
+      );
+      if (!content && attachments.length === 0) {
+        return;
+      }
+
       const channel = new DiscordChannel(message, browserArtifactsRoot);
       const normalized = normalizeDiscordMessage(
         message.id,
         message.channelId,
         message.author.id,
         content,
-        channel
+        channel,
+        attachments.length > 0 ? attachments : undefined
       );
 
       await gateway.processMessage(normalized);
@@ -341,6 +357,58 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const config = loadConfigFromEnv();
 
   startDiscordBot(config).catch(console.error);
+}
+
+async function ingestDiscordImageAttachments(
+  workspacePath: string,
+  sessionId: string,
+  message: DiscordMessage
+): Promise<MessageAttachment[]> {
+  if (message.attachments.size === 0) {
+    return [];
+  }
+
+  const attachments: MessageAttachment[] = [];
+  for (const candidate of message.attachments.values()) {
+    if (attachments.length >= MAX_MESSAGE_ATTACHMENTS) {
+      console.warn(`Ignoring extra Discord attachments for ${sessionId}: exceeded ${MAX_MESSAGE_ATTACHMENTS} images.`);
+      break;
+    }
+
+    const contentType = normalizeUploadMimeType(candidate.contentType ?? undefined);
+    if (!IMAGE_UPLOAD_ALLOWED_MIME_TYPES.has(contentType)) {
+      if (contentType) {
+        console.info(`Ignoring Discord attachment with unsupported type ${contentType} in ${sessionId}.`);
+      }
+      continue;
+    }
+
+    if (candidate.size > IMAGE_UPLOAD_MAX_BYTES) {
+      console.warn(`Ignoring oversized Discord attachment (${candidate.size} bytes) in ${sessionId}.`);
+      continue;
+    }
+
+    const response = await fetch(candidate.url);
+    if (!response.ok) {
+      console.warn(`Failed to download Discord attachment in ${sessionId}: HTTP ${response.status}.`);
+      continue;
+    }
+
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length > IMAGE_UPLOAD_MAX_BYTES) {
+      console.warn(`Ignoring oversized Discord attachment payload (${bytes.length} bytes) in ${sessionId}.`);
+      continue;
+    }
+
+    const persisted = await persistUploadedImage(workspacePath, sessionId, {
+      bytes,
+      contentType,
+      filename: candidate.name ?? undefined,
+    });
+    attachments.push(persisted);
+  }
+
+  return attachments;
 }
 
 function resolveDiscordPrefixes(value: string | undefined): string[] {

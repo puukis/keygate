@@ -146,6 +146,21 @@ describe('Gateway session CRUD', () => {
     expect(db?.deletedSessions).toContain(session.id);
   });
 
+  it('deletes a web session when requested with an unprefixed id', async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'keygate-gw-delete-unprefixed-'));
+    const gateway = Gateway.getInstance(createConfig(workspace));
+
+    const session = gateway.createWebSession();
+    const bareSessionId = session.id.startsWith('web:') ? session.id.slice(4) : session.id;
+    const deletedSessionId = gateway.deleteSession(bareSessionId);
+
+    expect(deletedSessionId).toBe(session.id);
+    expect(gateway.getSession(session.id)).toBeUndefined();
+
+    const db = mockDbState.instances[0];
+    expect(db?.deletedSessions).toContain(session.id);
+  });
+
   it('renames a session in memory and database', async () => {
     const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'keygate-gw-rename-'));
     const gateway = Gateway.getInstance(createConfig(workspace));

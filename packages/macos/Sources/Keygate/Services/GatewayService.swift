@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import os
+import UniformTypeIdentifiers
 
 /// Connection state for the gateway.
 enum ConnectionState: Equatable {
@@ -49,6 +50,7 @@ final class GatewayService: ObservableObject {
     // Streaming state per session
     @Published var streamingSessionId: String?
     @Published var streamBuffer: String = ""
+    @Published var uploadSessionId: String?
 
     // Tool activity
     @Published var activeTools: [String: String] = [:] // sessionId -> tool name
@@ -114,13 +116,57 @@ final class GatewayService: ObservableObject {
         client?.send(message)
     }
 
-    func sendMessage(_ content: String) {
+    func sendMessage(_ content: String, attachments: [Attachment]? = nil) {
         // Optimistically show the user's message immediately
         if let sid = sessionId {
-            let msg = ChatMessage(role: "user", content: content, attachments: nil)
+            let msg = ChatMessage(role: "user", content: content, attachments: attachments)
             SessionStore.shared.appendMessage(sessionId: sid, message: msg)
         }
-        send(.message(content: content))
+        send(.message(content: content, attachments: attachments))
+    }
+
+    func cancelSession(_ id: String) {
+        send(.cancelSession(sessionId: normalizeSessionId(id)))
+    }
+
+    func cancelActiveSessionRun() {
+        guard let activeId = SessionStore.shared.activeSessionId ?? sessionId else {
+            return
+        }
+        cancelSession(activeId)
+    }
+
+    func uploadImageAttachment(fileURL: URL, sessionId: String) async throws -> Attachment {
+        let payload = try Data(contentsOf: fileURL)
+        if payload.isEmpty {
+            throw NSError(domain: "GatewayService", code: 1, userInfo: [NSLocalizedDescriptionKey: "Attachment payload is empty."])
+        }
+
+        var components = URLComponents(url: baseURL.appendingPathComponent("api/uploads/image"), resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "sessionId", value: sessionId)]
+        guard let uploadURL = components?.url else {
+            throw NSError(domain: "GatewayService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to build upload URL."])
+        }
+
+        var request = URLRequest(url: uploadURL)
+        request.httpMethod = "POST"
+        request.setValue(mimeType(for: fileURL), forHTTPHeaderField: "Content-Type")
+
+        let (responseData, response) = try await URLSession.shared.upload(for: request, from: payload)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw NSError(domain: "GatewayService", code: 3, userInfo: [NSLocalizedDescriptionKey: "Upload response was invalid."])
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let uploadError = decodeServerUploadError(responseData) ?? "Image upload failed (\(httpResponse.statusCode))."
+            throw NSError(domain: "GatewayService", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: uploadError])
+        }
+
+        do {
+            return try JSONDecoder().decode(Attachment.self, from: responseData)
+        } catch {
+            throw NSError(domain: "GatewayService", code: 4, userInfo: [NSLocalizedDescriptionKey: "Upload response was malformed."])
+        }
     }
 
     func confirmAllow() {
@@ -143,15 +189,15 @@ final class GatewayService: ObservableObject {
     }
 
     func switchSession(_ id: String) {
-        send(.switchSession(sessionId: id))
+        send(.switchSession(sessionId: normalizeSessionId(id)))
     }
 
     func deleteSession(_ id: String) {
-        send(.deleteSession(sessionId: id))
+        send(.deleteSession(sessionId: normalizeSessionId(id)))
     }
 
     func renameSession(_ id: String, title: String) {
-        send(.renameSession(sessionId: id, title: title))
+        send(.renameSession(sessionId: normalizeSessionId(id), title: title))
     }
 
     func clearSession() {
@@ -172,17 +218,21 @@ final class GatewayService: ObservableObject {
 
     // MARK: - Message handling
 
-    /// Strip "web:" prefix the server adds to session IDs in some payloads.
+    /// Canonicalize session IDs so web sessions always use the "web:" prefix.
     private func normalizeSessionId(_ id: String) -> String {
-        id.hasPrefix("web:") ? String(id.dropFirst(4)) : id
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return id }
+        return trimmed.contains(":") ? trimmed : "web:\(trimmed)"
     }
 
     private func handleMessage(_ message: ServerMessage) {
         switch message {
         case .connected(let payload):
-            sessionId = normalizeSessionId(payload.sessionId)
-            SessionStore.shared.ensureSession(id: payload.sessionId)
-            SessionStore.shared.activeSessionId = payload.sessionId
+            let sid = normalizeSessionId(payload.sessionId)
+            uploadSessionId = sid
+            sessionId = sid
+            SessionStore.shared.ensureSession(id: sid)
+            SessionStore.shared.activeSessionId = sid
             mode = payload.mode
             spicyEnabled = payload.spicyEnabled ?? false
             spicyObedienceEnabled = payload.spicyObedienceEnabled ?? false
@@ -217,6 +267,14 @@ final class GatewayService: ObservableObject {
                 sessionId: sid,
                 content: payload.content
             )
+
+        case .sessionCancelled(let payload):
+            let sid = normalizeSessionId(payload.sessionId)
+            if streamingSessionId == sid {
+                streamingSessionId = nil
+            }
+            streamBuffer = ""
+            SessionStore.shared.cancelStream(sessionId: sid)
 
         case .sessionUserMessage(let payload):
             let sid = normalizeSessionId(payload.sessionId)
@@ -273,6 +331,7 @@ final class GatewayService: ObservableObject {
 
         case .sessionCreated(let payload):
             let sid = normalizeSessionId(payload.sessionId)
+            uploadSessionId = sid
             sessionId = sid
             SessionStore.shared.ensureSession(id: sid)
             SessionStore.shared.activeSessionId = sid
@@ -284,21 +343,30 @@ final class GatewayService: ObservableObject {
 
         case .sessionSwitched(let payload):
             let sid = normalizeSessionId(payload.sessionId)
+            uploadSessionId = sid
             sessionId = sid
             SessionStore.shared.activeSessionId = sid
 
-        case .sessionDeleted:
-            break // session_snapshot will follow
+        case .sessionDeleted(let payload):
+            SessionStore.shared.removeSession(sessionId: normalizeSessionId(payload.sessionId))
 
-        case .sessionRenamed:
-            break // session_snapshot will follow
+        case .sessionRenamed(let payload):
+            SessionStore.shared.renameSession(
+                sessionId: normalizeSessionId(payload.sessionId),
+                title: payload.title
+            )
 
         case .sessionCleared(let payload):
             SessionStore.shared.clearMessages(sessionId: normalizeSessionId(payload.sessionId))
 
         case .contextUsage(let payload):
             // contextUsage sessionId also needs normalization for matching
-            contextUsage = payload
+            contextUsage = ContextUsagePayload(
+                sessionId: normalizeSessionId(payload.sessionId),
+                usedTokens: payload.usedTokens,
+                limitTokens: payload.limitTokens,
+                percent: payload.percent
+            )
 
         case .mcpBrowserStatus(let payload):
             browserConfig = payload.browser
@@ -309,5 +377,23 @@ final class GatewayService: ObservableObject {
         case .unknown(let type):
             logger.debug("Unknown message type: \(type)")
         }
+    }
+
+    private func decodeServerUploadError(_ data: Data) -> String? {
+        guard
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let error = object["error"] as? String
+        else {
+            return nil
+        }
+        return error
+    }
+
+    private func mimeType(for fileURL: URL) -> String {
+        let ext = fileURL.pathExtension.lowercased()
+        if let type = UTType(filenameExtension: ext), let preferred = type.preferredMIMEType {
+            return preferred
+        }
+        return "application/octet-stream"
     }
 }

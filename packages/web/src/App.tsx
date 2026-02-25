@@ -1038,6 +1038,27 @@ function App() {
         break;
       }
 
+      case 'session_cancelled': {
+        const sessionId = firstString(data['sessionId']);
+        const reason = firstString(data['reason']) ?? 'user';
+        if (!sessionId) {
+          break;
+        }
+
+        setSessionState((prev) => reduceSessionChatState(prev, {
+          type: 'session_cancelled',
+          sessionId,
+          timestamp: new Date(),
+        }));
+        clearStreamActivities(sessionId);
+        appendStreamActivity(sessionId, {
+          source: 'system',
+          status: 'Stopped',
+          detail: reason === 'disconnect' ? 'Session disconnected while running.' : 'Run cancelled.',
+        });
+        break;
+      }
+
       case 'message_received': {
         const rawSessionId = firstString(data['sessionId']);
         const sessionId = rawSessionId
@@ -1369,15 +1390,24 @@ function App() {
           break;
         }
 
+        const normalizedDeletedSessionId = deletedSessionId.includes(':')
+          ? deletedSessionId
+          : normalizeWebSessionId(deletedSessionId);
+        const deletedSessionIds = new Set([deletedSessionId, normalizedDeletedSessionId]);
+
         setSessionState((prev) => {
           const nextMessages = { ...prev.messagesBySession };
           const nextMeta = { ...prev.metaBySession };
           const nextStreaming = { ...prev.streamingBySession };
           const nextBuffers = { ...prev.streamBuffersBySession };
-          delete nextMessages[deletedSessionId];
-          delete nextMeta[deletedSessionId];
-          delete nextStreaming[deletedSessionId];
-          delete nextBuffers[deletedSessionId];
+
+          for (const sessionId of deletedSessionIds) {
+            delete nextMessages[sessionId];
+            delete nextMeta[sessionId];
+            delete nextStreaming[sessionId];
+            delete nextBuffers[sessionId];
+          }
+
           return {
             messagesBySession: nextMessages,
             metaBySession: nextMeta,
@@ -1388,11 +1418,26 @@ function App() {
 
         setToolEventsBySession((prev) => {
           const next = { ...prev };
-          delete next[deletedSessionId];
+          for (const sessionId of deletedSessionIds) {
+            delete next[sessionId];
+          }
           return next;
         });
 
-        clearStreamActivities(deletedSessionId);
+        setContextUsageBySession((prev) => {
+          const next = { ...prev };
+          for (const sessionId of deletedSessionIds) {
+            delete next[sessionId];
+          }
+          return next;
+        });
+
+        setMainSessionId((prev) => (prev && deletedSessionIds.has(prev) ? null : prev));
+        setSelectedSessionId((prev) => (prev && deletedSessionIds.has(prev) ? null : prev));
+
+        for (const sessionId of deletedSessionIds) {
+          clearStreamActivities(sessionId);
+        }
         break;
       }
 
@@ -1699,6 +1744,17 @@ function App() {
       attachments,
     });
   }, [connected, activeSessionId, send]);
+
+  const handleStopStreaming = useCallback(() => {
+    if (!connected || !activeSessionId) {
+      return;
+    }
+
+    send({
+      type: 'cancel_session',
+      sessionId: activeSessionId,
+    });
+  }, [activeSessionId, connected, send]);
 
   const handleConfirm = useCallback((decision: ConfirmationDecision) => {
     const confirmation = pendingConfirmation;
@@ -2046,6 +2102,7 @@ function App() {
           <ChatView
             messages={activeMessages}
             onSendMessage={handleSendMessage}
+            onStop={handleStopStreaming}
             isStreaming={activeIsStreaming}
             streamActivities={activeStreamActivities}
             disabled={composerDisabled}

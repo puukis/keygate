@@ -1,5 +1,10 @@
 export { generateCodeVerifier, generateCodeChallenge, generateState, generateRandomString } from './pkce.js';
 export {
+  resolveTokenStoreMode,
+  type TokenStoreMode,
+  type SecretStoreBackend,
+} from './secretStore.js';
+export {
   readTokens,
   writeTokens,
   deleteTokens,

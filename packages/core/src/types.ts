@@ -5,6 +5,7 @@ export type ChannelType = 'web' | 'discord' | 'terminal' | 'slack';
 export type CodexReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 export type BrowserDomainPolicy = 'none' | 'allowlist' | 'blocklist';
 export type SkillSourceType = 'workspace' | 'global' | 'plugin' | 'bundled' | 'extra';
+export type SessionCancelReason = 'user' | 'disconnect';
 export type SkillEligibilityReason =
   | 'eligible'
   | 'disabled'
@@ -90,7 +91,12 @@ export interface ToolResult {
   error?: string;
 }
 
-export type ToolHandler = (args: Record<string, unknown>) => Promise<ToolResult>;
+export interface ToolExecutionContext {
+  signal: AbortSignal;
+  registerAbortCleanup: (cleanup: () => void | Promise<void>) => void;
+}
+
+export type ToolHandler = (args: Record<string, unknown>, context: ToolExecutionContext) => Promise<ToolResult>;
 
 export interface Tool extends ToolDefinition {
   handler: ToolHandler;
@@ -305,6 +311,7 @@ export interface KeygateEvents {
   'mode:changed': { mode: SecurityMode };
   'spicy_enabled:changed': { enabled: boolean };
   'spicy_obedience:changed': { enabled: boolean };
+  'session:cancelled': { sessionId: string; reason: SessionCancelReason };
   'confirm:request': {
     sessionId: string;
     prompt: string;

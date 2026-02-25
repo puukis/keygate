@@ -28,6 +28,18 @@ const readFileTool: Tool = {
   }),
 };
 
+const shellPathProbeTool: Tool = {
+  name: 'run_shell_probe',
+  description: 'shell probe',
+  parameters: { type: 'object' },
+  requiresConfirmation: false,
+  type: 'shell',
+  handler: async (args) => ({
+    success: true,
+    output: String(args['cwd'] ?? ''),
+  }),
+};
+
 function createChannel(
   decision: 'allow_once' | 'allow_always' | 'cancel'
 ): { channel: Channel; requestConfirmation: ReturnType<typeof vi.fn> } {
@@ -155,5 +167,47 @@ describe('ToolExecutor', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('Use filesystem tools (read_file/write_file)');
+  });
+
+  it('defaults shell cwd to configured workspace when omitted', async () => {
+    const workspace = '/tmp/keygate-safe-workspace';
+    const gateway = { emit: vi.fn() } as any;
+    const executor = new ToolExecutor('safe', workspace, ['cat'], gateway);
+    executor.registerTool(shellPathProbeTool);
+
+    const { channel } = createChannel('allow_once');
+    const result = await executor.execute(
+      {
+        id: '7',
+        name: 'run_shell_probe',
+        arguments: { command: 'cat package.json' },
+      },
+      channel,
+      'web:session-5'
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.output).toBe(workspace);
+  });
+
+  it('blocks shell cwd outside configured workspace in safe mode', async () => {
+    const workspace = '/tmp/keygate-safe-workspace';
+    const gateway = { emit: vi.fn() } as any;
+    const executor = new ToolExecutor('safe', workspace, ['cat'], gateway);
+    executor.registerTool(shellPathProbeTool);
+
+    const { channel } = createChannel('allow_once');
+    const result = await executor.execute(
+      {
+        id: '8',
+        name: 'run_shell_probe',
+        arguments: { command: 'cat package.json', cwd: '/tmp' },
+      },
+      channel,
+      'web:session-6'
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('outside Safe Mode workspace');
   });
 });

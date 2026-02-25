@@ -9,7 +9,8 @@ export function normalizeDiscordMessage(
   channelId: string,
   userId: string,
   content: string,
-  channel: Channel
+  channel: Channel,
+  attachments?: MessageAttachment[]
 ): NormalizedMessage {
   return {
     id: messageId,
@@ -18,6 +19,7 @@ export function normalizeDiscordMessage(
     channel,
     userId,
     content,
+    attachments,
     timestamp: new Date(),
   };
 }
@@ -72,7 +74,8 @@ export function normalizeSlackMessage(
   channelId: string,
   userId: string,
   content: string,
-  channel: Channel
+  channel: Channel,
+  attachments?: MessageAttachment[]
 ): NormalizedMessage {
   return {
     id: messageId,
@@ -81,6 +84,7 @@ export function normalizeSlackMessage(
     channel,
     userId,
     content,
+    attachments,
     timestamp: new Date(),
   };
 }
