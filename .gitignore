@@ -10,6 +10,12 @@ node_modules/
 dist/
 *.tsbuildinfo
 .build/
+packages/macos/.xcodebuild*/
+packages/macos/.dmg-staging.*/
+packages/macos/.create-dmg.*/
+packages/macos/.swiftpm/
+packages/macos/Keygate/Products/
+packages/macos/Keygate/.build/
 
 # IDE
 .vscode/

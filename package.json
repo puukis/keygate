@@ -7,6 +7,8 @@
   "scripts": {
     "dev": "pnpm --filter @puukis/core build && pnpm -r --parallel dev",
     "build": "pnpm --filter @puukis/core build && pnpm --filter @puukis/discord build && pnpm --filter @puukis/cli build",
+    "macos:app": "bash packages/macos/scripts/build-app.sh",
+    "macos:dmg": "bash packages/macos/scripts/build-dmg.sh",
     "test": "pnpm -r test",
     "keygate": "pnpm --filter @puukis/cli exec tsx src/main.ts",
     "onboard": "pnpm --filter @puukis/cli exec tsx src/main.ts onboard --auth-choice openai-codex",
