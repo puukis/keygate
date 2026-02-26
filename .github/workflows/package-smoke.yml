@@ -1,0 +1,27 @@
+name: Package Smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */12 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  package-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @puukis/core build
+      - run: pnpm --filter @puukis/web build
+      - run: pnpm --filter @puukis/cli build
+      - run: pnpm --filter @puukis/web test -- --run

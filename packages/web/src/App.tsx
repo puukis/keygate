@@ -5,7 +5,7 @@ import { SecurityBadge } from './components/SecurityBadge';
 import { ConfirmationModal } from './components/ConfirmationModal';
 import { MarketplacePanel, type MarketplaceEntryView } from './components/MarketplacePanel';
 import { MemoryPanel, type MemoryEntryView } from './components/MemoryPanel';
-import { SessionSidebar } from './components/SessionSidebar';
+import { SessionSidebar, type SidebarActionId, type SidebarTabId } from './components/SessionSidebar';
 import { useWebSocket } from './hooks/useWebSocket';
 import { buildEnableSpicyModeMessage, buildSetSpicyObedienceMessage } from './spicyObedience';
 import {
@@ -39,6 +39,7 @@ export type LLMProviderId = 'openai' | 'gemini' | 'ollama' | 'openai-codex';
 type CodexReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 type ConfirmationDecision = 'allow_once' | 'allow_always' | 'cancel';
 type BrowserDomainPolicy = 'none' | 'allowlist' | 'blocklist';
+type ConfigSectionTarget = 'top' | 'marketplace' | 'mcp-browser';
 
 interface BrowserConfigState {
   installed: boolean;
@@ -179,6 +180,21 @@ const BROWSER_DOMAIN_POLICY_OPTIONS: Array<{ value: BrowserDomainPolicy; label: 
   { value: 'allowlist', label: 'Allowlist only' },
   { value: 'blocklist', label: 'Blocklist deny' },
 ];
+
+const ACTIVE_SCREEN_LABELS: Record<SidebarTabId, string> = {
+  chat: 'Chat',
+  overview: 'Overview',
+  channels: 'Channels',
+  instances: 'Instances',
+  sessions: 'Sessions',
+  automations: 'Cron Jobs',
+  config: 'Config',
+  usage: 'Usage',
+  agents: 'Agents',
+  debug: 'Debug',
+  logs: 'Logs',
+  docs: 'Docs',
+};
 
 const DEFAULT_BROWSER_CONFIG_STATE: BrowserConfigState = {
   installed: false,
@@ -786,8 +802,8 @@ function App() {
   const [spicyEnabled, setSpicyEnabled] = useState(false);
   const [spicyObedienceEnabled, setSpicyObedienceEnabled] = useState(false);
   const [spicyEnableAck, setSpicyEnableAck] = useState('');
-  const [isConfigMenuOpen, setIsConfigMenuOpen] = useState(false);
-  const [activeScreen, setActiveScreen] = useState<'chat' | 'automations'>('chat');
+  const [configSectionTarget, setConfigSectionTarget] = useState<ConfigSectionTarget | null>(null);
+  const [activeScreen, setActiveScreen] = useState<SidebarTabId>('chat');
   const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null);
   const [themePreference, setThemePreference] = useState<ThemePreference>(() => readThemePreference());
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() => (
@@ -811,6 +827,9 @@ function App() {
   const [slackClearToken, setSlackClearToken] = useState(false);
   const [slackSaving, setSlackSaving] = useState(false);
   const slackSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const configScreenRef = useRef<HTMLDivElement | null>(null);
+  const marketplaceConfigSectionRef = useRef<HTMLElement | null>(null);
+  const mcpBrowserConfigSectionRef = useRef<HTMLElement | null>(null);
 
   const [activityCollapsed, setActivityCollapsed] = useState(false);
 
@@ -1788,21 +1807,25 @@ function App() {
     };
   }, [activeSessionId, connected, latestScreenshot?.sessionId]);
   useEffect(() => {
-    if (!isConfigMenuOpen) {
+    if (activeScreen !== 'config' || !configSectionTarget) {
       return undefined;
     }
 
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setIsConfigMenuOpen(false);
+    const frame = window.requestAnimationFrame(() => {
+      if (configSectionTarget === 'top') {
+        configScreenRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+      } else if (configSectionTarget === 'marketplace') {
+        marketplaceConfigSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } else {
+        mcpBrowserConfigSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }
-    };
+      setConfigSectionTarget(null);
+    });
 
-    window.addEventListener('keydown', onKeyDown);
     return () => {
-      window.removeEventListener('keydown', onKeyDown);
+      window.cancelAnimationFrame(frame);
     };
-  }, [isConfigMenuOpen]);
+  }, [activeScreen, configSectionTarget]);
 
   useEffect(() => {
     if (!connected) {
@@ -1901,7 +1924,6 @@ function App() {
     }
 
     send({ type: 'clear_session' });
-    setIsConfigMenuOpen(false);
   }, [connected, mainSessionId, selectedSessionId, send]);
 
   const handleTerminateAllSessions = useCallback(() => {
@@ -1915,7 +1937,6 @@ function App() {
     }
 
     send({ type: 'delete_all_sessions' });
-    setIsConfigMenuOpen(false);
   }, [connected, send]);
 
   const handleNewSession = useCallback(() => {
@@ -1994,6 +2015,24 @@ function App() {
   const handleThemeToggle = useCallback(() => {
     setThemePreference((previous) => getNextThemePreferenceForToggle(previous, resolvedTheme));
   }, [resolvedTheme]);
+
+  const openConfigScreenAt = useCallback((target: ConfigSectionTarget) => {
+    setActiveScreen('config');
+    setConfigSectionTarget(target);
+  }, []);
+
+  const handleSidebarAction = useCallback((action: SidebarActionId) => {
+    switch (action) {
+      case 'open_config_marketplace':
+        openConfigScreenAt('marketplace');
+        return;
+      case 'open_config_mcp_browser':
+        openConfigScreenAt('mcp-browser');
+        return;
+      default:
+        openConfigScreenAt('top');
+    }
+  }, [openConfigScreenAt]);
 
   const handleDiscordSave = useCallback(() => {
     const normalizedPrefix = normalizeDiscordPrefixInput(discordPrefixDraft);
@@ -2230,6 +2269,17 @@ function App() {
       : 'Ask Keygate anything...';
   const themeToggleLabel = resolvedTheme === 'dark' ? 'Light mode' : 'Dark mode';
   const resolvedThemeLabel = resolvedTheme === 'dark' ? 'Dark' : 'Light';
+  const activeScreenLabel = ACTIVE_SCREEN_LABELS[activeScreen];
+
+  const renderComingSoonScreen = (title: string, description: string) => (
+    <div className="placeholder-screen">
+      <h2>{title}</h2>
+      <div className="placeholder-card">
+        <h3>Coming Soon</h3>
+        <p>{description}</p>
+      </div>
+    </div>
+  );
 
   return (
     <div className="app">
@@ -2253,22 +2303,9 @@ function App() {
             <span className="status-dot" />
             {connected ? 'Connected' : connecting ? 'Connecting...' : 'Disconnected'}
           </div>
-          <button
-            className="btn-secondary"
-            onClick={() => setActiveScreen('chat')}
-            aria-pressed={activeScreen === 'chat'}
-            title="Chat"
-          >
-            Chat
-          </button>
-          <button
-            className="btn-secondary"
-            onClick={() => setActiveScreen('automations')}
-            aria-pressed={activeScreen === 'automations'}
-            title="Automations"
-          >
-            Automations
-          </button>
+          <span className="header-screen-label">
+            {activeScreenLabel}
+          </span>
           <button
             className="btn-secondary"
             onClick={handleThemeToggle}
@@ -2281,9 +2318,7 @@ function App() {
           </button>
           <button
             className="btn-icon"
-            onClick={() => setIsConfigMenuOpen((open) => !open)}
-            aria-expanded={isConfigMenuOpen}
-            aria-controls="config-drawer"
+            onClick={() => openConfigScreenAt('top')}
             title="Settings"
             aria-label="Settings"
           >
@@ -2296,17 +2331,12 @@ function App() {
 
       <main className="app-main">
         <SessionSidebar
-          sessions={sessionOptions}
-          activeSessionId={activeSessionId}
-          onSelectSession={handleSwitchSession}
-          onNewSession={handleNewSession}
-          onDeleteSession={handleDeleteSession}
-          onRenameSession={handleRenameSession}
-          onOpenSettings={() => setIsConfigMenuOpen(true)}
-          disabled={!connected}
+          activeTab={activeScreen}
+          onSelectTab={setActiveScreen}
+          onAction={handleSidebarAction}
         />
         <section className="chat-shell">
-          {activeScreen === 'chat' ? (
+          {activeScreen === 'chat' && (
             <>
               <div className="chat-toolbar">
                 {activeContextUsage && activeContextUsage.limitTokens > 0 && (
@@ -2337,7 +2367,93 @@ function App() {
                 readOnlyHint={activeIsReadOnly ? readOnlyHintText : undefined}
               />
             </>
-          ) : (
+          )}
+
+          {activeScreen === 'overview' && (
+            <div className="automations-screen">
+              <h2>Overview</h2>
+              <div className="scheduler-job-list">
+                <div className="scheduler-job-item"><strong>Connection</strong><div className="config-note">{connected ? 'Connected' : connecting ? 'Connecting…' : 'Disconnected'}</div></div>
+                <div className="scheduler-job-item"><strong>Security Mode</strong><div className="config-note">{mode === 'spicy' ? 'Spicy' : 'Safe'}</div></div>
+                <div className="scheduler-job-item"><strong>Provider / Model</strong><div className="config-note">{llm.provider} · {llm.model}</div></div>
+                <div className="scheduler-job-item"><strong>Sessions</strong><div className="config-note">{sessionOptions.length} known sessions</div></div>
+                <div className="scheduler-job-item"><strong>MCP Browser</strong><div className="config-note">{browserConfig.installed ? `Installed (${browserConfig.desiredVersion})` : 'Not installed'}</div></div>
+              </div>
+            </div>
+          )}
+
+          {activeScreen === 'channels' && (
+            <div className="automations-screen">
+              <h2>Channels</h2>
+              <div className="scheduler-job-list">
+                <div className="scheduler-job-item"><strong>Discord</strong><div className="config-note">{discordConfig.configured ? 'Configured' : 'Not configured'} · Prefix: {discordConfig.prefix}</div></div>
+                <div className="scheduler-job-item"><strong>Slack</strong><div className="config-note">{slackConfig.configured ? 'Configured' : 'Not configured'}</div></div>
+              </div>
+              <div className="scheduler-actions">
+                <button className="btn-secondary" onClick={() => openConfigScreenAt('top')}>Open channel settings</button>
+              </div>
+            </div>
+          )}
+
+          {activeScreen === 'instances' && (
+            <div className="automations-screen">
+              <h2>Instances</h2>
+              <div className="scheduler-job-list">
+                <div className="scheduler-job-item"><strong>Active session</strong><div className="config-note">{activeSessionId ?? 'None'}</div></div>
+                <div className="scheduler-job-item"><strong>Live tool events</strong><div className="config-note">{activeToolEvents.length}</div></div>
+                <div className="scheduler-job-item"><strong>Streaming</strong><div className="config-note">{activeIsStreaming ? 'Yes' : 'No'}</div></div>
+              </div>
+            </div>
+          )}
+
+          {activeScreen === 'sessions' && (
+            <div className="automations-screen">
+              <h2>Sessions</h2>
+              <div className="scheduler-actions">
+                <button className="btn-secondary" onClick={handleNewSession} disabled={!connected}>New session</button>
+              </div>
+              <div className="scheduler-list" role="region" aria-label="Sessions list">
+                {sessionOptions.length === 0 ? (
+                  <p className="config-note">No sessions yet.</p>
+                ) : (
+                  <ul className="scheduler-job-list">
+                    {sessionOptions.map((session) => (
+                      <li key={session.sessionId} className="scheduler-job-item">
+                        <div>
+                          <strong>{session.label}</strong>
+                          <div className="config-note">ID: {session.sessionId}</div>
+                          <div className="config-note">Channel: {session.channelType}</div>
+                        </div>
+                        <div className="scheduler-job-actions">
+                          <button className="btn-secondary" onClick={() => handleSwitchSession(session.sessionId)} disabled={!connected}>Open</button>
+                          {session.channelType === 'web' && (
+                            <>
+                              <button
+                                className="btn-secondary"
+                                onClick={() => {
+                                  const next = window.prompt('Rename session', session.label);
+                                  if (!next) return;
+                                  const trimmed = next.trim();
+                                  if (!trimmed) return;
+                                  handleRenameSession(session.sessionId, trimmed);
+                                }}
+                                disabled={!connected}
+                              >
+                                Rename
+                              </button>
+                              <button className="btn-secondary" onClick={() => handleDeleteSession(session.sessionId)} disabled={!connected}>Delete</button>
+                            </>
+                          )}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          )}
+
+          {activeScreen === 'automations' && (
             <div className="automations-screen">
               <h2>Automations & Scheduler</h2>
               <p className="config-note">Create and manage scheduled automations for any session.</p>
@@ -2425,7 +2541,7 @@ function App() {
                       .map((job) => (
                         <li key={job.id} className="scheduler-job-item">
                           <div>
-                            <strong>{job.enabled ? '🟢' : '⚪️'} {job.cronExpression}</strong>
+                            <strong>{job.enabled ? 'Enabled' : 'Disabled'} · {job.cronExpression}</strong>
                             <div className="config-note">Session: {job.sessionId}{sessionState.metaBySession[job.sessionId] ? '' : ' (missing)'}</div>
                             <div className="config-note">Next: {formatMaybeTimestamp(job.nextRunAt)}</div>
                             <div className="config-note">Last: {formatMaybeTimestamp(job.lastRunAt)}</div>
@@ -2444,6 +2560,527 @@ function App() {
               </div>
             </div>
           )}
+
+          {activeScreen === 'config' && (
+            <div className="config-screen" ref={configScreenRef}>
+              <div className="config-screen-header">
+                <h2>Configuration</h2>
+              </div>
+
+              <section className="config-section">
+                <h3>Appearance</h3>
+                <label className="llm-control config-control">
+                  <span>Theme</span>
+                  <select
+                    value={themePreference}
+                    onChange={(event) => setThemePreference(event.target.value as ThemePreference)}
+                  >
+                    {THEME_PREFERENCE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <small className="config-note">
+                  Current theme: {resolvedThemeLabel}. {themePreference === 'system'
+                    ? 'Following your OS preference.'
+                    : 'Using manual override.'}
+                </small>
+              </section>
+
+              <section className="config-section">
+                <h3>Security</h3>
+                <label className="config-switch-row">
+                  <span className="config-switch-copy">
+                    <strong>Spicy Mode</strong>
+                    <small>Enable autonomous full-host execution.</small>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={isSpicyModeActive}
+                    onChange={(event) => handleModeChange(event.target.checked ? 'spicy' : 'safe')}
+                    disabled={!connected || activeIsStreaming || !canToggleSpicyMode}
+                  />
+                </label>
+                {!spicyEnabled && (
+                  <div className="config-risk-block">
+                    <p className="config-hint">
+                      Spicy mode is currently locked. To unlock it, type <code>I ACCEPT THE RISK</code>.
+                    </p>
+                    <input
+                      className="config-risk-input"
+                      type="text"
+                      value={spicyEnableAck}
+                      onChange={(event) => setSpicyEnableAck(event.target.value)}
+                      placeholder="I ACCEPT THE RISK"
+                      spellCheck={false}
+                      autoComplete="off"
+                      disabled={!connected || activeIsStreaming}
+                    />
+                    <button
+                      className="btn-secondary"
+                      onClick={handleEnableSpicyMode}
+                      disabled={!connected || activeIsStreaming || !canEnableSpicyMode}
+                    >
+                      Enable Spicy Mode
+                    </button>
+                  </div>
+                )}
+
+                <label className="config-switch-row">
+                  <span className="config-switch-copy">
+                    <strong>Spicy Max Obedience</strong>
+                    <small>Best-effort reduction of avoidable refusals in spicy mode.</small>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={spicyObedienceEnabled}
+                    onChange={(event) => handleSpicyObedienceChange(event.target.checked)}
+                    disabled={!connected || activeIsStreaming || !spicyEnabled || !isSpicyModeActive}
+                  />
+                </label>
+              </section>
+
+              <section className="config-section">
+                <h3>Model</h3>
+                <label className="llm-control config-control">
+                  <span>Provider</span>
+                  <select
+                    value={selectedProvider}
+                    onChange={(event) => handleProviderChange(event.target.value as LLMProviderId)}
+                    disabled={!connected || activeIsStreaming}
+                  >
+                    {PROVIDER_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="llm-control config-control">
+                  <span>Model</span>
+                  <select
+                    value={selectedModelValue}
+                    onChange={(event) => handleModelChange(event.target.value)}
+                    disabled={!connected || activeIsStreaming || selectedModels.length === 0 || modelsLoading}
+                  >
+                    {selectedModels.length === 0 ? (
+                      <option value={llm.model}>{modelsLoading ? 'Loading models...' : llm.model}</option>
+                    ) : (
+                      selectedModels.map((model) => (
+                        <option key={model.id} value={model.id}>{model.displayName}</option>
+                      ))
+                    )}
+                  </select>
+                </label>
+
+                {selectedProvider === 'openai-codex' && (
+                  <label className="llm-control config-control">
+                    <span>Reasoning</span>
+                    <select
+                      value={selectedReasoningEffort ?? 'medium'}
+                      onChange={(event) => handleReasoningEffortChange(event.target.value as CodexReasoningEffort)}
+                      disabled={
+                        !connected ||
+                        activeIsStreaming ||
+                        selectedModels.length === 0 ||
+                        modelsLoading ||
+                        visibleReasoningOptions.length === 0
+                      }
+                    >
+                      {visibleReasoningOptions.length === 0 ? (
+                        <option value={selectedReasoningEffort ?? 'medium'}>Medium</option>
+                      ) : (
+                        visibleReasoningOptions.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))
+                      )}
+                    </select>
+                  </label>
+                )}
+
+                {modelsLoading && (
+                  <span className="models-loading">Refreshing model catalog...</span>
+                )}
+              </section>
+
+              <section className="config-section" ref={mcpBrowserConfigSectionRef}>
+                <h3>MCP Browser</h3>
+                <p className="config-note">Installed: {browserConfig.installed ? 'Yes' : 'No'}</p>
+                <p className="config-note">Health: {browserConfig.healthy ? 'Ready' : 'Needs setup'}</p>
+                <p className="config-note">
+                  Version: {browserConfig.configuredVersion ?? '(not configured)'} / pinned {browserConfig.desiredVersion}
+                </p>
+                <p className="config-note">Policy: {browserConfig.domainPolicy}</p>
+                <p className="config-note">Output path: {browserConfig.artifactsPath || '(not set)'}</p>
+
+                {browserConfig.warning && (
+                  <p className="config-note config-warning">{browserConfig.warning}</p>
+                )}
+
+                <div className="config-button-row">
+                  <button
+                    className="btn-secondary"
+                    onClick={handleInstallMcpBrowser}
+                    disabled={!connected || activeIsStreaming || browserBusy || browserConfig.installed}
+                  >
+                    {browserActionPending === 'install' ? 'Installing...' : 'Install'}
+                  </button>
+                  <button
+                    className="btn-secondary"
+                    onClick={handleUpdateMcpBrowser}
+                    disabled={!connected || activeIsStreaming || browserBusy || !browserConfig.installed}
+                  >
+                    {browserActionPending === 'update' ? 'Updating...' : 'Update'}
+                  </button>
+                  <button
+                    className="btn-secondary"
+                    onClick={handleRemoveMcpBrowser}
+                    disabled={!connected || activeIsStreaming || browserBusy || !browserConfig.installed}
+                  >
+                    {browserActionPending === 'remove' ? 'Removing...' : 'Remove'}
+                  </button>
+                  <button
+                    className="btn-secondary"
+                    onClick={() => send({ type: 'get_mcp_browser_status' })}
+                    disabled={!connected || activeIsStreaming || browserBusy}
+                  >
+                    Refresh Status
+                  </button>
+                </div>
+
+                <label className="llm-control config-control">
+                  <span>Domain Policy</span>
+                  <select
+                    value={browserPolicyDraft}
+                    onChange={(event) => setBrowserPolicyDraft(event.target.value as BrowserDomainPolicy)}
+                    disabled={!connected || activeIsStreaming || browserBusy}
+                  >
+                    {BROWSER_DOMAIN_POLICY_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="llm-control config-control">
+                  <span>Allowlist Origins (comma separated)</span>
+                  <input
+                    className="config-text-input"
+                    type="text"
+                    value={browserAllowlistDraft}
+                    onChange={(event) => setBrowserAllowlistDraft(event.target.value)}
+                    placeholder="https://example.com, https://docs.example.com"
+                    spellCheck={false}
+                    autoComplete="off"
+                    disabled={!connected || activeIsStreaming || browserBusy || browserPolicyDraft !== 'allowlist'}
+                  />
+                </label>
+
+                <label className="llm-control config-control">
+                  <span>Blocklist Origins (comma separated)</span>
+                  <input
+                    className="config-text-input"
+                    type="text"
+                    value={browserBlocklistDraft}
+                    onChange={(event) => setBrowserBlocklistDraft(event.target.value)}
+                    placeholder="https://ads.example, https://trackers.example"
+                    spellCheck={false}
+                    autoComplete="off"
+                    disabled={!connected || activeIsStreaming || browserBusy || browserPolicyDraft !== 'blocklist'}
+                  />
+                </label>
+
+                <label className="llm-control config-control">
+                  <span>Retention (days)</span>
+                  <input
+                    className="config-text-input"
+                    type="number"
+                    min={1}
+                    value={browserRetentionDraft}
+                    onChange={(event) => setBrowserRetentionDraft(event.target.value)}
+                    disabled={!connected || activeIsStreaming || browserBusy}
+                  />
+                </label>
+
+                <label className="llm-control config-control">
+                  <span>Playwright MCP Version</span>
+                  <input
+                    className="config-text-input"
+                    type="text"
+                    value={browserVersionDraft}
+                    onChange={(event) => setBrowserVersionDraft(event.target.value)}
+                    placeholder={DEFAULT_BROWSER_VERSION}
+                    spellCheck={false}
+                    autoComplete="off"
+                    disabled={!connected || activeIsStreaming || browserBusy}
+                  />
+                </label>
+
+                <button
+                  className="btn-secondary"
+                  onClick={handleSaveBrowserPolicy}
+                  disabled={!connected || activeIsStreaming || browserBusy || !browserPolicyHasChanges}
+                >
+                  {browserSaving ? 'Saving...' : 'Save Browser Policy'}
+                </button>
+                <small className="config-note">
+                  Policy changes reconfigure Playwright MCP when the browser server is already installed.
+                </small>
+              </section>
+
+              <section className="config-section">
+                <h3>Discord Bot</h3>
+                <p className="config-note">
+                  Status: {discordConfig.configured ? 'Token configured' : 'Token not configured'}
+                </p>
+
+                <label className="llm-control config-control">
+                  <span>Command Prefixes</span>
+                  <input
+                    className="config-text-input"
+                    type="text"
+                    value={discordPrefixDraft}
+                    onChange={(event) => setDiscordPrefixDraft(event.target.value)}
+                    placeholder={`${DEFAULT_DISCORD_PREFIX}, ?keygate , 1`}
+                    spellCheck={false}
+                    autoComplete="off"
+                    disabled={!connected || activeIsStreaming || discordSaving}
+                  />
+                </label>
+                <small className="config-note">Use commas to separate multiple prefixes.</small>
+
+                <label className="llm-control config-control">
+                  <span>Bot Token</span>
+                  <input
+                    className="config-text-input"
+                    type="password"
+                    value={discordTokenDraft}
+                    onChange={(event) => {
+                      setDiscordTokenDraft(event.target.value);
+                      if (event.target.value.trim().length > 0) {
+                        setDiscordClearToken(false);
+                      }
+                    }}
+                    placeholder={
+                      discordConfig.configured
+                        ? 'Leave blank to keep current token'
+                        : 'Paste Discord bot token'
+                    }
+                    autoComplete="off"
+                    disabled={!connected || activeIsStreaming || discordSaving}
+                  />
+                </label>
+
+                <label className="config-switch-row">
+                  <span className="config-switch-copy">
+                    <strong>Clear saved token</strong>
+                    <small>Remove token from local config on save.</small>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={discordClearToken}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+                      setDiscordClearToken(checked);
+                      if (checked) {
+                        setDiscordTokenDraft('');
+                      }
+                    }}
+                    disabled={!connected || activeIsStreaming || discordSaving || !discordConfig.configured}
+                  />
+                </label>
+
+                <button
+                  className="btn-secondary"
+                  onClick={handleDiscordSave}
+                  disabled={!connected || activeIsStreaming || discordSaving || !discordHasChanges}
+                >
+                  {discordSaving ? 'Saving...' : 'Save Discord Config'}
+                </button>
+                <small className="config-note">Restart the Discord bot process to apply updated settings.</small>
+              </section>
+
+              <section className="config-section">
+                <h3>Slack Bot</h3>
+                <p className="config-note">
+                  Status: {slackConfig.configured ? 'Token configured' : 'Token not configured'}
+                </p>
+
+                <label className="llm-control config-control">
+                  <span>Bot Token</span>
+                  <input
+                    className="config-text-input"
+                    type="password"
+                    value={slackBotTokenDraft}
+                    onChange={(event) => {
+                      setSlackBotTokenDraft(event.target.value);
+                      if (event.target.value.trim().length > 0) {
+                        setSlackClearToken(false);
+                      }
+                    }}
+                    placeholder={
+                      slackConfig.configured
+                        ? 'Leave blank to keep current token'
+                        : 'Paste Slack bot token (xoxb-...)'
+                    }
+                    autoComplete="off"
+                    disabled={!connected || activeIsStreaming || slackSaving}
+                  />
+                </label>
+
+                <label className="llm-control config-control">
+                  <span>App Token</span>
+                  <input
+                    className="config-text-input"
+                    type="password"
+                    value={slackAppTokenDraft}
+                    onChange={(event) => setSlackAppTokenDraft(event.target.value)}
+                    placeholder="Paste Slack app token (xapp-...)"
+                    autoComplete="off"
+                    disabled={!connected || activeIsStreaming || slackSaving}
+                  />
+                </label>
+
+                <label className="llm-control config-control">
+                  <span>Signing Secret</span>
+                  <input
+                    className="config-text-input"
+                    type="password"
+                    value={slackSigningSecretDraft}
+                    onChange={(event) => setSlackSigningSecretDraft(event.target.value)}
+                    placeholder="Paste Slack signing secret"
+                    autoComplete="off"
+                    disabled={!connected || activeIsStreaming || slackSaving}
+                  />
+                </label>
+
+                <label className="config-switch-row">
+                  <span className="config-switch-copy">
+                    <strong>Clear saved tokens</strong>
+                    <small>Remove all Slack tokens from local config on save.</small>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={slackClearToken}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+                      setSlackClearToken(checked);
+                      if (checked) {
+                        setSlackBotTokenDraft('');
+                        setSlackAppTokenDraft('');
+                        setSlackSigningSecretDraft('');
+                      }
+                    }}
+                    disabled={!connected || activeIsStreaming || slackSaving || !slackConfig.configured}
+                  />
+                </label>
+
+                <button
+                  className="btn-secondary"
+                  onClick={handleSlackSave}
+                  disabled={!connected || activeIsStreaming || slackSaving || !slackHasChanges}
+                >
+                  {slackSaving ? 'Saving...' : 'Save Slack Config'}
+                </button>
+                <small className="config-note">Restart the Slack bot process to apply updated settings.</small>
+              </section>
+
+              <section className="config-section">
+                <h3>Session</h3>
+                <div className="scheduler-actions">
+                  <button
+                    className="btn-secondary"
+                    onClick={handleClearSession}
+                    disabled={!canClearMainSession}
+                  >
+                    Clear main session
+                  </button>
+                  <button
+                    className="btn-secondary"
+                    onClick={handleTerminateAllSessions}
+                    disabled={!canTerminateAllSessions}
+                  >
+                    Terminate all sessions
+                  </button>
+                </div>
+              </section>
+
+              <section className="config-section" ref={marketplaceConfigSectionRef}>
+                <h3>Skill Marketplace</h3>
+                <MarketplacePanel
+                  connected={connected}
+                  disabled={activeIsStreaming}
+                  searchResults={marketplaceSearchResults}
+                  searchTotal={marketplaceSearchTotal}
+                  featuredEntries={marketplaceFeatured}
+                  selectedEntry={marketplaceSelected}
+                  installStatus={marketplaceInstallStatus}
+                  onSearch={(query, tags) => {
+                    send({ type: 'marketplace_search', query, tags });
+                  }}
+                  onSelectEntry={(name) => {
+                    send({ type: 'marketplace_info', content: name });
+                  }}
+                  onClearSelection={() => setMarketplaceSelected(null)}
+                  onInstall={(name, scope) => {
+                    setMarketplaceInstallStatus(null);
+                    send({ type: 'marketplace_install', content: name, scope });
+                  }}
+                  onLoadFeatured={() => {
+                    send({ type: 'marketplace_featured' });
+                  }}
+                />
+              </section>
+
+              <section className="config-section">
+                <h3>Agent Memory</h3>
+                <MemoryPanel
+                  connected={connected}
+                  disabled={activeIsStreaming}
+                  memories={agentMemories}
+                  namespaces={agentMemoryNamespaces}
+                  onList={(namespace) => {
+                    send({ type: 'memory_list', namespace: namespace ?? '' });
+                  }}
+                  onSearch={(query, namespace) => {
+                    send({ type: 'memory_search', query, namespace: namespace ?? '' });
+                  }}
+                  onSet={(namespace, key, content) => {
+                    send({ type: 'memory_set', namespace, key, content });
+                  }}
+                  onDelete={(namespace, key) => {
+                    send({ type: 'memory_delete', namespace, key });
+                  }}
+                  onLoadNamespaces={() => {
+                    send({ type: 'memory_namespaces' });
+                  }}
+                />
+              </section>
+            </div>
+          )}
+
+          {activeScreen === 'usage' && renderComingSoonScreen(
+            'Usage',
+            'Usage analytics and performance summaries will be available here once the metrics dashboard ships.',
+          )}
+
+          {activeScreen === 'agents' && renderComingSoonScreen(
+            'Agents',
+            'Agent management is planned for a later release. This area will host agent definitions and lifecycle controls.',
+          )}
+
+          {activeScreen === 'debug' && renderComingSoonScreen(
+            'Debug',
+            'Debug tooling is coming soon. Detailed diagnostics and troubleshooting controls will appear here.',
+          )}
+
+          {activeScreen === 'logs' && renderComingSoonScreen(
+            'Logs',
+            'Centralized runtime logs are not available yet. This screen will expose streaming logs and filtering controls.',
+          )}
+
+          {activeScreen === 'docs' && renderComingSoonScreen(
+            'Docs',
+            'In-app documentation is planned. This section will provide guided references and setup guides.',
+          )}
         </section>
 
         <LiveActivityLog
@@ -2453,520 +3090,6 @@ function App() {
           onToggleCollapsed={() => setActivityCollapsed((prev) => !prev)}
         />
       </main>
-
-      {isConfigMenuOpen && (
-        <div
-          className="config-drawer-backdrop"
-          onClick={() => setIsConfigMenuOpen(false)}
-          role="presentation"
-        >
-          <aside
-            id="config-drawer"
-            className="config-drawer"
-            onClick={(event) => event.stopPropagation()}
-            aria-label="Configuration"
-          >
-            <div className="config-drawer-header">
-              <h2>Configuration</h2>
-              <button
-                className="config-close-btn"
-                onClick={() => setIsConfigMenuOpen(false)}
-                aria-label="Close configuration"
-              >
-                Close
-              </button>
-            </div>
-
-            <section className="config-section">
-              <h3>Appearance</h3>
-              <label className="llm-control config-control">
-                <span>Theme</span>
-                <select
-                  value={themePreference}
-                  onChange={(event) => setThemePreference(event.target.value as ThemePreference)}
-                >
-                  {THEME_PREFERENCE_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
-                  ))}
-                </select>
-              </label>
-              <small className="config-note">
-                Current theme: {resolvedThemeLabel}. {themePreference === 'system'
-                  ? 'Following your OS preference.'
-                  : 'Using manual override.'}
-              </small>
-            </section>
-
-            <section className="config-section">
-              <h3>Security</h3>
-              <label className="config-switch-row">
-                <span className="config-switch-copy">
-                  <strong>Spicy Mode</strong>
-                  <small>Enable autonomous full-host execution.</small>
-                </span>
-                <input
-                  type="checkbox"
-                  checked={isSpicyModeActive}
-                  onChange={(event) => handleModeChange(event.target.checked ? 'spicy' : 'safe')}
-                  disabled={!connected || activeIsStreaming || !canToggleSpicyMode}
-                />
-              </label>
-              {!spicyEnabled && (
-                <div className="config-risk-block">
-                  <p className="config-hint">
-                    Spicy mode is currently locked. To unlock it, type <code>I ACCEPT THE RISK</code>.
-                  </p>
-                  <input
-                    className="config-risk-input"
-                    type="text"
-                    value={spicyEnableAck}
-                    onChange={(event) => setSpicyEnableAck(event.target.value)}
-                    placeholder="I ACCEPT THE RISK"
-                    spellCheck={false}
-                    autoComplete="off"
-                    disabled={!connected || activeIsStreaming}
-                  />
-                  <button
-                    className="btn-secondary"
-                    onClick={handleEnableSpicyMode}
-                    disabled={!connected || activeIsStreaming || !canEnableSpicyMode}
-                  >
-                    Enable Spicy Mode
-                  </button>
-                </div>
-              )}
-
-              <label className="config-switch-row">
-                <span className="config-switch-copy">
-                  <strong>Spicy Max Obedience</strong>
-                  <small>Best-effort reduction of avoidable refusals in spicy mode.</small>
-                </span>
-                <input
-                  type="checkbox"
-                  checked={spicyObedienceEnabled}
-                  onChange={(event) => handleSpicyObedienceChange(event.target.checked)}
-                  disabled={!connected || activeIsStreaming || !spicyEnabled || !isSpicyModeActive}
-                />
-              </label>
-            </section>
-
-            <section className="config-section">
-              <h3>Model</h3>
-              <label className="llm-control config-control">
-                <span>Provider</span>
-                <select
-                  value={selectedProvider}
-                  onChange={(event) => handleProviderChange(event.target.value as LLMProviderId)}
-                  disabled={!connected || activeIsStreaming}
-                >
-                  {PROVIDER_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="llm-control config-control">
-                <span>Model</span>
-                <select
-                  value={selectedModelValue}
-                  onChange={(event) => handleModelChange(event.target.value)}
-                  disabled={!connected || activeIsStreaming || selectedModels.length === 0 || modelsLoading}
-                >
-                  {selectedModels.length === 0 ? (
-                    <option value={llm.model}>{modelsLoading ? 'Loading models...' : llm.model}</option>
-                  ) : (
-                    selectedModels.map((model) => (
-                      <option key={model.id} value={model.id}>{model.displayName}</option>
-                    ))
-                  )}
-                </select>
-              </label>
-
-              {selectedProvider === 'openai-codex' && (
-                <label className="llm-control config-control">
-                  <span>Reasoning</span>
-                  <select
-                    value={selectedReasoningEffort ?? 'medium'}
-                    onChange={(event) => handleReasoningEffortChange(event.target.value as CodexReasoningEffort)}
-                    disabled={
-                      !connected ||
-                      activeIsStreaming ||
-                      selectedModels.length === 0 ||
-                      modelsLoading ||
-                      visibleReasoningOptions.length === 0
-                    }
-                  >
-                    {visibleReasoningOptions.length === 0 ? (
-                      <option value={selectedReasoningEffort ?? 'medium'}>Medium</option>
-                    ) : (
-                      visibleReasoningOptions.map((option) => (
-                        <option key={option.value} value={option.value}>{option.label}</option>
-                      ))
-                    )}
-                  </select>
-                </label>
-              )}
-
-              {modelsLoading && (
-                <span className="models-loading">Refreshing model catalog...</span>
-              )}
-            </section>
-
-
-            <section className="config-section">
-              <h3>MCP Browser</h3>
-              <p className="config-note">Installed: {browserConfig.installed ? 'Yes' : 'No'}</p>
-              <p className="config-note">Health: {browserConfig.healthy ? 'Ready' : 'Needs setup'}</p>
-              <p className="config-note">
-                Version: {browserConfig.configuredVersion ?? '(not configured)'} / pinned {browserConfig.desiredVersion}
-              </p>
-              <p className="config-note">Policy: {browserConfig.domainPolicy}</p>
-              <p className="config-note">Output path: {browserConfig.artifactsPath || '(not set)'}</p>
-
-              {browserConfig.warning && (
-                <p className="config-note config-warning">{browserConfig.warning}</p>
-              )}
-
-              <div className="config-button-row">
-                <button
-                  className="btn-secondary"
-                  onClick={handleInstallMcpBrowser}
-                  disabled={!connected || activeIsStreaming || browserBusy || browserConfig.installed}
-                >
-                  {browserActionPending === 'install' ? 'Installing...' : 'Install'}
-                </button>
-                <button
-                  className="btn-secondary"
-                  onClick={handleUpdateMcpBrowser}
-                  disabled={!connected || activeIsStreaming || browserBusy || !browserConfig.installed}
-                >
-                  {browserActionPending === 'update' ? 'Updating...' : 'Update'}
-                </button>
-                <button
-                  className="btn-secondary"
-                  onClick={handleRemoveMcpBrowser}
-                  disabled={!connected || activeIsStreaming || browserBusy || !browserConfig.installed}
-                >
-                  {browserActionPending === 'remove' ? 'Removing...' : 'Remove'}
-                </button>
-                <button
-                  className="btn-secondary"
-                  onClick={() => send({ type: 'get_mcp_browser_status' })}
-                  disabled={!connected || activeIsStreaming || browserBusy}
-                >
-                  Refresh Status
-                </button>
-              </div>
-
-              <label className="llm-control config-control">
-                <span>Domain Policy</span>
-                <select
-                  value={browserPolicyDraft}
-                  onChange={(event) => setBrowserPolicyDraft(event.target.value as BrowserDomainPolicy)}
-                  disabled={!connected || activeIsStreaming || browserBusy}
-                >
-                  {BROWSER_DOMAIN_POLICY_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="llm-control config-control">
-                <span>Allowlist Origins (comma separated)</span>
-                <input
-                  className="config-text-input"
-                  type="text"
-                  value={browserAllowlistDraft}
-                  onChange={(event) => setBrowserAllowlistDraft(event.target.value)}
-                  placeholder="https://example.com, https://docs.example.com"
-                  spellCheck={false}
-                  autoComplete="off"
-                  disabled={!connected || activeIsStreaming || browserBusy || browserPolicyDraft !== 'allowlist'}
-                />
-              </label>
-
-              <label className="llm-control config-control">
-                <span>Blocklist Origins (comma separated)</span>
-                <input
-                  className="config-text-input"
-                  type="text"
-                  value={browserBlocklistDraft}
-                  onChange={(event) => setBrowserBlocklistDraft(event.target.value)}
-                  placeholder="https://ads.example, https://trackers.example"
-                  spellCheck={false}
-                  autoComplete="off"
-                  disabled={!connected || activeIsStreaming || browserBusy || browserPolicyDraft !== 'blocklist'}
-                />
-              </label>
-
-              <label className="llm-control config-control">
-                <span>Retention (days)</span>
-                <input
-                  className="config-text-input"
-                  type="number"
-                  min={1}
-                  value={browserRetentionDraft}
-                  onChange={(event) => setBrowserRetentionDraft(event.target.value)}
-                  disabled={!connected || activeIsStreaming || browserBusy}
-                />
-              </label>
-
-              <label className="llm-control config-control">
-                <span>Playwright MCP Version</span>
-                <input
-                  className="config-text-input"
-                  type="text"
-                  value={browserVersionDraft}
-                  onChange={(event) => setBrowserVersionDraft(event.target.value)}
-                  placeholder={DEFAULT_BROWSER_VERSION}
-                  spellCheck={false}
-                  autoComplete="off"
-                  disabled={!connected || activeIsStreaming || browserBusy}
-                />
-              </label>
-
-              <button
-                className="btn-secondary"
-                onClick={handleSaveBrowserPolicy}
-                disabled={!connected || activeIsStreaming || browserBusy || !browserPolicyHasChanges}
-              >
-                {browserSaving ? 'Saving...' : 'Save Browser Policy'}
-              </button>
-              <small className="config-note">
-                Policy changes reconfigure Playwright MCP when the browser server is already installed.
-              </small>
-            </section>
-            <section className="config-section">
-              <h3>Discord Bot</h3>
-              <p className="config-note">
-                Status: {discordConfig.configured ? 'Token configured' : 'Token not configured'}
-              </p>
-
-              <label className="llm-control config-control">
-                <span>Command Prefixes</span>
-                <input
-                  className="config-text-input"
-                  type="text"
-                  value={discordPrefixDraft}
-                  onChange={(event) => setDiscordPrefixDraft(event.target.value)}
-                  placeholder={`${DEFAULT_DISCORD_PREFIX}, ?keygate , 1`}
-                  spellCheck={false}
-                  autoComplete="off"
-                  disabled={!connected || activeIsStreaming || discordSaving}
-                />
-              </label>
-              <small className="config-note">Use commas to separate multiple prefixes.</small>
-
-              <label className="llm-control config-control">
-                <span>Bot Token</span>
-                <input
-                  className="config-text-input"
-                  type="password"
-                  value={discordTokenDraft}
-                  onChange={(event) => {
-                    setDiscordTokenDraft(event.target.value);
-                    if (event.target.value.trim().length > 0) {
-                      setDiscordClearToken(false);
-                    }
-                  }}
-                  placeholder={
-                    discordConfig.configured
-                      ? 'Leave blank to keep current token'
-                      : 'Paste Discord bot token'
-                  }
-                  autoComplete="off"
-                  disabled={!connected || activeIsStreaming || discordSaving}
-                />
-              </label>
-
-              <label className="config-switch-row">
-                <span className="config-switch-copy">
-                  <strong>Clear saved token</strong>
-                  <small>Remove token from local config on save.</small>
-                </span>
-                <input
-                  type="checkbox"
-                  checked={discordClearToken}
-                  onChange={(event) => {
-                    const checked = event.target.checked;
-                    setDiscordClearToken(checked);
-                    if (checked) {
-                      setDiscordTokenDraft('');
-                    }
-                  }}
-                  disabled={!connected || activeIsStreaming || discordSaving || !discordConfig.configured}
-                />
-              </label>
-
-              <button
-                className="btn-secondary"
-                onClick={handleDiscordSave}
-                disabled={!connected || activeIsStreaming || discordSaving || !discordHasChanges}
-              >
-                {discordSaving ? 'Saving...' : 'Save Discord Config'}
-              </button>
-              <small className="config-note">Restart the Discord bot process to apply updated settings.</small>
-            </section>
-
-            <section className="config-section">
-              <h3>Slack Bot</h3>
-              <p className="config-note">
-                Status: {slackConfig.configured ? 'Token configured' : 'Token not configured'}
-              </p>
-
-              <label className="llm-control config-control">
-                <span>Bot Token</span>
-                <input
-                  className="config-text-input"
-                  type="password"
-                  value={slackBotTokenDraft}
-                  onChange={(event) => {
-                    setSlackBotTokenDraft(event.target.value);
-                    if (event.target.value.trim().length > 0) {
-                      setSlackClearToken(false);
-                    }
-                  }}
-                  placeholder={
-                    slackConfig.configured
-                      ? 'Leave blank to keep current token'
-                      : 'Paste Slack bot token (xoxb-...)'
-                  }
-                  autoComplete="off"
-                  disabled={!connected || activeIsStreaming || slackSaving}
-                />
-              </label>
-
-              <label className="llm-control config-control">
-                <span>App Token</span>
-                <input
-                  className="config-text-input"
-                  type="password"
-                  value={slackAppTokenDraft}
-                  onChange={(event) => setSlackAppTokenDraft(event.target.value)}
-                  placeholder="Paste Slack app token (xapp-...)"
-                  autoComplete="off"
-                  disabled={!connected || activeIsStreaming || slackSaving}
-                />
-              </label>
-
-              <label className="llm-control config-control">
-                <span>Signing Secret</span>
-                <input
-                  className="config-text-input"
-                  type="password"
-                  value={slackSigningSecretDraft}
-                  onChange={(event) => setSlackSigningSecretDraft(event.target.value)}
-                  placeholder="Paste Slack signing secret"
-                  autoComplete="off"
-                  disabled={!connected || activeIsStreaming || slackSaving}
-                />
-              </label>
-
-              <label className="config-switch-row">
-                <span className="config-switch-copy">
-                  <strong>Clear saved tokens</strong>
-                  <small>Remove all Slack tokens from local config on save.</small>
-                </span>
-                <input
-                  type="checkbox"
-                  checked={slackClearToken}
-                  onChange={(event) => {
-                    const checked = event.target.checked;
-                    setSlackClearToken(checked);
-                    if (checked) {
-                      setSlackBotTokenDraft('');
-                      setSlackAppTokenDraft('');
-                      setSlackSigningSecretDraft('');
-                    }
-                  }}
-                  disabled={!connected || activeIsStreaming || slackSaving || !slackConfig.configured}
-                />
-              </label>
-
-              <button
-                className="btn-secondary"
-                onClick={handleSlackSave}
-                disabled={!connected || activeIsStreaming || slackSaving || !slackHasChanges}
-              >
-                {slackSaving ? 'Saving...' : 'Save Slack Config'}
-              </button>
-              <small className="config-note">Restart the Slack bot process to apply updated settings.</small>
-            </section>
-
-            <section className="config-section">
-              <h3>Session</h3>
-              <div className="scheduler-actions">
-                <button
-                  className="btn-secondary"
-                  onClick={handleClearSession}
-                  disabled={!canClearMainSession}
-                >
-                  Clear main session
-                </button>
-                <button
-                  className="btn-secondary"
-                  onClick={handleTerminateAllSessions}
-                  disabled={!canTerminateAllSessions}
-                >
-                  Terminate all sessions
-                </button>
-              </div>
-            </section>
-
-            <section className="config-section">
-              <h3>Skill Marketplace</h3>
-              <MarketplacePanel
-                connected={connected}
-                disabled={activeIsStreaming}
-                searchResults={marketplaceSearchResults}
-                searchTotal={marketplaceSearchTotal}
-                featuredEntries={marketplaceFeatured}
-                selectedEntry={marketplaceSelected}
-                installStatus={marketplaceInstallStatus}
-                onSearch={(query, tags) => {
-                  send({ type: 'marketplace_search', query, tags });
-                }}
-                onSelectEntry={(name) => {
-                  send({ type: 'marketplace_info', content: name });
-                }}
-                onClearSelection={() => setMarketplaceSelected(null)}
-                onInstall={(name, scope) => {
-                  setMarketplaceInstallStatus(null);
-                  send({ type: 'marketplace_install', content: name, scope });
-                }}
-                onLoadFeatured={() => {
-                  send({ type: 'marketplace_featured' });
-                }}
-              />
-            </section>
-
-            <section className="config-section">
-              <h3>Agent Memory</h3>
-              <MemoryPanel
-                connected={connected}
-                disabled={activeIsStreaming}
-                memories={agentMemories}
-                namespaces={agentMemoryNamespaces}
-                onList={(namespace) => {
-                  send({ type: 'memory_list', namespace: namespace ?? '' });
-                }}
-                onSearch={(query, namespace) => {
-                  send({ type: 'memory_search', query, namespace: namespace ?? '' });
-                }}
-                onSet={(namespace, key, content) => {
-                  send({ type: 'memory_set', namespace, key, content });
-                }}
-                onDelete={(namespace, key) => {
-                  send({ type: 'memory_delete', namespace, key });
-                }}
-                onLoadNamespaces={() => {
-                  send({ type: 'memory_namespaces' });
-                }}
-              />
-            </section>
-          </aside>
-        </div>
-      )}
 
       {pendingConfirmation && (
         <ConfirmationModal

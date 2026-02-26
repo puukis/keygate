@@ -18,6 +18,18 @@
 
 ---
 
+## Documentation
+
+A full docs website now lives in `docs-site/` and is deployable to GitHub Pages.
+
+```bash
+pnpm docs:dev
+pnpm docs:build
+pnpm docs:preview
+```
+
+When GitHub Pages is enabled for this repository, `.github/workflows/deploy-docs.yml` publishes the site automatically on `main` changes.
+
 ## Features
 
 - **Multi-Channel**: Connect via Web UI (`localhost:18790`) or Discord bot

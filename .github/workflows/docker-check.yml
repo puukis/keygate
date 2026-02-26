@@ -1,0 +1,19 @@
+name: Docker Check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  docker-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate docker compose
+        run: docker compose config
+      - name: Build container image
+        run: docker build --tag keygate-ci:latest .
