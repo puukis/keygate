@@ -15,6 +15,11 @@ import {
   type ConfirmationDecision,
   type KeygateConfig,
   type MessageAttachment,
+  createOrGetPairingCode,
+  isDmAllowedByPolicy,
+  isUserPaired,
+  RoutingRuleStore,
+  RoutingService,
 } from '@puukis/core';
 
 loadEnvironment();
@@ -51,22 +56,21 @@ class SlackChannel extends BaseChannel {
   private threadTs: string;
   private channelId: string;
   private requestUserId: string;
+  private useThreadReplies: boolean;
 
-  constructor(say: SayFn, channelId: string, threadTs: string, requestUserId: string) {
+  constructor(say: SayFn, channelId: string, threadTs: string, requestUserId: string, useThreadReplies = true) {
     super();
     this.say = say;
     this.channelId = channelId;
     this.threadTs = threadTs;
     this.requestUserId = requestUserId;
+    this.useThreadReplies = useThreadReplies;
   }
 
   async send(content: string): Promise<void> {
     const chunks = this.splitMessage(content);
     for (const chunk of chunks) {
-      await this.say({
-        text: chunk,
-        thread_ts: this.threadTs,
-      });
+      await this.say(this.composeReply(chunk));
     }
   }
 
@@ -80,11 +84,16 @@ class SlackChannel extends BaseChannel {
     const text = buffer || '(No response)';
     const chunks = this.splitMessage(text);
     for (const chunk of chunks) {
-      await this.say({
-        text: chunk,
-        thread_ts: this.threadTs,
-      });
+      await this.say(this.composeReply(chunk));
     }
+  }
+
+  private composeReply(text: string): { text: string; thread_ts?: string } {
+    if (this.useThreadReplies) {
+      return { text, thread_ts: this.threadTs };
+    }
+
+    return { text };
   }
 
   async requestConfirmation(prompt: string, details?: ConfirmationDetails): Promise<ConfirmationDecision> {
@@ -161,7 +170,7 @@ class SlackChannel extends BaseChannel {
       void this.say({
         text: prompt,
         blocks,
-        thread_ts: this.threadTs,
+        ...(this.useThreadReplies ? { thread_ts: this.threadTs } : {}),
       }).catch(() => {
         resolveConfirmationDecision(requestId, 'cancel');
       });
@@ -217,6 +226,7 @@ export async function startSlackBot(config: KeygateConfig): Promise<App> {
   });
 
   const gateway = Gateway.getInstance(config);
+  const router = new RoutingService(new RoutingRuleStore(), config.security.workspacePath);
   registerConfirmationActionHandler(app);
 
   // Respond to direct mentions
@@ -225,11 +235,18 @@ export async function startSlackBot(config: KeygateConfig): Promise<App> {
     const threadTs = event.thread_ts ?? event.ts;
     const channelId = event.channel;
     const userId = event.user ?? '';
-    const sessionId = `slack:${channelId}`;
+    const route = await router.resolve({
+      channel: 'slack',
+      accountId: ('team' in event && typeof event.team === 'string') ? event.team : undefined,
+      chatId: channelId,
+      userId,
+    });
+    const sessionId = route.sessionId;
+    gateway.setSessionWorkspace(sessionId, route.workspacePath);
 
     try {
       const attachments = await ingestSlackImageAttachments(
-        config.security.workspacePath,
+        route.workspacePath,
         sessionId,
         (event as unknown as { files?: unknown }).files,
         botToken,
@@ -247,6 +264,7 @@ export async function startSlackBot(config: KeygateConfig): Promise<App> {
         text,
         channel,
         attachments.length > 0 ? attachments : undefined,
+        sessionId,
       );
 
       await gateway.processMessage(normalized);
@@ -269,11 +287,30 @@ export async function startSlackBot(config: KeygateConfig): Promise<App> {
     const threadTs = ('thread_ts' in event && typeof event.thread_ts === 'string' ? event.thread_ts : undefined) ?? event.ts;
     const channelId = event.channel;
     const userId = 'user' in event ? (event.user ?? '') : '';
-    const sessionId = `slack:${channelId}`;
+    const route = await router.resolve({
+      channel: 'slack',
+      accountId: ('team' in event && typeof event.team === 'string') ? event.team : undefined,
+      chatId: channelId,
+      userId,
+    });
+    const sessionId = route.sessionId;
+    gateway.setSessionWorkspace(sessionId, route.workspacePath);
 
     try {
+      const policy = config.slack?.dmPolicy ?? 'pairing';
+      const allowFrom = config.slack?.allowFrom ?? [];
+      const paired = await isUserPaired('slack', userId);
+      const allowed = isDmAllowedByPolicy({ policy, userId, allowFrom, paired });
+
+      if (!allowed) {
+        const request = await createOrGetPairingCode('slack', userId);
+        await say({
+          text: `🔐 DM pairing required. Your code: ${request.code}\nAsk the owner to run: keygate pairing approve slack ${request.code}`,
+        });
+        return;
+      }
       const attachments = await ingestSlackImageAttachments(
-        config.security.workspacePath,
+        route.workspacePath,
         sessionId,
         (event as unknown as { files?: unknown }).files,
         botToken,
@@ -283,7 +320,7 @@ export async function startSlackBot(config: KeygateConfig): Promise<App> {
       }
 
       await client.reactions.add({ channel: channelId, timestamp: event.ts, name: 'eyes' }).catch(() => {});
-      const channel = new SlackChannel(say, channelId, threadTs, userId);
+      const channel = new SlackChannel(say, channelId, threadTs, userId, false);
       const normalized = normalizeSlackMessage(
         event.ts,
         channelId,
@@ -291,12 +328,13 @@ export async function startSlackBot(config: KeygateConfig): Promise<App> {
         text,
         channel,
         attachments.length > 0 ? attachments : undefined,
+        sessionId,
       );
 
       await gateway.processMessage(normalized);
     } catch (error) {
       console.error('Error processing Slack DM:', error);
-      await say({ text: '❌ An error occurred while processing your request.', thread_ts: threadTs });
+      await say({ text: '❌ An error occurred while processing your request.' });
     }
   });
 

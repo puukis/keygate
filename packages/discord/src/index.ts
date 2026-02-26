@@ -24,6 +24,11 @@ import {
   type ConfirmationDecision,
   type KeygateConfig,
   type MessageAttachment,
+  createOrGetPairingCode,
+  isDmAllowedByPolicy,
+  isUserPaired,
+  RoutingRuleStore,
+  RoutingService,
 } from '@puukis/core';
 
 loadEnvironment();
@@ -288,6 +293,7 @@ export async function startDiscordBot(config: KeygateConfig): Promise<Client> {
   });
 
   const gateway = Gateway.getInstance(config);
+  const router = new RoutingService(new RoutingRuleStore(), config.security.workspacePath);
   const prefixes = resolveDiscordPrefixes(config.discord?.prefix ?? process.env['DISCORD_PREFIX']);
 
   client.once(Events.ClientReady, (c) => {
@@ -306,8 +312,18 @@ export async function startDiscordBot(config: KeygateConfig): Promise<Client> {
   });
 
   client.on(Events.MessageCreate, async (message) => {
-    // Ignore bots and messages without prefix
     if (message.author.bot) return;
+
+    const isDirectMessage = message.channel.isDMBased();
+    const matchedPrefix = findMatchedPrefix(message.content, prefixes);
+
+    if (!isDirectMessage && !matchedPrefix) {
+      return;
+    }
+
+    const content = isDirectMessage
+      ? (matchedPrefix ? message.content.slice(matchedPrefix.length).trim() : message.content.trim())
+      : message.content.slice(matchedPrefix!.length).trim();
 
     try {
       await message.react('👀');
@@ -315,15 +331,33 @@ export async function startDiscordBot(config: KeygateConfig): Promise<Client> {
       // Ignore reaction failures (missing perms, rate limits, deleted message).
     }
 
-    const matchedPrefix = findMatchedPrefix(message.content, prefixes);
-    if (!matchedPrefix) return;
-
-    const content = message.content.slice(matchedPrefix.length).trim();
-
     try {
-      const sessionId = `discord:${message.channelId}`;
+      if (isDirectMessage) {
+        const policy = config.discord?.dmPolicy ?? 'pairing';
+        const allowFrom = config.discord?.allowFrom ?? [];
+        const paired = await isUserPaired('discord', message.author.id);
+        const allowed = isDmAllowedByPolicy({ policy, userId: message.author.id, allowFrom, paired });
+
+        if (!allowed) {
+          const request = await createOrGetPairingCode('discord', message.author.id);
+          await message.reply(
+            `🔐 DM pairing required. Your code: ${request.code}\n` +
+            `Ask the owner to run: keygate pairing approve discord ${request.code}`
+          );
+          return;
+        }
+      }
+      const route = await router.resolve({
+        channel: 'discord',
+        accountId: message.guildId ?? undefined,
+        chatId: message.channelId,
+        userId: message.author.id,
+      });
+      const sessionId = route.sessionId;
+      gateway.setSessionWorkspace(sessionId, route.workspacePath);
+
       const attachments = await ingestDiscordImageAttachments(
-        config.security.workspacePath,
+        route.workspacePath,
         sessionId,
         message,
       );
@@ -338,7 +372,8 @@ export async function startDiscordBot(config: KeygateConfig): Promise<Client> {
         message.author.id,
         content,
         channel,
-        attachments.length > 0 ? attachments : undefined
+        attachments.length > 0 ? attachments : undefined,
+        sessionId,
       );
 
       await gateway.processMessage(normalized);

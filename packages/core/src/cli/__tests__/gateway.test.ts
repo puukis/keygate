@@ -39,12 +39,14 @@ function createDeps(overrides: Partial<GatewayDeps> = {}): GatewayDeps {
     envPathExt: '.EXE;.CMD;.BAT;.COM',
     envCodexBin: undefined,
     argv1: '/tmp/keygate/dist/main.js',
+    execArgv: [],
     execPath: '/usr/local/bin/node',
     log: () => undefined,
     mkdir: async () => undefined,
     writeFile: async () => undefined,
     chmod: async () => undefined,
     runCommand: () => commandResult(0),
+    readFile: async () => '',
     ...overrides,
   };
 }
@@ -127,13 +129,48 @@ describe('gateway command', () => {
     expect(() => createGatewayAdapter('aix', deps)).toThrow('Unsupported platform');
   });
 
+  it('surfaces real crash trace for macOS launchd failures', async () => {
+    const adapter = createGatewayAdapter('darwin', {
+      ...createDeps({ platform: 'darwin' }),
+      runCommand: (command: string, args: string[]) => {
+        const joined = `${command} ${args.join(' ')}`;
+        if (joined.startsWith('launchctl print gui/')) {
+          return commandResult(
+            0,
+            [
+              'gui/501/dev.keygate.gateway = {',
+              '  active count = 0',
+              '  state = spawn scheduled',
+              '  last exit code = 1',
+              '}',
+            ].join('\n')
+          );
+        }
+
+        return commandResult(0);
+      },
+      readFile: async () => 'Error: boom\nstack line 1\nstack line 2\n',
+    });
+
+    const status = await adapter.status();
+    expect(status.state).toBe('unknown');
+    expect(status.detail).toContain('last exit code=1');
+    expect(status.detail).toContain('stack line 2');
+  });
+
   it('generates service definition content with disabled browser auto-open', () => {
     const linuxUnit = buildLinuxUnitContent('/tmp/keygate/launch-keygate.sh');
     expect(linuxUnit).toContain('Environment=KEYGATE_OPEN_CHAT_ON_START=false');
 
-    const launchdPlist = buildLaunchdPlistContent('/tmp/keygate/launch-keygate.sh');
+    const launchdPlist = buildLaunchdPlistContent(
+      '/tmp/keygate/launch-keygate.sh',
+      '/tmp/keygate/stdout.log',
+      '/tmp/keygate/stderr.log'
+    );
     expect(launchdPlist).toContain('<key>KEYGATE_OPEN_CHAT_ON_START</key>');
     expect(launchdPlist).toContain('<string>false</string>');
+    expect(launchdPlist).toContain('<key>StandardOutPath</key>');
+    expect(launchdPlist).toContain('/tmp/keygate/stderr.log');
 
     const psRunner = buildPowerShellLauncherContent({
       command: 'keygate',
@@ -177,6 +214,79 @@ describe('gateway command', () => {
     expect(launcher).toBeDefined();
     expect(launcher?.content).toContain("export PATH='/custom/bin:/usr/bin'");
     expect(launcher?.content).toContain("export KEYGATE_CODEX_BIN='/custom/bin/codex'");
+  });
+
+  it('falls back to tsx binary for TypeScript entry when execArgv is empty', async () => {
+    const writes: Array<{ targetPath: string; content: string }> = [];
+    const runCommand = vi.fn((command: string, args: string[]) => {
+      const joined = `${command} ${args.join(' ')}`;
+      if (joined === 'systemctl --help') return commandResult(0);
+      if (joined === 'systemctl --user show-environment') return commandResult(0, 'PATH=/usr/bin\n');
+      if (joined === 'systemctl --user daemon-reload') return commandResult(0);
+      if (joined === 'systemctl --user is-active keygate-gateway.service') return commandResult(0, 'active\n');
+      if (
+        joined ===
+        'systemctl --user show keygate-gateway.service --property=ActiveState,SubState,UnitFileState --value'
+      ) {
+        return commandResult(0, 'active\nrunning\nenabled\n');
+      }
+      throw new Error(`Unexpected command: ${joined}`);
+    });
+
+    await runGatewayCommand(makeArgs('gateway', 'open'), {
+      platform: 'linux',
+      argv1: '/tmp/keygate/packages/cli/src/main.ts',
+      execPath: '/usr/local/bin/node',
+      execArgv: [],
+      writeFile: vi.fn(async (targetPath: string, content: string) => {
+        writes.push({ targetPath, content });
+      }),
+      mkdir: vi.fn(async () => undefined),
+      chmod: vi.fn(async () => undefined),
+      runCommand,
+      log: () => undefined,
+    });
+
+    const launcher = writes.find((entry) => entry.targetPath.endsWith('launch-keygate.sh'));
+    expect(launcher).toBeDefined();
+    expect(launcher?.content).toContain("exec 'tsx' '/tmp/keygate/packages/cli/src/main.ts' 'serve'");
+  });
+
+  it('includes execArgv for TypeScript entry launcher generation', async () => {
+    const writes: Array<{ targetPath: string; content: string }> = [];
+    const runCommand = vi.fn((command: string, args: string[]) => {
+      const joined = `${command} ${args.join(' ')}`;
+      if (joined === 'systemctl --help') return commandResult(0);
+      if (joined === 'systemctl --user show-environment') return commandResult(0, 'PATH=/usr/bin\n');
+      if (joined === 'systemctl --user daemon-reload') return commandResult(0);
+      if (joined === 'systemctl --user is-active keygate-gateway.service') return commandResult(0, 'active\n');
+      if (
+        joined ===
+        'systemctl --user show keygate-gateway.service --property=ActiveState,SubState,UnitFileState --value'
+      ) {
+        return commandResult(0, 'active\nrunning\nenabled\n');
+      }
+      throw new Error(`Unexpected command: ${joined}`);
+    });
+
+    await runGatewayCommand(makeArgs('gateway', 'open'), {
+      platform: 'linux',
+      argv1: '/tmp/keygate/packages/cli/src/main.ts',
+      execPath: '/usr/local/bin/node',
+      execArgv: ['--import', '/tmp/node_modules/tsx/dist/loader.mjs'],
+      writeFile: vi.fn(async (targetPath: string, content: string) => {
+        writes.push({ targetPath, content });
+      }),
+      mkdir: vi.fn(async () => undefined),
+      chmod: vi.fn(async () => undefined),
+      runCommand,
+      log: () => undefined,
+    });
+
+    const launcher = writes.find((entry) => entry.targetPath.endsWith('launch-keygate.sh'));
+    expect(launcher).toBeDefined();
+    expect(launcher?.content).toContain("'--import' '/tmp/node_modules/tsx/dist/loader.mjs'");
+    expect(launcher?.content).toContain("'/tmp/keygate/packages/cli/src/main.ts' 'serve'");
   });
 
   it('treats open as idempotent when linux unit is already running', async () => {

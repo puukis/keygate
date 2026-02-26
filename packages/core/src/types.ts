@@ -4,6 +4,7 @@ export type SecurityMode = 'safe' | 'spicy';
 export type ChannelType = 'web' | 'discord' | 'terminal' | 'slack';
 export type CodexReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 export type BrowserDomainPolicy = 'none' | 'allowlist' | 'blocklist';
+export type DmPolicy = 'pairing' | 'open' | 'closed';
 export type SkillSourceType = 'workspace' | 'global' | 'plugin' | 'bundled' | 'extra';
 export type SessionCancelReason = 'user' | 'disconnect';
 export type SkillEligibilityReason =
@@ -215,11 +216,15 @@ export interface KeygateConfig {
   discord?: {
     token: string;
     prefix: string;
+    dmPolicy?: DmPolicy;
+    allowFrom?: string[];
   };
   slack?: {
     botToken: string;
     appToken: string;
     signingSecret: string;
+    dmPolicy?: DmPolicy;
+    allowFrom?: string[];
   };
 }
 

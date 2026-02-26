@@ -29,6 +29,7 @@ import {
   sanitizeUploadSessionId,
   serveUploadedImageById,
   handleImageUploadRequest,
+  handleWebhookInboundRequest,
 } from '../index.js';
 describe('server spicy obedience payloads', () => {
   it('includes spicyObedienceEnabled in connected payload', () => {

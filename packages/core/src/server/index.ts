@@ -15,6 +15,9 @@ import {
   recordDownload,
   type MarketplaceEntry,
 } from '../skills/marketplace.js';
+import { WebhookService, WebhookStore } from '../webhooks/index.js';
+import { RoutingRuleStore, RoutingService } from '../routing/index.js';
+import { NodeService, type NodeCapability } from '../nodes/index.js';
 import type {
   BrowserDomainPolicy,
   ChannelType,
@@ -56,6 +59,7 @@ interface WSMessage {
     | 'clear_session'
     | 'new_session'
     | 'delete_session'
+    | 'delete_all_sessions'
     | 'rename_session'
     | 'switch_session'
     | 'get_models'
@@ -73,7 +77,32 @@ interface WSMessage {
     | 'memory_set'
     | 'memory_delete'
     | 'memory_search'
-    | 'memory_namespaces';
+    | 'memory_namespaces'
+    | 'sessions_list'
+    | 'sessions_spawn'
+    | 'sessions_history'
+    | 'sessions_send'
+    | 'subagents'
+    | 'scheduler_list'
+    | 'scheduler_create'
+    | 'scheduler_update'
+    | 'scheduler_delete'
+    | 'scheduler_trigger'
+    | 'webhook_list'
+    | 'webhook_create'
+    | 'webhook_delete'
+    | 'webhook_update'
+    | 'webhook_rotate_secret'
+    | 'routing_list'
+    | 'routing_create'
+    | 'routing_delete'
+    | 'node_pair_request'
+    | 'node_pair_pending'
+    | 'node_pair_approve'
+    | 'node_pair_reject'
+    | 'node_list'
+    | 'node_describe'
+    | 'node_invoke';
   sessionId?: string;
   content?: string;
   decision?: ConfirmationDecision;
@@ -103,11 +132,39 @@ interface WSMessage {
   scope?: string;
   namespace?: string;
   key?: string;
+  parentSessionId?: string;
+  label?: string;
+  limit?: number;
+  action?: 'list' | 'steer' | 'kill';
+  cronExpression?: string;
+  prompt?: string;
+  jobId?: string;
+  name?: string;
+  promptPrefix?: string;
+  secret?: string;
+  routeId?: string;
+  accountId?: string;
+  chatId?: string;
+  agentKey?: string;
+  ruleId?: string;
+  userId?: string;
+  requestId?: string;
+  pairingCode?: string;
+  nodeId?: string;
+  capability?: NodeCapability;
+  capabilities?: NodeCapability[];
+  params?: unknown;
+  highRiskAck?: boolean;
+  nodeName?: string;
 }
 
 interface StartWebServerOptions {
   onListening?: () => void | Promise<void>;
   staticAssetsDir?: string;
+}
+
+export interface WebServerHandle {
+  close(): Promise<void>;
 }
 
 interface DiscordConfigView {
@@ -166,6 +223,7 @@ const DEFAULT_DISCORD_PREFIX = '!keygate ';
 const BROWSER_RETENTION_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const IMAGE_UPLOAD_RETENTION_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const IMAGE_UPLOAD_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const WEBHOOK_MAX_BODY_BYTES = 2 * 1024 * 1024;
 
 /**
  * WebSocket Channel adapter
@@ -281,7 +339,7 @@ class WebSocketChannel extends BaseChannel {
 /**
  * Start the WebSocket server
  */
-export function startWebServer(config: KeygateConfig, options: StartWebServerOptions = {}): void {
+export function startWebServer(config: KeygateConfig, options: StartWebServerOptions = {}): WebServerHandle {
   const gateway = Gateway.getInstance(config);
   const staticAssetsDir = options.staticAssetsDir;
   const mcpBrowserManager = new MCPBrowserManager(config);
@@ -319,11 +377,17 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
     });
   }, IMAGE_UPLOAD_RETENTION_CLEANUP_INTERVAL_MS);
 
+  const webhookService = new WebhookService(new WebhookStore(), async (sessionId, content) => {
+    await gateway.sendMessageToSession(sessionId, content, 'webhook:event');
+  });
+  const routingService = new RoutingService(new RoutingRuleStore(), config.security.workspacePath);
+  const nodeService = new NodeService();
+
   const server = createServer((req, res) => {
     // CORS headers
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-keygate-signature');
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
@@ -357,6 +421,12 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
 
     if (url.pathname === '/api/uploads/image') {
       void serveUploadedImageById(res, req.method, url, config.security.workspacePath);
+      return;
+    }
+
+    if (url.pathname.startsWith('/api/webhooks/')) {
+      const webhookId = url.pathname.slice('/api/webhooks/'.length).trim();
+      void handleWebhookInboundRequest(req, res, webhookService, webhookId);
       return;
     }
 
@@ -413,7 +483,15 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
               return;
             }
 
-            // Use the current webSessionId (which may have changed via switch_session)
+            const chatId = extractWebChatId(webSessionId);
+            const route = await routingService.resolve({
+              channel: 'web',
+              chatId,
+              userId: 'web-user',
+            });
+            webSessionId = route.sessionId;
+            gateway.setSessionWorkspace(route.sessionId, route.workspacePath);
+
             const activeSession = webSessionId.startsWith('web:') ? webSessionId.slice(4) : webSessionId;
             const normalized = normalizeWebMessage(
               activeSession,
@@ -423,7 +501,6 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
               attachments.length > 0 ? attachments : undefined
             );
 
-            // Send acknowledgment with the active web session id
             ws.send(JSON.stringify({ type: 'message_received', sessionId: activeSession }));
 
             await gateway.processMessage(normalized);
@@ -610,6 +687,35 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
             ws.send(JSON.stringify({
               type: 'session_deleted',
               sessionId: deletedSessionId,
+            }));
+            ws.send(JSON.stringify(buildSessionSnapshotPayload(gateway, webSessionId)));
+            break;
+          }
+
+          case 'delete_all_sessions': {
+            const allSessionIds = gateway.listSessions().map((session) => session.id);
+            for (const targetSessionId of allSessionIds) {
+              try {
+                const deletedSessionId = gateway.deleteSession(targetSessionId);
+                ws.send(JSON.stringify({
+                  type: 'session_deleted',
+                  sessionId: deletedSessionId,
+                }));
+              } catch {
+                // Ignore race/missing session; proceed with best effort.
+              }
+            }
+
+            const newSession = gateway.createWebSession();
+            channel.setSessionId(newSession.id);
+            webSessionId = newSession.id;
+            ws.send(JSON.stringify({
+              type: 'session_created',
+              sessionId: newSession.id,
+            }));
+            ws.send(JSON.stringify({
+              type: 'session_switched',
+              sessionId: newSession.id,
             }));
             ws.send(JSON.stringify(buildSessionSnapshotPayload(gateway, webSessionId)));
             break;
@@ -977,6 +1083,401 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
             }
             break;
           }
+
+          case 'sessions_list': {
+            const parentSessionId = typeof msg.parentSessionId === 'string' ? msg.parentSessionId.trim() : undefined;
+            const sessions = gateway.listDelegatedSessions(parentSessionId);
+            ws.send(JSON.stringify({
+              type: 'sessions_list_result',
+              sessions,
+            }));
+            break;
+          }
+
+          case 'sessions_spawn': {
+            const parentSessionId = typeof msg.parentSessionId === 'string' && msg.parentSessionId.trim().length > 0
+              ? msg.parentSessionId.trim()
+              : webSessionId;
+            const label = typeof msg.label === 'string' ? msg.label : undefined;
+            const spawned = gateway.spawnDelegatedSession(parentSessionId, label);
+            ws.send(JSON.stringify({
+              type: 'sessions_spawn_result',
+              session: spawned,
+            }));
+            break;
+          }
+
+          case 'sessions_history': {
+            const targetSessionId = typeof msg.sessionId === 'string' && msg.sessionId.trim().length > 0
+              ? msg.sessionId.trim()
+              : webSessionId;
+            const limit = typeof msg.limit === 'number' ? msg.limit : 50;
+            const history = gateway.getSessionHistory(targetSessionId, limit);
+            ws.send(JSON.stringify({
+              type: 'sessions_history_result',
+              sessionId: targetSessionId,
+              messages: history,
+            }));
+            break;
+          }
+
+          case 'sessions_send': {
+            const targetSessionId = typeof msg.sessionId === 'string' ? msg.sessionId.trim() : '';
+            const content = typeof msg.content === 'string' ? msg.content : '';
+            if (!targetSessionId || !content.trim()) {
+              ws.send(JSON.stringify({ type: 'error', error: 'sessionId and content are required' }));
+              break;
+            }
+
+            try {
+              await gateway.sendMessageToSession(targetSessionId, content);
+              ws.send(JSON.stringify({
+                type: 'sessions_send_result',
+                sessionId: targetSessionId,
+                delivered: true,
+              }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Failed to send to session',
+              }));
+            }
+            break;
+          }
+
+          case 'subagents': {
+            const action = msg.action;
+            if (action === 'list') {
+              ws.send(JSON.stringify({
+                type: 'subagents_result',
+                action,
+                sessions: gateway.listDelegatedSessions(),
+              }));
+              break;
+            }
+
+            const targetSessionId = typeof msg.sessionId === 'string' ? msg.sessionId.trim() : '';
+            if (!targetSessionId) {
+              ws.send(JSON.stringify({ type: 'error', error: 'sessionId is required for this subagents action' }));
+              break;
+            }
+
+            if (action === 'kill') {
+              gateway.killDelegatedSession(targetSessionId, 'user');
+              ws.send(JSON.stringify({ type: 'subagents_result', action, sessionId: targetSessionId, ok: true }));
+              break;
+            }
+
+            if (action === 'steer') {
+              const content = typeof msg.content === 'string' ? msg.content : '';
+              if (!content.trim()) {
+                ws.send(JSON.stringify({ type: 'error', error: 'content is required for subagents steer' }));
+                break;
+              }
+
+              try {
+                await gateway.steerDelegatedSession(targetSessionId, content);
+                ws.send(JSON.stringify({ type: 'subagents_result', action, sessionId: targetSessionId, ok: true }));
+              } catch (error) {
+                ws.send(JSON.stringify({
+                  type: 'error',
+                  error: error instanceof Error ? error.message : 'Failed to steer subagent',
+                }));
+              }
+              break;
+            }
+
+            ws.send(JSON.stringify({ type: 'error', error: 'Unsupported subagents action' }));
+            break;
+          }
+
+          case 'scheduler_list': {
+            const jobs = await gateway.listScheduledJobs();
+            ws.send(JSON.stringify({ type: 'scheduler_list_result', jobs }));
+            break;
+          }
+
+          case 'scheduler_create': {
+            const sessionIdValue = typeof msg.sessionId === 'string' && msg.sessionId.trim().length > 0
+              ? msg.sessionId.trim()
+              : webSessionId;
+            const cronExpression = typeof msg.cronExpression === 'string' ? msg.cronExpression : '';
+            const prompt = typeof msg.prompt === 'string' ? msg.prompt : '';
+            if (!cronExpression.trim() || !prompt.trim()) {
+              ws.send(JSON.stringify({ type: 'error', error: 'cronExpression and prompt are required' }));
+              break;
+            }
+
+            try {
+              const job = await gateway.createScheduledJob({
+                sessionId: sessionIdValue,
+                cronExpression,
+                prompt,
+                enabled: typeof msg.enabled === 'boolean' ? msg.enabled : true,
+              });
+              ws.send(JSON.stringify({ type: 'scheduler_create_result', job }));
+            } catch (error) {
+              ws.send(JSON.stringify({ type: 'error', error: error instanceof Error ? error.message : 'Failed to create scheduler job' }));
+            }
+            break;
+          }
+
+          case 'scheduler_update': {
+            const jobId = typeof msg.jobId === 'string' ? msg.jobId.trim() : '';
+            if (!jobId) {
+              ws.send(JSON.stringify({ type: 'error', error: 'jobId is required' }));
+              break;
+            }
+
+            try {
+              const job = await gateway.updateScheduledJob(jobId, {
+                sessionId: typeof msg.sessionId === 'string' ? msg.sessionId : undefined,
+                cronExpression: typeof msg.cronExpression === 'string' ? msg.cronExpression : undefined,
+                prompt: typeof msg.prompt === 'string' ? msg.prompt : undefined,
+                enabled: typeof msg.enabled === 'boolean' ? msg.enabled : undefined,
+              });
+              ws.send(JSON.stringify({ type: 'scheduler_update_result', job }));
+            } catch (error) {
+              ws.send(JSON.stringify({ type: 'error', error: error instanceof Error ? error.message : 'Failed to update scheduler job' }));
+            }
+            break;
+          }
+
+          case 'scheduler_delete': {
+            const jobId = typeof msg.jobId === 'string' ? msg.jobId.trim() : '';
+            if (!jobId) {
+              ws.send(JSON.stringify({ type: 'error', error: 'jobId is required' }));
+              break;
+            }
+
+            const deleted = await gateway.deleteScheduledJob(jobId);
+            ws.send(JSON.stringify({ type: 'scheduler_delete_result', jobId, deleted }));
+            break;
+          }
+
+          case 'scheduler_trigger': {
+            const jobId = typeof msg.jobId === 'string' ? msg.jobId.trim() : '';
+            if (!jobId) {
+              ws.send(JSON.stringify({ type: 'error', error: 'jobId is required' }));
+              break;
+            }
+
+            try {
+              const job = await gateway.triggerScheduledJob(jobId);
+              ws.send(JSON.stringify({ type: 'scheduler_trigger_result', job }));
+            } catch (error) {
+              ws.send(JSON.stringify({ type: 'error', error: error instanceof Error ? error.message : 'Failed to trigger scheduler job' }));
+            }
+            break;
+          }
+
+          case 'webhook_list': {
+            const routes = await webhookService.listRoutes();
+            ws.send(JSON.stringify({ type: 'webhook_list_result', routes }));
+            break;
+          }
+
+          case 'webhook_create': {
+            const name = typeof msg.name === 'string' ? msg.name : '';
+            const sessionIdValue = typeof msg.sessionId === 'string' && msg.sessionId.trim().length > 0
+              ? msg.sessionId.trim()
+              : webSessionId;
+            if (!name.trim()) {
+              ws.send(JSON.stringify({ type: 'error', error: 'name is required' }));
+              break;
+            }
+
+            try {
+              const route = await webhookService.createRoute({
+                name,
+                sessionId: sessionIdValue,
+                promptPrefix: typeof msg.promptPrefix === 'string' ? msg.promptPrefix : undefined,
+                enabled: typeof msg.enabled === 'boolean' ? msg.enabled : true,
+                secret: typeof msg.secret === 'string' ? msg.secret : undefined,
+              });
+              ws.send(JSON.stringify({ type: 'webhook_create_result', route }));
+            } catch (error) {
+              ws.send(JSON.stringify({ type: 'error', error: error instanceof Error ? error.message : 'Failed to create webhook route' }));
+            }
+            break;
+          }
+
+          case 'webhook_delete': {
+            const routeId = typeof msg.routeId === 'string' ? msg.routeId.trim() : '';
+            if (!routeId) {
+              ws.send(JSON.stringify({ type: 'error', error: 'routeId is required' }));
+              break;
+            }
+
+            const deleted = await webhookService.deleteRoute(routeId);
+            ws.send(JSON.stringify({ type: 'webhook_delete_result', routeId, deleted }));
+            break;
+          }
+
+          case 'webhook_update': {
+            const routeId = typeof msg.routeId === 'string' ? msg.routeId.trim() : '';
+            if (!routeId) {
+              ws.send(JSON.stringify({ type: 'error', error: 'routeId is required' }));
+              break;
+            }
+
+            try {
+              const route = await webhookService.updateRoute(routeId, {
+                sessionId: typeof msg.sessionId === 'string' ? msg.sessionId : undefined,
+                promptPrefix: typeof msg.promptPrefix === 'string' ? msg.promptPrefix : undefined,
+                enabled: typeof msg.enabled === 'boolean' ? msg.enabled : undefined,
+              });
+              ws.send(JSON.stringify({ type: 'webhook_update_result', route }));
+            } catch (error) {
+              ws.send(JSON.stringify({ type: 'error', error: error instanceof Error ? error.message : 'Failed to update webhook route' }));
+            }
+            break;
+          }
+
+          case 'webhook_rotate_secret': {
+            const routeId = typeof msg.routeId === 'string' ? msg.routeId.trim() : '';
+            if (!routeId) {
+              ws.send(JSON.stringify({ type: 'error', error: 'routeId is required' }));
+              break;
+            }
+
+            try {
+              const route = await webhookService.rotateSecret(routeId);
+              ws.send(JSON.stringify({ type: 'webhook_rotate_secret_result', route }));
+            } catch (error) {
+              ws.send(JSON.stringify({ type: 'error', error: error instanceof Error ? error.message : 'Failed to rotate webhook secret' }));
+            }
+            break;
+          }
+
+          case 'routing_list': {
+            const rules = await routingService.listRules();
+            ws.send(JSON.stringify({ type: 'routing_list_result', rules }));
+            break;
+          }
+
+          case 'routing_create': {
+            const agentKey = typeof msg.agentKey === 'string' ? msg.agentKey : '';
+            const chatId = typeof msg.chatId === 'string' ? msg.chatId : undefined;
+            const userId = typeof msg.userId === 'string' ? msg.userId : undefined;
+            const accountId = typeof msg.accountId === 'string' ? msg.accountId : undefined;
+            const channel = typeof msg.scope === 'string' ? msg.scope : '*';
+
+            if (!agentKey.trim()) {
+              ws.send(JSON.stringify({ type: 'error', error: 'agentKey is required' }));
+              break;
+            }
+
+            try {
+              const rule = await routingService.createRule({
+                channel: (channel === '*' || channel === 'web' || channel === 'discord' || channel === 'slack' || channel === 'terminal')
+                  ? channel
+                  : '*',
+                accountId,
+                chatId,
+                userId,
+                agentKey,
+              });
+              ws.send(JSON.stringify({ type: 'routing_create_result', rule }));
+            } catch (error) {
+              ws.send(JSON.stringify({ type: 'error', error: error instanceof Error ? error.message : 'Failed to create routing rule' }));
+            }
+            break;
+          }
+
+          case 'routing_delete': {
+            const ruleId = typeof msg.ruleId === 'string' ? msg.ruleId.trim() : '';
+            if (!ruleId) {
+              ws.send(JSON.stringify({ type: 'error', error: 'ruleId is required' }));
+              break;
+            }
+
+            const deleted = await routingService.deleteRule(ruleId);
+            ws.send(JSON.stringify({ type: 'routing_delete_result', ruleId, deleted }));
+            break;
+          }
+
+          case 'node_pair_request': {
+            const nodeName = typeof msg.nodeName === 'string' ? msg.nodeName : 'Node';
+            const capabilities = Array.isArray(msg.capabilities) ? msg.capabilities.filter(isNodeCapability) : [];
+            try {
+              const request = await nodeService.requestPairing(nodeName, capabilities);
+              ws.send(JSON.stringify({ type: 'node_pair_request_result', request }));
+            } catch (error) {
+              ws.send(JSON.stringify({ type: 'error', error: error instanceof Error ? error.message : 'Failed to create pair request' }));
+            }
+            break;
+          }
+
+          case 'node_pair_pending': {
+            const pending = await nodeService.listPendingPairings();
+            ws.send(JSON.stringify({ type: 'node_pair_pending_result', pending }));
+            break;
+          }
+
+          case 'node_pair_approve': {
+            const requestId = typeof msg.requestId === 'string' ? msg.requestId.trim() : '';
+            const pairingCode = typeof msg.pairingCode === 'string' ? msg.pairingCode.trim() : '';
+            if (!requestId || !pairingCode) {
+              ws.send(JSON.stringify({ type: 'error', error: 'requestId and pairingCode are required' }));
+              break;
+            }
+
+            try {
+              const node = await nodeService.approvePairing(requestId, pairingCode);
+              ws.send(JSON.stringify({ type: 'node_pair_approve_result', node }));
+            } catch (error) {
+              ws.send(JSON.stringify({ type: 'error', error: error instanceof Error ? error.message : 'Failed to approve pair request' }));
+            }
+            break;
+          }
+
+          case 'node_pair_reject': {
+            const requestId = typeof msg.requestId === 'string' ? msg.requestId.trim() : '';
+            if (!requestId) {
+              ws.send(JSON.stringify({ type: 'error', error: 'requestId is required' }));
+              break;
+            }
+
+            const rejected = await nodeService.rejectPairing(requestId);
+            ws.send(JSON.stringify({ type: 'node_pair_reject_result', requestId, rejected }));
+            break;
+          }
+
+          case 'node_list': {
+            const nodes = await nodeService.listNodes();
+            ws.send(JSON.stringify({ type: 'node_list_result', nodes }));
+            break;
+          }
+
+          case 'node_describe': {
+            const nodeId = typeof msg.nodeId === 'string' ? msg.nodeId.trim() : '';
+            if (!nodeId) {
+              ws.send(JSON.stringify({ type: 'error', error: 'nodeId is required' }));
+              break;
+            }
+
+            const node = await nodeService.describeNode(nodeId);
+            ws.send(JSON.stringify({ type: 'node_describe_result', node }));
+            break;
+          }
+
+          case 'node_invoke': {
+            const nodeId = typeof msg.nodeId === 'string' ? msg.nodeId.trim() : '';
+            const capability = isNodeCapability(msg.capability) ? msg.capability : null;
+            if (!nodeId || !capability) {
+              ws.send(JSON.stringify({ type: 'error', error: 'nodeId and valid capability are required' }));
+              break;
+            }
+
+            const params = (msg.params && typeof msg.params === 'object')
+              ? { ...(msg.params as Record<string, unknown>), highRiskAck: msg.highRiskAck === true }
+              : { highRiskAck: msg.highRiskAck === true };
+
+            const result = await nodeService.invokeNode(nodeId, capability, params);
+            ws.send(JSON.stringify({ type: 'node_invoke_result', result }));
+            break;
+          }
         }
       } catch (error) {
         console.error('WebSocket message error:', error);
@@ -1054,6 +1555,23 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
     clearInterval(browserCleanupInterval);
     clearInterval(uploadCleanupInterval);
   });
+
+  return {
+    async close(): Promise<void> {
+      await new Promise<void>((resolve) => {
+        for (const client of wss.clients) {
+          client.close();
+        }
+
+        wss.close(() => {
+          server.close(() => {
+            Gateway.reset();
+            resolve();
+          });
+        });
+      });
+    },
+  };
 }
 
 function broadcast(wss: WebSocketServer, data: object): void {
@@ -1844,6 +2362,45 @@ export async function resolveWebMessageAttachments(
   return resolveMessageAttachmentRefs(workspacePath, sessionId, refs);
 }
 
+export async function handleWebhookInboundRequest(
+  req: import('node:http').IncomingMessage,
+  res: import('node:http').ServerResponse,
+  webhookService: WebhookService,
+  webhookId: string,
+): Promise<void> {
+  if ((req.method ?? 'GET').toUpperCase() !== 'POST') {
+    res.writeHead(405, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Method not allowed' }));
+    return;
+  }
+
+  if (!webhookId) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Webhook id is required' }));
+    return;
+  }
+
+  let body: Buffer;
+  try {
+    body = await readRequestBody(req, WEBHOOK_MAX_BODY_BYTES);
+  } catch (error) {
+    res.writeHead(413, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: error instanceof Error ? error.message : 'Request body too large' }));
+    return;
+  }
+
+  const signature = req.headers['x-keygate-signature'];
+  const signatureValue = Array.isArray(signature) ? signature[0] : signature;
+  const result = await webhookService.handleIncoming(webhookId, body.toString('utf8'), signatureValue);
+
+  res.writeHead(result.statusCode, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({
+    accepted: result.accepted,
+    message: result.message,
+    routeId: result.route?.id,
+  }));
+}
+
 async function readRequestBody(
   req: import('node:http').IncomingMessage,
   maxBytes: number
@@ -1892,6 +2449,21 @@ export async function resolveUploadPathByAttachmentId(
   attachmentId: string
 ): Promise<string | null> {
   return resolveUploadPathByAttachmentIdFromStore(workspacePath, sessionId, attachmentId);
+}
+
+function extractWebChatId(sessionId: string): string {
+  const normalized = sessionId.startsWith('web:') ? sessionId.slice(4) : sessionId;
+  const segments = normalized.split(':');
+  return segments[segments.length - 1] ?? normalized;
+}
+
+function isNodeCapability(value: unknown): value is NodeCapability {
+  return value === 'notify'
+    || value === 'location'
+    || value === 'camera'
+    || value === 'screen'
+    || value === 'shell'
+    || value === 'invoke';
 }
 
 function mapUploadedAttachmentForTransport(attachment: MessageAttachment): WSAttachmentRef {

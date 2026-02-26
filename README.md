@@ -21,6 +21,8 @@
 ## Features
 
 - **Multi-Channel**: Connect via Web UI (`localhost:18790`) or Discord bot
+- **DM Pairing Trust Model**: Unknown Slack/Discord DMs are gated by pairing codes (configurable open/closed/pairing)
+- **Long-term File Memory Recall**: `memory_search` + `memory_get` tools over `MEMORY.md` and `memory/*.md` with path+line snippets
 - **ReAct Agent Loop**: Iterative reasoning with tool calling
 - **OpenAI Codex OAuth**: Sign in with ChatGPT through Codex CLI/app-server (no API key paste)
 - **File-Based Agent Identity**: First-chat bootstrap with persistent `SOUL.md`, `USER.md`, `BOOTSTRAP.md`, and `IDENTITY.md`
@@ -170,6 +172,81 @@ Startup behavior:
 - `KEYGATE_OPEN_CHAT_ON_START=true` opens chat UI automatically when `keygate` starts
 - `KEYGATE_CHAT_URL=http://localhost:18790` controls which chat page is opened
 - `SPICY_MAX_OBEDIENCE_ENABLED=false` enables a spicy-only max-obedience toggle by default (still best-effort; provider hard blocks can remain)
+
+DM trust + pairing:
+- `DISCORD_DM_POLICY=pairing|open|closed` (default: `pairing`)
+- `DISCORD_ALLOW_FROM=123,456,*` (optional user id allowlist)
+- `SLACK_DM_POLICY=pairing|open|closed` (default: `pairing`)
+- `SLACK_ALLOW_FROM=U123,U456,*` (optional user id allowlist)
+- Approve a pairing code from terminal: `keygate pairing approve <discord|slack> <code>`
+- Show pending requests: `keygate pairing pending [discord|slack]`
+
+Diagnostics:
+- Run comprehensive environment + auth + gateway + routing checks: `keygate doctor`
+- CI-friendly mode (non-zero exit on failures): `keygate doctor --non-interactive`
+
+Tool risk engine + approval memory:
+- High/medium-risk tool actions are risk-scored before confirmation.
+- `allow_always` decisions are persisted with TTL (default 7 days).
+- Audit trail is written to `~/.config/keygate/approvals-audit.jsonl` (or your platform config dir).
+- Configure TTL with `KEYGATE_APPROVAL_TTL_HOURS`.
+
+Session delegation (sub-agents):
+- WebSocket API supports delegated session orchestration:
+  - `sessions_spawn` (create delegated child session)
+  - `sessions_list` (list delegated sessions)
+  - `sessions_history` (fetch bounded message history)
+  - `sessions_send` (inject a message into delegated session queue)
+  - `subagents` with `list|steer|kill`
+
+Scheduled automation (cron + wakeups):
+- Persistent scheduler job store at your Keygate config dir (`scheduler-jobs.json`).
+- Drift-resistant scheduler loop executes due jobs and dispatches prompts into target sessions.
+- WebSocket API:
+  - `scheduler_list`
+  - `scheduler_create` (`sessionId`, `cronExpression`, `prompt`, optional `enabled`)
+  - `scheduler_update` (`jobId`, optional `cronExpression|prompt|enabled`)
+  - `scheduler_delete` (`jobId`)
+  - `scheduler_trigger` (`jobId`) for immediate manual execution.
+- Cron format: standard 5-field (`minute hour day-of-month month day-of-week`), e.g. `*/15 * * * *`.
+- Safety note: scheduler jobs run through the same gateway/session pipeline as normal messages.
+
+Event-driven triggers (signed webhooks):
+- Create/list/delete/rotate webhook routes via WebSocket API:
+  - `webhook_list`
+  - `webhook_create` (`name`, `sessionId`, optional `promptPrefix`, optional `secret`)
+  - `webhook_delete` (`routeId`)
+  - `webhook_update` (`routeId`, optional `sessionId|promptPrefix|enabled`)
+  - `webhook_rotate_secret` (`routeId`)
+- Receive webhook events at: `POST /api/webhooks/<routeId>`
+- Signature header required: `x-keygate-signature: sha256=<hex-hmac>` using route secret.
+- Accepted payloads are routed into target sessions through standard gateway message flow.
+
+Multi-agent/channel routing rules:
+- Rules map inbound identities (`channel`, optional `accountId`, `chatId`, `userId`) to an `agentKey`.
+- Session isolation format: `<channel>:<agentKey>:<chatId>` (e.g. `discord:ops:123456`).
+- Workspace isolation root per routed session: `<WORKSPACE_PATH>/agents/<agentKey>`.
+- Routing rule management via WebSocket API:
+  - `routing_list`
+  - `routing_create` (fields: `scope` as channel or `*`, optional `accountId|chatId|userId`, required `agentKey`)
+  - `routing_delete` (`ruleId`)
+- Discord/Slack ingress now resolves routing before message processing.
+
+Device node architecture (pair/list/describe/invoke stubs):
+- Node pair workflow:
+  - `node_pair_request` (`nodeName`, `capabilities[]`)
+  - `node_pair_pending`
+  - `node_pair_approve` (`requestId`, `pairingCode`)
+  - `node_pair_reject` (`requestId`)
+- Node registry operations:
+  - `node_list`
+  - `node_describe` (`nodeId`)
+- Invocation API:
+  - `node_invoke` (`nodeId`, `capability`, optional `params`, optional `highRiskAck`)
+- Capability-aware permission behavior:
+  - invocation denied if node untrusted or capability not granted
+  - high-risk capabilities (`shell`, `screen`, `camera`) require explicit `highRiskAck=true`
+- Current implementation intentionally uses **stub execution mode** (permission checks + accepted/denied responses), ready for transport-specific executors.
 
 `openai-codex` uses `provider/model` format in config and UI, for example `openai-codex/gpt-5.2`.
 

@@ -12,6 +12,7 @@ import type {
   SessionCancelReason,
   Session,
   ToolExecutionContext,
+  Channel,
 } from '../types.js';
 import { LaneQueue } from './LaneQueue.js';
 import { Brain } from '../brain/Brain.js';
@@ -22,6 +23,7 @@ import { AgentMemoryStore } from '../db/agentMemory.js';
 import { createLLMProvider } from '../llm/index.js';
 import { SkillsManager } from '../skills/index.js';
 import { allBuiltinTools } from '../tools/builtin/index.js';
+import { SchedulerService, SchedulerStore, type ScheduledJob, type ScheduledJobCreateInput, type ScheduledJobUpdateInput } from '../scheduler/index.js';
 
 const CANCEL_HARD_STOP_TIMEOUT_MS = 2_000;
 
@@ -31,6 +33,15 @@ interface ActiveSessionRun {
   abortCleanups: Set<() => void | Promise<void>>;
   hardStopTimer: NodeJS.Timeout | null;
   cancelledReason: SessionCancelReason | null;
+}
+
+export interface DelegatedSessionRecord {
+  sessionId: string;
+  parentSessionId: string;
+  label: string;
+  createdAt: string;
+  updatedAt: string;
+  status: 'idle' | 'running' | 'cancelled';
 }
 
 /**
@@ -48,6 +59,8 @@ export class Gateway extends EventEmitter<KeygateEvents> {
   private sessions = new Map<string, Session>();
   private laneQueues = new Map<string, LaneQueue>();
   private activeRuns = new Map<string, ActiveSessionRun>();
+  private delegatedSessions = new Map<string, DelegatedSessionRecord>();
+  private sessionWorkspacePaths = new Map<string, string>();
   private securityMode: SecurityMode = 'safe';
 
   public readonly brain: Brain;
@@ -56,6 +69,8 @@ export class Gateway extends EventEmitter<KeygateEvents> {
   public readonly memory: AgentMemoryStore;
   public readonly config: KeygateConfig;
   public readonly skills: SkillsManager;
+  public readonly schedulerStore: SchedulerStore;
+  public readonly schedulerService: SchedulerService;
 
   private constructor(config: KeygateConfig) {
     super();
@@ -85,7 +100,13 @@ export class Gateway extends EventEmitter<KeygateEvents> {
     // Initialize brain with LLM provider
     this.brain = new Brain(config, this.toolExecutor, this, this.memory);
     this.skills = new SkillsManager({ config });
+    this.schedulerStore = new SchedulerStore();
+    this.schedulerService = new SchedulerService(this.schedulerStore, async (job) => {
+      await this.sendMessageToSession(job.sessionId, job.prompt, `scheduler:${job.id}`);
+    });
+
     void this.skills.ensureReady();
+    this.schedulerService.start();
   }
 
   /**
@@ -107,6 +128,7 @@ export class Gateway extends EventEmitter<KeygateEvents> {
   static reset(): void {
     if (Gateway.instance) {
       Gateway.instance.skills.stop();
+      Gateway.instance.schedulerService.stop();
       for (const sessionId of Gateway.instance.activeRuns.keys()) {
         Gateway.instance.cancelSessionRun(sessionId, 'disconnect');
       }
@@ -118,6 +140,9 @@ export class Gateway extends EventEmitter<KeygateEvents> {
    * Process an incoming message from any channel
    */
   async processMessage(message: NormalizedMessage): Promise<void> {
+    if (!this.sessionWorkspacePaths.has(message.sessionId)) {
+      this.sessionWorkspacePaths.set(message.sessionId, this.config.security.workspacePath);
+    }
     const queue = this.getOrCreateQueue(message.sessionId);
     
     await queue.enqueue(async () => {
@@ -397,6 +422,7 @@ export class Gateway extends EventEmitter<KeygateEvents> {
       updatedAt: new Date(),
     };
     this.sessions.set(session.id, session);
+    this.sessionWorkspacePaths.set(session.id, this.config.security.workspacePath);
     this.persistSessionSnapshot(session);
     return session;
   }
@@ -447,6 +473,132 @@ export class Gateway extends EventEmitter<KeygateEvents> {
         updatedAt: new Date(session.updatedAt),
       }))
       .sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime());
+  }
+
+  setSessionWorkspace(sessionId: string, workspacePath: string): void {
+    const normalized = workspacePath.trim();
+    if (!normalized) {
+      return;
+    }
+    this.sessionWorkspacePaths.set(sessionId, normalized);
+  }
+
+  getSessionWorkspace(sessionId: string): string | undefined {
+    return this.sessionWorkspacePaths.get(sessionId);
+  }
+
+  spawnDelegatedSession(parentSessionId: string, label?: string): DelegatedSessionRecord {
+    const parent = this.getSession(parentSessionId);
+    const now = new Date().toISOString();
+    const session: Session = {
+      id: `sub:${randomUUID()}`,
+      channelType: parent?.channelType ?? 'web',
+      title: label?.trim() || `Sub-agent for ${parentSessionId}`,
+      messages: [],
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    this.sessions.set(session.id, session);
+    const parentWorkspace = this.sessionWorkspacePaths.get(parentSessionId) ?? this.config.security.workspacePath;
+    this.sessionWorkspacePaths.set(session.id, parentWorkspace);
+    this.persistSessionSnapshot(session);
+
+    const record: DelegatedSessionRecord = {
+      sessionId: session.id,
+      parentSessionId,
+      label: label?.trim() || '',
+      createdAt: now,
+      updatedAt: now,
+      status: 'idle',
+    };
+    this.delegatedSessions.set(session.id, record);
+    return { ...record };
+  }
+
+  listDelegatedSessions(parentSessionId?: string): DelegatedSessionRecord[] {
+    return Array.from(this.delegatedSessions.values())
+      .filter((item) => !parentSessionId || item.parentSessionId === parentSessionId)
+      .map((item) => {
+        const active = this.activeRuns.has(item.sessionId);
+        const status: DelegatedSessionRecord['status'] = active ? 'running' : item.status;
+        return { ...item, status };
+      })
+      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  }
+
+  getSessionHistory(sessionId: string, limit = 50): Session['messages'] {
+    const session = this.getSession(sessionId);
+    if (!session) {
+      return [];
+    }
+
+    return session.messages.slice(-Math.max(1, limit)).map((msg) => ({ ...msg }));
+  }
+
+  async sendMessageToSession(sessionId: string, content: string, userId = 'delegate:system'): Promise<void> {
+    const session = this.getSession(sessionId);
+    if (!session) {
+      throw new Error(`Session not found: ${sessionId}`);
+    }
+
+    const record = this.delegatedSessions.get(sessionId);
+    if (record) {
+      record.updatedAt = new Date().toISOString();
+      record.status = 'running';
+    }
+
+    await this.processMessage({
+      id: randomUUID(),
+      sessionId,
+      channelType: session.channelType,
+      channel: createInternalDelegationChannel(session.channelType),
+      userId,
+      content,
+      timestamp: new Date(),
+    });
+
+    if (record) {
+      record.updatedAt = new Date().toISOString();
+      if (record.status !== 'cancelled') {
+        record.status = 'idle';
+      }
+    }
+  }
+
+  async steerDelegatedSession(sessionId: string, content: string): Promise<void> {
+    await this.sendMessageToSession(sessionId, `[STEER]\n${content}`, 'delegate:steer');
+  }
+
+  killDelegatedSession(sessionId: string, reason: SessionCancelReason = 'user'): void {
+    this.cancelSessionRun(sessionId, reason);
+    const record = this.delegatedSessions.get(sessionId);
+    if (record) {
+      record.status = 'cancelled';
+      record.updatedAt = new Date().toISOString();
+    }
+  }
+
+  async listScheduledJobs(): Promise<ScheduledJob[]> {
+    return this.schedulerStore.listJobs();
+  }
+
+  async createScheduledJob(input: ScheduledJobCreateInput): Promise<ScheduledJob> {
+    return this.schedulerStore.createJob(input);
+  }
+
+  async updateScheduledJob(jobId: string, patch: ScheduledJobUpdateInput): Promise<ScheduledJob> {
+    return this.schedulerStore.updateJob(jobId, patch);
+  }
+
+  async deleteScheduledJob(jobId: string): Promise<boolean> {
+    return this.schedulerStore.deleteJob(jobId);
+  }
+
+  async triggerScheduledJob(jobId: string): Promise<ScheduledJob> {
+    const firedAt = new Date();
+    const job = await this.schedulerStore.markTriggered(jobId, firedAt);
+    await this.sendMessageToSession(job.sessionId, job.prompt, `scheduler:${job.id}`);
+    return job;
   }
 
   /**
@@ -615,6 +767,14 @@ export class Gateway extends EventEmitter<KeygateEvents> {
 
     this.sessions.delete(resolvedSessionId);
     this.laneQueues.delete(resolvedSessionId);
+    this.sessionWorkspacePaths.delete(resolvedSessionId);
+    this.delegatedSessions.delete(resolvedSessionId);
+    for (const [delegatedSessionId, record] of this.delegatedSessions.entries()) {
+      if (record.parentSessionId === resolvedSessionId) {
+        this.delegatedSessions.delete(delegatedSessionId);
+        this.sessionWorkspacePaths.delete(delegatedSessionId);
+      }
+    }
 
     try {
       this.db.deleteSession(resolvedSessionId);
@@ -716,6 +876,23 @@ function isReservedTerminalSlashCommand(content: string, channelType: Session['c
 
   const normalized = content.trim().toLowerCase();
   return normalized === '/help' || normalized === '/new' || normalized === '/exit' || normalized === '/quit';
+}
+
+function createInternalDelegationChannel(type: Session['channelType']): Channel {
+  return {
+    type,
+    async send(_content: string) {
+      // Internal delegated run: response is persisted into session history by gateway pipeline.
+    },
+    async sendStream(stream: AsyncIterable<string>) {
+      for await (const _chunk of stream) {
+        // Consume stream so model output fully executes.
+      }
+    },
+    async requestConfirmation() {
+      return 'allow_once' as const;
+    },
+  };
 }
 
 function getDefaultModelForProvider(provider: KeygateConfig['llm']['provider']): string {

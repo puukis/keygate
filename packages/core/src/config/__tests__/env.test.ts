@@ -112,6 +112,20 @@ describe('loadConfigFromEnv', () => {
     expect(config.browser.mcpPlaywrightVersion).toBe('0.0.99');
   });
 
+  it('parses DM trust policy values from environment', () => {
+    vi.stubEnv('DISCORD_DM_POLICY', 'closed');
+    vi.stubEnv('DISCORD_ALLOW_FROM', '123,456');
+    vi.stubEnv('SLACK_DM_POLICY', 'open');
+    vi.stubEnv('SLACK_ALLOW_FROM', 'U1, U2');
+
+    const config = loadConfigFromEnv();
+
+    expect(config.discord?.dmPolicy).toBe('closed');
+    expect(config.discord?.allowFrom).toEqual(['123', '456']);
+    expect(config.slack?.dmPolicy).toBe('open');
+    expect(config.slack?.allowFrom).toEqual(['U1', 'U2']);
+  });
+
   it('reads persisted skills config from config.json', async () => {
     if (process.platform === 'win32') {
       vi.stubEnv('APPDATA', path.join('C:\\', 'Users', 'tester', 'AppData', 'Roaming'));

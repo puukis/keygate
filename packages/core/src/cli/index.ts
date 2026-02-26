@@ -11,6 +11,8 @@ import { runMcpCommand } from './commands/mcp.js';
 import { runTuiCommand } from './commands/tui.js';
 import { runSkillsCommand } from './commands/skills.js';
 import { runMemoryCommand } from './commands/memory.js';
+import { runPairingCommand } from './commands/pairing.js';
+import { runDoctorCommand } from './commands/doctor.js';
 
 export async function runCli(argv: string[]): Promise<boolean> {
   if (argv.length === 0) {
@@ -71,6 +73,12 @@ export async function runCli(argv: string[]): Promise<boolean> {
     case 'memory':
       await runMemoryCommand(args);
       return true;
+    case 'pairing':
+      await runPairingCommand(args);
+      return true;
+    case 'doctor':
+      await runDoctorCommand(args);
+      return true;
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -95,6 +103,8 @@ Usage:
   keygate mcp browser <install|status|remove|update>
   keygate skills <list|doctor|validate|where|install|update|remove|search|info|publish|unpublish|featured>
   keygate memory <list|get|set|delete|search|namespaces|clear>
+  keygate pairing <approve|pending>
+  keygate doctor [--non-interactive]
 
 Notes:
   - openai-codex uses ChatGPT OAuth through Codex app-server.

@@ -3,12 +3,13 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { readFileSync } from 'node:fs';
 import dotenv from 'dotenv';
-import type { BrowserDomainPolicy, CodexReasoningEffort, KeygateConfig } from '../types.js';
+import type { BrowserDomainPolicy, CodexReasoningEffort, DmPolicy, KeygateConfig } from '../types.js';
 
 const DEFAULT_ALLOWED_BINARIES = ['git', 'ls', 'npm', 'cat', 'node', 'python3'];
 const DEFAULT_DISCORD_PREFIX = '!keygate ';
 const DEFAULT_BROWSER_TRACE_RETENTION_DAYS = 7;
 const DEFAULT_MCP_PLAYWRIGHT_VERSION = '0.0.64';
+const DEFAULT_DM_POLICY: DmPolicy = 'pairing';
 const DEFAULT_BROWSER_ARTIFACTS_DIRNAME = '.keygate-browser-runs';
 const DEFAULT_SKILLS_WATCH = true;
 const DEFAULT_SKILLS_WATCH_DEBOUNCE_MS = 250;
@@ -108,11 +109,15 @@ export function loadConfigFromEnv(): KeygateConfig {
     discord: {
       token: process.env['DISCORD_TOKEN'] ?? '',
       prefix: discordPrefix,
+      dmPolicy: normalizeDmPolicy(process.env['DISCORD_DM_POLICY']),
+      allowFrom: parseIdList(process.env['DISCORD_ALLOW_FROM']),
     },
     slack: {
       botToken: process.env['SLACK_BOT_TOKEN'] ?? '',
       appToken: process.env['SLACK_APP_TOKEN'] ?? '',
       signingSecret: process.env['SLACK_SIGNING_SECRET'] ?? '',
+      dmPolicy: normalizeDmPolicy(process.env['SLACK_DM_POLICY']),
+      allowFrom: parseIdList(process.env['SLACK_ALLOW_FROM']),
     },
     skills: persistedSkillsConfig,
   };
@@ -242,6 +247,29 @@ function normalizeBrowserDomainPolicy(value: string | undefined): BrowserDomainP
     default:
       return 'none';
   }
+}
+
+function normalizeDmPolicy(value: string | undefined): DmPolicy {
+  switch (value?.trim().toLowerCase()) {
+    case 'open':
+      return 'open';
+    case 'closed':
+      return 'closed';
+    case 'pairing':
+    default:
+      return DEFAULT_DM_POLICY;
+  }
+}
+
+function parseIdList(value: string | undefined): string[] {
+  if (typeof value !== 'string') {
+    return [];
+  }
+
+  return value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
 }
 
 function parseDomainList(value: string | undefined): string[] {

@@ -52,5 +52,20 @@ DISCORD_TOKEN=
 # Discord command prefix (optional)
 DISCORD_PREFIX=!keygate
 
+# Discord DM trust policy: pairing|open|closed (default pairing)
+DISCORD_DM_POLICY=pairing
+
+# Discord DM allowlist user IDs (comma-separated, optional, '*' allows all)
+DISCORD_ALLOW_FROM=
+
+# Slack DM trust policy: pairing|open|closed (default pairing)
+SLACK_DM_POLICY=pairing
+
+# Slack DM allowlist user IDs (comma-separated, optional, '*' allows all)
+SLACK_ALLOW_FROM=
+
+# Approval memory TTL in hours for allow_always (default: 168)
+KEYGATE_APPROVAL_TTL_HOURS=168
+
 # Web search API key (optional, for Tavily)
 TAVILY_API_KEY=

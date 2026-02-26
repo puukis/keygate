@@ -38,12 +38,14 @@ export interface GatewayDeps {
   envPathExt: string | undefined;
   envCodexBin: string | undefined;
   argv1: string | undefined;
+  execArgv: string[];
   execPath: string;
   log: (message: string) => void;
   mkdir: (targetPath: string) => Promise<void>;
   writeFile: (targetPath: string, content: string) => Promise<void>;
   chmod: (targetPath: string, mode: number) => Promise<void>;
   runCommand: (command: string, args: string[], options?: { input?: string }) => CommandResult;
+  readFile: (targetPath: string) => Promise<string>;
 }
 
 export interface ServeLaunchSpec {
@@ -86,7 +88,7 @@ export async function runGatewayCommand(
       await delay(800);
     }
     await adapter.open();
-    const after = await adapter.status();
+    const after = await settleGatewayStatus(adapter, deps.platform);
     deps.log('Gateway restart requested.');
     printGatewayStatus(deps, after);
     return;
@@ -101,7 +103,7 @@ export async function runGatewayCommand(
     }
 
     await adapter.open();
-    const after = await adapter.status();
+    const after = await settleGatewayStatus(adapter, deps.platform);
     deps.log('Gateway open requested.');
     printGatewayStatus(deps, after);
     return;
@@ -126,6 +128,17 @@ export function parseGatewayAction(value: string | undefined): GatewayAction | n
   }
 
   return null;
+}
+
+async function settleGatewayStatus(adapter: GatewayManagerAdapter, platform: NodeJS.Platform): Promise<GatewayStatus> {
+  const first = await adapter.status();
+
+  if (platform !== 'darwin' || first.state !== 'running') {
+    return first;
+  }
+
+  await delay(700);
+  return adapter.status();
 }
 
 export function createGatewayAdapter(platform: NodeJS.Platform, deps: GatewayDeps): GatewayManagerAdapter {
@@ -159,6 +172,7 @@ function createGatewayDeps(overrides?: Partial<GatewayDeps>): GatewayDeps {
     envPathExt: process.env['PATHEXT'],
     envCodexBin: process.env['KEYGATE_CODEX_BIN'],
     argv1: process.argv[1],
+    execArgv: process.execArgv,
     execPath: process.execPath,
     log: (message: string) => {
       console.log(message);
@@ -174,6 +188,7 @@ function createGatewayDeps(overrides?: Partial<GatewayDeps>): GatewayDeps {
     },
     runCommand: (command: string, args: string[], options?: { input?: string }) =>
       runSync(command, args, options),
+    readFile: async (targetPath: string) => fs.readFile(targetPath, 'utf8'),
   };
 
   if (!overrides) {
@@ -269,6 +284,8 @@ function createMacOSAdapter(deps: GatewayDeps): GatewayManagerAdapter {
   const launcherPath = path.join(runtimeDir, 'launch-keygate.sh');
   const launchAgentsDir = path.join(deps.homeDir, 'Library', 'LaunchAgents');
   const plistPath = path.join(launchAgentsDir, `${MACOS_LABEL}.plist`);
+  const stdoutLogPath = path.join(runtimeDir, 'launchd.stdout.log');
+  const stderrLogPath = path.join(runtimeDir, 'launchd.stderr.log');
   const domain = resolveLaunchdDomain(deps);
   const launchSpec = resolveServeLaunchSpec(deps);
 
@@ -279,7 +296,7 @@ function createMacOSAdapter(deps: GatewayDeps): GatewayManagerAdapter {
       await deps.mkdir(launchAgentsDir);
       await deps.writeFile(launcherPath, buildShellLauncherContent(launchSpec));
       await deps.chmod(launcherPath, 0o755);
-      await deps.writeFile(plistPath, buildLaunchdPlistContent(launcherPath));
+      await deps.writeFile(plistPath, buildLaunchdPlistContent(launcherPath, stdoutLogPath, stderrLogPath));
     },
 
     async open() {
@@ -336,12 +353,33 @@ function createMacOSAdapter(deps: GatewayDeps): GatewayManagerAdapter {
 
       const stateMatch = result.stdout.match(/state = ([a-zA-Z]+)/);
       const pidMatch = result.stdout.match(/pid = ([0-9]+)/);
+      const activeCountMatch = result.stdout.match(/active count = ([0-9]+)/);
+      const lastExitCodeMatch = result.stdout.match(/last exit code = (-?[0-9]+)/);
 
-      if (pidMatch || stateMatch?.[1]?.toLowerCase() === 'running') {
+      const activeCount = activeCountMatch ? Number.parseInt(activeCountMatch[1]!, 10) : Number.NaN;
+      const lastExitCode = lastExitCodeMatch ? Number.parseInt(lastExitCodeMatch[1]!, 10) : 0;
+
+      if ((pidMatch || stateMatch?.[1]?.toLowerCase() === 'running') && (Number.isNaN(activeCount) || activeCount > 0)) {
         const pidSegment = pidMatch ? ` pid=${pidMatch[1]}` : '';
         return {
           state: 'running',
           detail: `launchd state=${stateMatch?.[1] ?? 'running'}${pidSegment}`,
+        };
+      }
+
+      if (!Number.isNaN(activeCount) && activeCount === 0) {
+        if (lastExitCode !== 0) {
+          const stderrTail = await readTailSafe(deps, stderrLogPath, 60);
+          const traceSegment = stderrTail ? `\nTrace:\n${stderrTail}` : '';
+          return {
+            state: 'unknown',
+            detail: `launchd crashed (last exit code=${lastExitCode}).${traceSegment}`,
+          };
+        }
+
+        return {
+          state: 'stopped',
+          detail: `launchd state=${stateMatch?.[1] ?? 'inactive'} active_count=0`,
         };
       }
 
@@ -474,9 +512,26 @@ function resolveServeLaunchSpec(deps: GatewayDeps): ServeLaunchSpec {
 
   const entry = deps.argv1?.trim();
   if (entry && entry.length > 0) {
+    const resolvedEntry = path.resolve(entry);
+    if (isTypeScriptEntry(resolvedEntry)) {
+      if (deps.execArgv.length > 0) {
+        return {
+          command: deps.execPath,
+          args: [...deps.execArgv, resolvedEntry, 'serve'],
+          env,
+        };
+      }
+
+      return {
+        command: 'tsx',
+        args: [resolvedEntry, 'serve'],
+        env,
+      };
+    }
+
     return {
       command: deps.execPath,
-      args: [path.resolve(entry), 'serve'],
+      args: [resolvedEntry, 'serve'],
       env,
     };
   }
@@ -486,6 +541,13 @@ function resolveServeLaunchSpec(deps: GatewayDeps): ServeLaunchSpec {
     args: ['serve'],
     env,
   };
+}
+
+function isTypeScriptEntry(entryPath: string): boolean {
+  return entryPath.endsWith('.ts')
+    || entryPath.endsWith('.tsx')
+    || entryPath.endsWith('.mts')
+    || entryPath.endsWith('.cts');
 }
 
 export function buildShellLauncherContent(spec: ServeLaunchSpec): string {
@@ -528,7 +590,11 @@ export function buildLinuxUnitContent(launcherPath: string): string {
   ].join('\n');
 }
 
-export function buildLaunchdPlistContent(launcherPath: string): string {
+export function buildLaunchdPlistContent(
+  launcherPath: string,
+  stdoutLogPath?: string,
+  stderrLogPath?: string,
+): string {
   const escapedLauncher = escapeXml(launcherPath);
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -551,6 +617,18 @@ export function buildLaunchdPlistContent(launcherPath: string): string {
     '    <key>KEYGATE_OPEN_CHAT_ON_START</key>',
     '    <string>false</string>',
     '  </dict>',
+    ...(stdoutLogPath
+      ? [
+          '  <key>StandardOutPath</key>',
+          `  <string>${escapeXml(stdoutLogPath)}</string>`,
+        ]
+      : []),
+    ...(stderrLogPath
+      ? [
+          '  <key>StandardErrorPath</key>',
+          `  <string>${escapeXml(stderrLogPath)}</string>`,
+        ]
+      : []),
     '</dict>',
     '</plist>',
     '',
@@ -580,6 +658,16 @@ function printGatewayStatus(deps: GatewayDeps, status: GatewayStatus): void {
   deps.log(`Gateway status: ${status.state}`);
   if (status.detail.trim().length > 0) {
     deps.log(`Detail: ${status.detail}`);
+  }
+}
+
+async function readTailSafe(deps: GatewayDeps, filePath: string, maxLines: number): Promise<string> {
+  try {
+    const raw = await deps.readFile(filePath);
+    const lines = raw.split(/\r?\n/).filter((line) => line.trim().length > 0);
+    return lines.slice(-Math.max(1, maxLines)).join('\n');
+  } catch {
+    return '';
   }
 }
 

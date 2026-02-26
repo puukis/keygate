@@ -77,6 +77,18 @@ interface LLMState {
   reasoningEffort?: CodexReasoningEffort;
 }
 
+interface ScheduledJobView {
+  id: string;
+  sessionId: string;
+  cronExpression: string;
+  prompt: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+  lastRunAt?: string;
+  nextRunAt: string | null;
+}
+
 export interface ProviderModelOption {
   id: string;
   provider: LLMProviderId;
@@ -388,6 +400,39 @@ function parseOriginListInput(value: unknown): string[] {
 
 function stringifyOriginList(origins: string[]): string {
   return origins.join(', ');
+}
+
+function parseScheduledJobs(value: unknown): ScheduledJobView[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+    .map((entry) => ({
+      id: String(entry['id'] ?? ''),
+      sessionId: String(entry['sessionId'] ?? ''),
+      cronExpression: String(entry['cronExpression'] ?? ''),
+      prompt: String(entry['prompt'] ?? ''),
+      enabled: entry['enabled'] !== false,
+      createdAt: String(entry['createdAt'] ?? ''),
+      updatedAt: String(entry['updatedAt'] ?? ''),
+      lastRunAt: firstString(entry['lastRunAt']),
+      nextRunAt: firstString(entry['nextRunAt']) ?? null,
+    }))
+    .filter((entry) => entry.id.length > 0 && entry.sessionId.length > 0);
+}
+
+function formatMaybeTimestamp(value: string | null | undefined): string {
+  if (!value) {
+    return '—';
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString();
 }
 
 function normalizeDiscordPrefixInput(value: string, fallbackToDefault = false): string {
@@ -742,6 +787,7 @@ function App() {
   const [spicyObedienceEnabled, setSpicyObedienceEnabled] = useState(false);
   const [spicyEnableAck, setSpicyEnableAck] = useState('');
   const [isConfigMenuOpen, setIsConfigMenuOpen] = useState(false);
+  const [activeScreen, setActiveScreen] = useState<'chat' | 'automations'>('chat');
   const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null);
   const [themePreference, setThemePreference] = useState<ThemePreference>(() => readThemePreference());
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() => (
@@ -785,6 +831,13 @@ function App() {
 
   const [agentMemories, setAgentMemories] = useState<MemoryEntryView[]>([]);
   const [agentMemoryNamespaces, setAgentMemoryNamespaces] = useState<string[]>([]);
+
+  const [scheduledJobs, setScheduledJobs] = useState<ScheduledJobView[]>([]);
+  const [schedulerSessionDraft, setSchedulerSessionDraft] = useState('');
+  const [schedulerCronDraft, setSchedulerCronDraft] = useState('*/5 * * * *');
+  const [schedulerPromptDraft, setSchedulerPromptDraft] = useState('');
+  const [schedulerEnabledDraft, setSchedulerEnabledDraft] = useState(true);
+  const [schedulerEditingJobId, setSchedulerEditingJobId] = useState<string | null>(null);
 
   const [latestScreenshot, setLatestScreenshot] = useState<LatestScreenshotPreview | null>(null);
 
@@ -1537,6 +1590,44 @@ function App() {
         break;
       }
 
+      case 'scheduler_list_result': {
+        setScheduledJobs(parseScheduledJobs(data['jobs']));
+        break;
+      }
+
+      case 'scheduler_create_result':
+      case 'scheduler_update_result':
+      case 'scheduler_trigger_result': {
+        const job = asRecord(data['job']);
+        if (job) {
+          const parsed = parseScheduledJobs([job]);
+          if (parsed.length > 0) {
+            const next = parsed[0]!;
+            setScheduledJobs((prev) => {
+              const filtered = prev.filter((item) => item.id !== next.id);
+              return [...filtered, next].sort((a, b) => a.sessionId.localeCompare(b.sessionId));
+            });
+          }
+        }
+
+        if (type === 'scheduler_create_result' || type === 'scheduler_update_result') {
+          setSchedulerPromptDraft('');
+          setSchedulerEditingJobId(null);
+        }
+        break;
+      }
+
+      case 'scheduler_delete_result': {
+        const jobId = firstString(data['jobId']);
+        if (jobId && data['deleted'] === true) {
+          setScheduledJobs((prev) => prev.filter((job) => job.id !== jobId));
+          if (schedulerEditingJobId === jobId) {
+            setSchedulerEditingJobId(null);
+          }
+        }
+        break;
+      }
+
       case 'error': {
         setDiscordSaving(false);
         setSlackSaving(false);
@@ -1576,6 +1667,7 @@ function App() {
     clearStreamActivities,
     mainSessionId,
     pendingProviderSwitch,
+    schedulerEditingJobId,
     selectedSessionId,
   ]);
 
@@ -1605,15 +1697,22 @@ function App() {
       send({ type: 'get_mcp_browser_status' });
     };
 
+    const requestSchedulerJobs = () => {
+      send({ type: 'scheduler_list' });
+    };
+
     requestSnapshot();
     requestBrowserStatus();
+    requestSchedulerJobs();
 
     const snapshotIntervalId = window.setInterval(requestSnapshot, 2500);
     const browserIntervalId = window.setInterval(requestBrowserStatus, 8000);
+    const schedulerIntervalId = window.setInterval(requestSchedulerJobs, 10000);
 
     return () => {
       window.clearInterval(snapshotIntervalId);
       window.clearInterval(browserIntervalId);
+      window.clearInterval(schedulerIntervalId);
     };
   }, [connected, send]);
 
@@ -1805,6 +1904,20 @@ function App() {
     setIsConfigMenuOpen(false);
   }, [connected, mainSessionId, selectedSessionId, send]);
 
+  const handleTerminateAllSessions = useCallback(() => {
+    if (!connected) {
+      return;
+    }
+
+    const confirmed = window.confirm('Terminate all sessions? This will delete every session and create a fresh one.');
+    if (!confirmed) {
+      return;
+    }
+
+    send({ type: 'delete_all_sessions' });
+    setIsConfigMenuOpen(false);
+  }, [connected, send]);
+
   const handleNewSession = useCallback(() => {
     if (!connected) return;
     send({ type: 'new_session' });
@@ -1977,6 +2090,100 @@ function App() {
     send,
   ]);
 
+  const handleSchedulerCreateOrUpdate = useCallback(() => {
+    const cronExpression = schedulerCronDraft.trim();
+    const prompt = schedulerPromptDraft.trim();
+    const sessionId = schedulerSessionDraft.trim() || activeSessionId || mainSessionId || '';
+
+    if (!sessionId) {
+      alert('Please select a target session for the automation.');
+      return;
+    }
+
+    if (!cronExpression) {
+      alert('Cron expression is required.');
+      return;
+    }
+
+    if (!prompt) {
+      alert('Prompt is required.');
+      return;
+    }
+
+    if (schedulerEditingJobId) {
+      send({
+        type: 'scheduler_update',
+        jobId: schedulerEditingJobId,
+        sessionId,
+        cronExpression,
+        prompt,
+        enabled: schedulerEnabledDraft,
+      });
+      return;
+    }
+
+    send({
+      type: 'scheduler_create',
+      sessionId,
+      cronExpression,
+      prompt,
+      enabled: schedulerEnabledDraft,
+    });
+  }, [
+    activeSessionId,
+    mainSessionId,
+    schedulerCronDraft,
+    schedulerEditingJobId,
+    schedulerEnabledDraft,
+    schedulerPromptDraft,
+    schedulerSessionDraft,
+    send,
+  ]);
+
+  const handleSchedulerEdit = useCallback((job: ScheduledJobView) => {
+    setSchedulerEditingJobId(job.id);
+    setSchedulerSessionDraft(job.sessionId);
+    setSchedulerCronDraft(job.cronExpression);
+    setSchedulerPromptDraft(job.prompt);
+    setSchedulerEnabledDraft(job.enabled);
+  }, []);
+
+  const handleSchedulerCancelEdit = useCallback(() => {
+    setSchedulerEditingJobId(null);
+    setSchedulerSessionDraft('');
+    setSchedulerCronDraft('*/5 * * * *');
+    setSchedulerPromptDraft('');
+    setSchedulerEnabledDraft(true);
+  }, []);
+
+  const handleSchedulerToggle = useCallback((job: ScheduledJobView, enabled: boolean) => {
+    send({ type: 'scheduler_update', jobId: job.id, enabled });
+  }, [send]);
+
+  const handleSchedulerRunNow = useCallback((job: ScheduledJobView) => {
+    const sessionExists = Boolean(sessionState.metaBySession[job.sessionId]);
+    if (!sessionExists) {
+      alert(`Target session not found: ${job.sessionId}\nEdit this automation and choose an existing session.`);
+      return;
+    }
+
+    send({ type: 'scheduler_trigger', jobId: job.id });
+
+    // After trigger request, focus target session so the resulting messages are visible.
+    setSelectedSessionId(job.sessionId);
+    if (job.sessionId.startsWith('web:')) {
+      send({ type: 'switch_session', sessionId: job.sessionId });
+    }
+  }, [send, sessionState.metaBySession]);
+
+  const handleSchedulerDelete = useCallback((jobId: string) => {
+    send({ type: 'scheduler_delete', jobId });
+  }, [send]);
+
+  const applyCronPreset = useCallback((preset: string) => {
+    setSchedulerCronDraft(preset);
+  }, []);
+
   const discordHasChanges =
     discordPrefixDraft !== discordConfig.prefix ||
     discordTokenDraft.trim().length > 0 ||
@@ -1998,6 +2205,7 @@ function App() {
   const browserBusy = browserSaving || browserActionPending !== null;
 
   const canClearMainSession = connected && !!mainSessionId && selectedSessionId === mainSessionId && !activeIsStreaming;
+  const canTerminateAllSessions = connected && !activeIsStreaming;
 
   const activeReadOnlyChannel = activeIsReadOnly && activeSessionId
     ? getChannelTypeForSession(activeSessionId)
@@ -2047,6 +2255,22 @@ function App() {
           </div>
           <button
             className="btn-secondary"
+            onClick={() => setActiveScreen('chat')}
+            aria-pressed={activeScreen === 'chat'}
+            title="Chat"
+          >
+            Chat
+          </button>
+          <button
+            className="btn-secondary"
+            onClick={() => setActiveScreen('automations')}
+            aria-pressed={activeScreen === 'automations'}
+            title="Automations"
+          >
+            Automations
+          </button>
+          <button
+            className="btn-secondary"
             onClick={handleThemeToggle}
             title={themePreference === 'system'
               ? `Following system (${resolvedThemeLabel})`
@@ -2082,34 +2306,144 @@ function App() {
           disabled={!connected}
         />
         <section className="chat-shell">
-          <div className="chat-toolbar">
-            {activeContextUsage && activeContextUsage.limitTokens > 0 && (
-              <div className="context-meter" title={`Context: ${activeContextUsage.usedTokens.toLocaleString()} / ${activeContextUsage.limitTokens.toLocaleString()} tokens (${activeContextUsage.percent}%)`}>
-                <div className="context-meter-bar">
-                  <div
-                    className={`context-meter-fill${activeContextUsage.percent >= 90 ? ' context-meter-critical' : activeContextUsage.percent >= 70 ? ' context-meter-warn' : ''}`}
-                    style={{ width: `${activeContextUsage.percent}%` }}
-                  />
-                </div>
-                <span className="context-meter-label">{activeContextUsage.percent}%</span>
+          {activeScreen === 'chat' ? (
+            <>
+              <div className="chat-toolbar">
+                {activeContextUsage && activeContextUsage.limitTokens > 0 && (
+                  <div className="context-meter" title={`Context: ${activeContextUsage.usedTokens.toLocaleString()} / ${activeContextUsage.limitTokens.toLocaleString()} tokens (${activeContextUsage.percent}%)`}>
+                    <div className="context-meter-bar">
+                      <div
+                        className={`context-meter-fill${activeContextUsage.percent >= 90 ? ' context-meter-critical' : activeContextUsage.percent >= 70 ? ' context-meter-warn' : ''}`}
+                        style={{ width: `${activeContextUsage.percent}%` }}
+                      />
+                    </div>
+                    <span className="context-meter-label">{activeContextUsage.percent}%</span>
+                  </div>
+                )}
+                {activeIsReadOnly && (
+                  <span className="session-readonly-chip">{readOnlyChipText}</span>
+                )}
               </div>
-            )}
-            {activeIsReadOnly && (
-              <span className="session-readonly-chip">{readOnlyChipText}</span>
-            )}
-          </div>
 
-          <ChatView
-            messages={activeMessages}
-            onSendMessage={handleSendMessage}
-            onStop={handleStopStreaming}
-            isStreaming={activeIsStreaming}
-            streamActivities={activeStreamActivities}
-            disabled={composerDisabled}
-            inputPlaceholder={composerPlaceholder}
-            sessionIdForUploads={activeSessionId}
-            readOnlyHint={activeIsReadOnly ? readOnlyHintText : undefined}
-          />
+              <ChatView
+                messages={activeMessages}
+                onSendMessage={handleSendMessage}
+                onStop={handleStopStreaming}
+                isStreaming={activeIsStreaming}
+                streamActivities={activeStreamActivities}
+                disabled={composerDisabled}
+                inputPlaceholder={composerPlaceholder}
+                sessionIdForUploads={activeSessionId}
+                readOnlyHint={activeIsReadOnly ? readOnlyHintText : undefined}
+              />
+            </>
+          ) : (
+            <div className="automations-screen">
+              <h2>Automations & Scheduler</h2>
+              <p className="config-note">Create and manage scheduled automations for any session.</p>
+
+              <div className="scheduler-controls">
+                <label className="llm-control config-control">
+                  <span>Target Session</span>
+                  <select
+                    className="llm-select"
+                    value={schedulerSessionDraft || activeSessionId || ''}
+                    onChange={(event) => setSchedulerSessionDraft(event.target.value)}
+                    disabled={!connected || activeIsStreaming}
+                  >
+                    <option value="">Current active session</option>
+                    {sessionOptions.map((option) => (
+                      <option key={option.sessionId} value={option.sessionId}>
+                        {option.label} ({option.sessionId})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="llm-control config-control">
+                  <span>Cron expression</span>
+                  <input
+                    className="config-text-input"
+                    type="text"
+                    value={schedulerCronDraft}
+                    onChange={(event) => setSchedulerCronDraft(event.target.value)}
+                    placeholder="*/5 * * * *"
+                    disabled={!connected || activeIsStreaming}
+                  />
+                </label>
+
+                <div className="scheduler-presets" role="group" aria-label="Cron presets">
+                  <button className="btn-secondary" onClick={() => applyCronPreset('*/5 * * * *')} disabled={!connected || activeIsStreaming}>Every 5 min</button>
+                  <button className="btn-secondary" onClick={() => applyCronPreset('0 9 * * *')} disabled={!connected || activeIsStreaming}>Daily 09:00</button>
+                  <button className="btn-secondary" onClick={() => applyCronPreset('0 9 * * 1-5')} disabled={!connected || activeIsStreaming}>Weekdays 09:00</button>
+                </div>
+
+                <label className="llm-control config-control">
+                  <span>Prompt / automation instruction</span>
+                  <textarea
+                    className="config-textarea"
+                    value={schedulerPromptDraft}
+                    onChange={(event) => setSchedulerPromptDraft(event.target.value)}
+                    placeholder="e.g. summarize new notifications"
+                    disabled={!connected || activeIsStreaming}
+                    rows={3}
+                  />
+                </label>
+
+                <label className="config-switch-row">
+                  <span className="config-switch-copy">
+                    <strong>Enabled</strong>
+                    <small>Disabled jobs stay saved but do not run.</small>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={schedulerEnabledDraft}
+                    onChange={(event) => setSchedulerEnabledDraft(event.target.checked)}
+                    disabled={!connected || activeIsStreaming}
+                  />
+                </label>
+
+                <div className="scheduler-actions">
+                  <button className="btn-secondary" onClick={() => send({ type: 'scheduler_list' })} disabled={!connected || activeIsStreaming}>Refresh jobs</button>
+                  <button className="btn-secondary" onClick={handleSchedulerCreateOrUpdate} disabled={!connected || activeIsStreaming}>
+                    {schedulerEditingJobId ? 'Update job' : 'Create job'}
+                  </button>
+                  {schedulerEditingJobId && (
+                    <button className="btn-secondary" onClick={handleSchedulerCancelEdit} disabled={!connected || activeIsStreaming}>Cancel edit</button>
+                  )}
+                </div>
+              </div>
+
+              <div className="scheduler-list" role="region" aria-label="Scheduled jobs">
+                {scheduledJobs.length === 0 ? (
+                  <p className="config-note">No automation jobs yet.</p>
+                ) : (
+                  <ul className="scheduler-job-list">
+                    {scheduledJobs
+                      .slice()
+                      .sort((a, b) => (a.nextRunAt ?? '').localeCompare(b.nextRunAt ?? ''))
+                      .map((job) => (
+                        <li key={job.id} className="scheduler-job-item">
+                          <div>
+                            <strong>{job.enabled ? '🟢' : '⚪️'} {job.cronExpression}</strong>
+                            <div className="config-note">Session: {job.sessionId}{sessionState.metaBySession[job.sessionId] ? '' : ' (missing)'}</div>
+                            <div className="config-note">Next: {formatMaybeTimestamp(job.nextRunAt)}</div>
+                            <div className="config-note">Last: {formatMaybeTimestamp(job.lastRunAt)}</div>
+                            <div className="config-note">Prompt: {job.prompt}</div>
+                          </div>
+                          <div className="scheduler-job-actions">
+                            <button className="btn-secondary" onClick={() => handleSchedulerEdit(job)} disabled={!connected || activeIsStreaming}>Edit</button>
+                            <button className="btn-secondary" onClick={() => handleSchedulerToggle(job, !job.enabled)} disabled={!connected || activeIsStreaming}>{job.enabled ? 'Disable' : 'Enable'}</button>
+                            <button className="btn-secondary" onClick={() => handleSchedulerRunNow(job)} disabled={!connected || activeIsStreaming}>Run now</button>
+                            <button className="btn-secondary" onClick={() => handleSchedulerDelete(job.id)} disabled={!connected || activeIsStreaming}>Delete</button>
+                          </div>
+                        </li>
+                      ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          )}
         </section>
 
         <LiveActivityLog
@@ -2561,13 +2895,22 @@ function App() {
 
             <section className="config-section">
               <h3>Session</h3>
-              <button
-                className="btn-secondary"
-                onClick={handleClearSession}
-                disabled={!canClearMainSession}
-              >
-                Clear main session
-              </button>
+              <div className="scheduler-actions">
+                <button
+                  className="btn-secondary"
+                  onClick={handleClearSession}
+                  disabled={!canClearMainSession}
+                >
+                  Clear main session
+                </button>
+                <button
+                  className="btn-secondary"
+                  onClick={handleTerminateAllSessions}
+                  disabled={!canTerminateAllSessions}
+                >
+                  Terminate all sessions
+                </button>
+              </div>
             </section>
 
             <section className="config-section">

@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const { runTuiCommand, runSkillsCommand } = vi.hoisted(() => ({
+const { runTuiCommand, runSkillsCommand, runDoctorCommand } = vi.hoisted(() => ({
   runTuiCommand: vi.fn(async () => undefined),
   runSkillsCommand: vi.fn(async () => undefined),
+  runDoctorCommand: vi.fn(async () => undefined),
 }));
 
 vi.mock('../commands/tui.js', () => ({
@@ -11,6 +12,9 @@ vi.mock('../commands/tui.js', () => ({
 vi.mock('../commands/skills.js', () => ({
   runSkillsCommand,
 }));
+vi.mock('../commands/doctor.js', () => ({
+  runDoctorCommand,
+}));
 
 import { printHelp, runCli } from '../index.js';
 
@@ -18,6 +22,7 @@ describe('cli index', () => {
   afterEach(() => {
     runTuiCommand.mockClear();
     runSkillsCommand.mockClear();
+    runDoctorCommand.mockClear();
   });
 
   it('routes tui command to runTuiCommand', async () => {
@@ -32,12 +37,19 @@ describe('cli index', () => {
     expect(runSkillsCommand).toHaveBeenCalledTimes(1);
   });
 
+  it('routes doctor command to runDoctorCommand', async () => {
+    const handled = await runCli(['doctor', '--non-interactive']);
+    expect(handled).toBe(true);
+    expect(runDoctorCommand).toHaveBeenCalledTimes(1);
+  });
+
   it('prints tui command in help output', () => {
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     try {
       printHelp();
       const helpText = consoleSpy.mock.calls.map((call) => call[0]).join('\n');
       expect(helpText).toContain('keygate tui');
+      expect(helpText).toContain('keygate doctor');
     } finally {
       consoleSpy.mockRestore();
     }

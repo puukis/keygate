@@ -13,6 +13,12 @@ import type {
 import type { Gateway } from '../gateway/Gateway.js';
 import { getDefaultWorkspacePath } from '../config/env.js';
 import { withEnvOverlay } from '../runtime/index.js';
+import {
+  appendApprovalAudit,
+  assessToolRisk,
+  hasRememberedApproval,
+  rememberApproval,
+} from '../security/riskEngine.js';
 
 const MANAGED_CONTEXT_FILES = new Set([
   'soul.md',
@@ -113,12 +119,12 @@ export class ToolExecutor {
 
     try {
       // Normalize filesystem path arguments before validation and execution.
-      this.normalizeFilesystemCallPath(tool, call);
-      this.normalizeShellCallWorkingDirectory(tool, call);
+      this.normalizeFilesystemCallPath(tool, call, sessionId);
+      this.normalizeShellCallWorkingDirectory(tool, call, sessionId);
 
       // Apply security checks in Safe Mode
       if (this.mode === 'safe') {
-        await this.applySafetyChecks(tool, call, channel);
+        await this.applySafetyChecks(tool, call, channel, sessionId);
       }
 
       // Execute the tool with turn-scoped env overlay (no global env mutation).
@@ -160,13 +166,14 @@ export class ToolExecutor {
   private async applySafetyChecks(
     tool: Tool,
     call: ToolCall,
-    channel: Channel
+    channel: Channel,
+    sessionId: string,
   ): Promise<void> {
     // Path validation for filesystem tools
     if (tool.type === 'filesystem') {
       const targetPath = call.arguments['path'] as string | undefined;
       if (targetPath) {
-        this.assertPathAllowedInSafeMode(targetPath);
+        this.assertPathAllowedInSafeMode(targetPath, sessionId);
       }
     }
 
@@ -180,20 +187,63 @@ export class ToolExecutor {
 
       const cwd = call.arguments['cwd'] as string | undefined;
       if (cwd) {
-        this.assertShellWorkingDirectoryAllowedInSafeMode(cwd);
+        this.assertShellWorkingDirectoryAllowedInSafeMode(cwd, sessionId);
       }
     }
 
     // Human-in-the-loop confirmation for dangerous operations
     if (tool.requiresConfirmation) {
+      const signature = this.buildConfirmationSignature(call);
+      const risk = assessToolRisk(tool, call);
+
       if (this.shouldBypassConfirmationForManagedMarkdown(tool, call)) {
+        await appendApprovalAudit({
+          sessionId,
+          toolName: tool.name,
+          signature,
+          risk,
+          decision: 'auto_allow_low_risk',
+          detail: 'managed continuity markdown bypass',
+        });
         return;
       }
 
       if (this.isAlwaysAllowed(call)) {
+        await appendApprovalAudit({
+          sessionId,
+          toolName: tool.name,
+          signature,
+          risk,
+          decision: 'remembered_allow',
+          detail: 'session remember allow_always',
+        });
         return;
       }
-      
+
+      if (risk.level === 'low') {
+        await appendApprovalAudit({
+          sessionId,
+          toolName: tool.name,
+          signature,
+          risk,
+          decision: 'auto_allow_low_risk',
+          detail: risk.reason,
+        });
+        return;
+      }
+
+      if (await hasRememberedApproval(signature, risk.level)) {
+        await appendApprovalAudit({
+          sessionId,
+          toolName: tool.name,
+          signature,
+          risk,
+          decision: 'remembered_allow',
+          detail: 'persisted approval memory hit',
+        });
+        return;
+      }
+
       let baseCommand = '';
       let baseCommandKey = '';
       let canPersistGlobalCommand = false;
@@ -210,36 +260,72 @@ export class ToolExecutor {
         if (baseCommandKey && canPersistGlobalCommand) {
           const globalAllowed = await getAllowedCommandsSet();
           if (globalAllowed.has(baseCommandKey)) {
-            return; // Auto-allowed by global base command registry
+            await appendApprovalAudit({
+              sessionId,
+              toolName: tool.name,
+              signature,
+              risk,
+              decision: 'remembered_allow',
+              detail: `global base command allowlist: ${baseCommand}`,
+            });
+            return;
           }
         }
       }
 
       const decision = await this.requestConfirmation(call, channel);
       if (decision === 'allow_always') {
-        this.allowAlwaysSignatures.add(this.buildConfirmationSignature(call));
-        
+        this.allowAlwaysSignatures.add(signature);
+        await rememberApproval(signature, tool.name, risk.level);
+
         if (baseCommand && canPersistGlobalCommand) {
           const { addAllowedCommand } = await import('../config/allowedCommands.js');
           await addAllowedCommand(baseCommand);
         }
-        
+
+        await appendApprovalAudit({
+          sessionId,
+          toolName: tool.name,
+          signature,
+          risk,
+          decision: 'allow_always',
+          detail: 'user confirmed allow_always',
+        });
         return;
       }
 
-      if (decision !== 'allow_once') {
-        throw new Error('Action cancelled by user');
+      if (decision === 'allow_once') {
+        await appendApprovalAudit({
+          sessionId,
+          toolName: tool.name,
+          signature,
+          risk,
+          decision: 'allow_once',
+          detail: 'user confirmed allow_once',
+        });
+        return;
       }
+
+      await appendApprovalAudit({
+        sessionId,
+        toolName: tool.name,
+        signature,
+        risk,
+        decision: 'cancel',
+        detail: 'user cancelled action',
+      });
+      throw new Error('Action cancelled by user');
     }
   }
 
   /**
    * Assert that a path is within the safe-mode allowlist.
    */
-  private assertPathAllowedInSafeMode(targetPath: string): void {
+  private assertPathAllowedInSafeMode(targetPath: string, sessionId: string): void {
     const resolvedPath = path.normalize(targetPath);
+    const workspacePath = this.getWorkspacePathForSession(sessionId);
 
-    if (this.isPathWithinRoot(resolvedPath, this.workspacePath)) {
+    if (this.isPathWithinRoot(resolvedPath, workspacePath)) {
       return;
     }
 
@@ -249,11 +335,11 @@ export class ToolExecutor {
 
     throw new Error(
       `Access denied: Path "${targetPath}" is outside Safe Mode allowlist. ` +
-      `Allowed: workspace "${this.workspacePath}" and managed context markdown files in "${this.agentContextPath}".`
+      `Allowed: workspace "${workspacePath}" and managed context markdown files in "${this.agentContextPath}".`
     );
   }
 
-  private normalizeFilesystemCallPath(tool: Tool, call: ToolCall): void {
+  private normalizeFilesystemCallPath(tool: Tool, call: ToolCall, sessionId: string): void {
     if (tool.type !== 'filesystem') {
       return;
     }
@@ -263,17 +349,18 @@ export class ToolExecutor {
       return;
     }
 
-    call.arguments['path'] = this.resolveFilesystemPath(targetPath);
+    call.arguments['path'] = this.resolveFilesystemPath(targetPath, sessionId);
   }
 
-  private normalizeShellCallWorkingDirectory(tool: Tool, call: ToolCall): void {
+  private normalizeShellCallWorkingDirectory(tool: Tool, call: ToolCall, sessionId: string): void {
     if (tool.type !== 'shell') {
       return;
     }
 
+    const workspacePath = this.getWorkspacePathForSession(sessionId);
     const cwd = call.arguments['cwd'];
     if (typeof cwd !== 'string' || cwd.trim().length === 0) {
-      call.arguments['cwd'] = this.workspacePath;
+      call.arguments['cwd'] = workspacePath;
       return;
     }
 
@@ -283,21 +370,22 @@ export class ToolExecutor {
       return;
     }
 
-    call.arguments['cwd'] = path.resolve(this.workspacePath, expandedPath);
+    call.arguments['cwd'] = path.resolve(workspacePath, expandedPath);
   }
 
-  private assertShellWorkingDirectoryAllowedInSafeMode(cwd: string): void {
+  private assertShellWorkingDirectoryAllowedInSafeMode(cwd: string, sessionId: string): void {
     const resolvedPath = path.normalize(cwd);
-    if (this.isPathWithinRoot(resolvedPath, this.workspacePath)) {
+    const workspacePath = this.getWorkspacePathForSession(sessionId);
+    if (this.isPathWithinRoot(resolvedPath, workspacePath)) {
       return;
     }
 
     throw new Error(
-      `Access denied: Shell cwd "${cwd}" is outside Safe Mode workspace "${this.workspacePath}".`
+      `Access denied: Shell cwd "${cwd}" is outside Safe Mode workspace "${workspacePath}".`
     );
   }
 
-  private resolveFilesystemPath(inputPath: string): string {
+  private resolveFilesystemPath(inputPath: string, sessionId: string): string {
     const expandedPath = this.expandPath(inputPath.trim());
 
     if (path.isAbsolute(expandedPath)) {
@@ -308,7 +396,7 @@ export class ToolExecutor {
       return path.resolve(this.agentContextPath, expandedPath);
     }
 
-    return path.resolve(this.workspacePath, expandedPath);
+    return path.resolve(this.getWorkspacePathForSession(sessionId), expandedPath);
   }
 
   private shouldBypassConfirmationForManagedMarkdown(tool: Tool, call: ToolCall): boolean {
@@ -377,6 +465,14 @@ export class ToolExecutor {
     }
 
     return false;
+  }
+
+  private getWorkspacePathForSession(sessionId: string): string {
+    const resolver = (this.gateway as unknown as { getSessionWorkspace?: (id: string) => string | undefined }).getSessionWorkspace;
+    if (typeof resolver === 'function') {
+      return resolver.call(this.gateway, sessionId) ?? this.workspacePath;
+    }
+    return this.workspacePath;
   }
 
   private isPathWithinRoot(targetPath: string, rootPath: string): boolean {

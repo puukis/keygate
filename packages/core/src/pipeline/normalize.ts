@@ -10,11 +10,12 @@ export function normalizeDiscordMessage(
   userId: string,
   content: string,
   channel: Channel,
-  attachments?: MessageAttachment[]
+  attachments?: MessageAttachment[],
+  explicitSessionId?: string,
 ): NormalizedMessage {
   return {
     id: messageId,
-    sessionId: `discord:${channelId}`,
+    sessionId: explicitSessionId ?? `discord:${channelId}`,
     channelType: 'discord',
     channel,
     userId,
@@ -75,11 +76,12 @@ export function normalizeSlackMessage(
   userId: string,
   content: string,
   channel: Channel,
-  attachments?: MessageAttachment[]
+  attachments?: MessageAttachment[],
+  explicitSessionId?: string,
 ): NormalizedMessage {
   return {
     id: messageId,
-    sessionId: `slack:${channelId}`,
+    sessionId: explicitSessionId ?? `slack:${channelId}`,
     channelType: 'slack',
     channel,
     userId,
