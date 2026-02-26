@@ -1,6 +1,6 @@
 # Installation
 
-This guide covers local development install and practical validation steps.
+This guide covers local development setup and the macOS desktop installer flow.
 
 ## Prerequisites
 
@@ -25,7 +25,7 @@ cd keygate
 pnpm install
 ```
 
-## Build and run
+## Build and run (dev workflow)
 
 ```bash
 pnpm build
@@ -50,6 +50,28 @@ Auth-only flow:
 
 ```bash
 pnpm auth:login
+```
+
+## macOS desktop app and installer
+
+Build local desktop artifacts:
+
+```bash
+pnpm macos:app
+pnpm macos:dmg
+```
+
+Output paths:
+
+- `packages/macos/dist/Keygate.app`
+- `packages/macos/dist/Keygate-Installer.dmg`
+
+The DMG uses a drag-to-Applications layout and a custom installer background.
+
+If `pnpm macos:dmg` fails because `create-dmg` is missing:
+
+```bash
+brew install create-dmg
 ```
 
 ## Verify installation

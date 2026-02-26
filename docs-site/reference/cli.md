@@ -11,6 +11,8 @@ pnpm test
 pnpm keygate
 pnpm onboard
 pnpm auth:login
+pnpm macos:app
+pnpm macos:dmg
 ```
 
 ## What each does
@@ -21,6 +23,8 @@ pnpm auth:login
 - `pnpm keygate`: runs CLI entrypoint
 - `pnpm onboard`: guided first-time setup
 - `pnpm auth:login`: provider authentication update
+- `pnpm macos:app`: builds `packages/macos/dist/Keygate.app`
+- `pnpm macos:dmg`: builds `packages/macos/dist/Keygate-Installer.dmg`
 
 ## Suggested operator workflow
 
