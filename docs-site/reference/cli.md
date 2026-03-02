@@ -35,6 +35,25 @@ pnpm test
 pnpm dev
 ```
 
+## WhatsApp channel commands
+
+```bash
+keygate channels whatsapp login [--force] [--timeout 120]
+keygate channels whatsapp start
+keygate channels whatsapp stop
+keygate channels whatsapp restart
+keygate channels whatsapp status
+keygate channels whatsapp config
+keygate channels whatsapp logout
+```
+
+## Pairing approvals
+
+```bash
+keygate pairing approve whatsapp <code>
+keygate pairing pending [whatsapp]
+```
+
 ## Troubleshooting CLI failures
 
 - verify Node/pnpm versions

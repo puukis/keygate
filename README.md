@@ -32,8 +32,9 @@ When GitHub Pages is enabled for this repository, `.github/workflows/deploy-docs
 
 ## Features
 
-- **Multi-Channel**: Connect via Web UI (`localhost:18790`) or Discord bot
-- **DM Pairing Trust Model**: Unknown Slack/Discord DMs are gated by pairing codes (configurable open/closed/pairing)
+- **Multi-Channel**: Connect via Web UI (`localhost:18790`), Discord, Slack, or WhatsApp
+- **WhatsApp Linked-Device Channel**: QR-based login, DM pairing, group allowlists, mention gating, and screenshot follow-up delivery
+- **DM Pairing Trust Model**: Unknown Slack/Discord/WhatsApp DMs are gated by pairing codes (configurable open/closed/pairing)
 - **Long-term File Memory Recall**: `memory_search` + `memory_get` tools over `MEMORY.md` and `memory/*.md` with path+line snippets
 - **ReAct Agent Loop**: Iterative reasoning with tool calling
 - **OpenAI Codex OAuth**: Sign in with ChatGPT through Codex CLI/app-server (no API key paste)
@@ -137,7 +138,21 @@ keygate channels discord stop
 keygate channels discord restart
 keygate channels discord status
 keygate channels discord config
+
+# Manage whatsapp linked-device runtime + config
+keygate channels whatsapp login --timeout 120
+keygate channels whatsapp start
+keygate channels whatsapp status
+keygate channels whatsapp config
+keygate channels whatsapp logout
 ```
+
+WhatsApp operational notes:
+
+- `keygate channels whatsapp login` opens a linked-device QR flow. No new `.keygate` secret is required.
+- Direct messages follow the same trust model as other external channels: `pairing`, `open`, or `closed`.
+- Group chats are controlled separately through `groupMode` (`closed`, `selected`, `open`) plus mention requirements.
+- After changing WhatsApp config in the web app, restart the WhatsApp runtime so the new policy is applied.
 
 ## Architecture
 
@@ -190,8 +205,10 @@ DM trust + pairing:
 - `DISCORD_ALLOW_FROM=123,456,*` (optional user id allowlist)
 - `SLACK_DM_POLICY=pairing|open|closed` (default: `pairing`)
 - `SLACK_ALLOW_FROM=U123,U456,*` (optional user id allowlist)
-- Approve a pairing code from terminal: `keygate pairing approve <discord|slack> <code>`
-- Show pending requests: `keygate pairing pending [discord|slack]`
+- WhatsApp structured channel config is stored in `~/.config/keygate/config.json` under `whatsapp`
+- WhatsApp linked-device auth is stored in `~/.config/keygate/channels/whatsapp/auth/` and must never be committed
+- Approve a pairing code from terminal: `keygate pairing approve <discord|slack|whatsapp> <code>`
+- Show pending requests: `keygate pairing pending [discord|slack|whatsapp]`
 
 Diagnostics:
 - Run comprehensive environment + auth + gateway + routing checks: `keygate doctor`

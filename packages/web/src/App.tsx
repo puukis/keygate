@@ -72,6 +72,18 @@ interface SlackConfigState {
   configured: boolean;
 }
 
+interface WhatsAppConfigState {
+  linked: boolean;
+  linkedPhone: string | null;
+  authDir: string;
+  dmPolicy: 'pairing' | 'open' | 'closed';
+  allowFrom: string[];
+  groupMode: 'closed' | 'selected' | 'open';
+  groups: Record<string, { requireMention?: boolean; name?: string }>;
+  groupRequireMentionDefault: boolean;
+  sendReadReceipts: boolean;
+}
+
 interface LLMState {
   provider: LLMProviderId;
   model: string;
@@ -209,6 +221,18 @@ const DEFAULT_BROWSER_CONFIG_STATE: BrowserConfigState = {
   artifactsPath: '',
   command: null,
   args: [],
+};
+
+const DEFAULT_WHATSAPP_CONFIG_STATE: WhatsAppConfigState = {
+  linked: false,
+  linkedPhone: null,
+  authDir: '',
+  dmPolicy: 'pairing',
+  allowFrom: [],
+  groupMode: 'closed',
+  groups: {},
+  groupRequireMentionDefault: true,
+  sendReadReceipts: true,
 };
 
 const PROVIDER_ACTIVITY_IGNORED_PATTERNS: RegExp[] = [
@@ -358,6 +382,48 @@ function parseSlackConfig(value: unknown): SlackConfigState | undefined {
   return { configured: payload['configured'] === true };
 }
 
+function parseWhatsAppConfig(value: unknown): WhatsAppConfigState | undefined {
+  const payload = asRecord(value);
+  if (!payload) {
+    return undefined;
+  }
+
+  const dmPolicyRaw = firstString(payload['dmPolicy']);
+  const dmPolicy = dmPolicyRaw === 'open' || dmPolicyRaw === 'closed' ? dmPolicyRaw : 'pairing';
+  const groupModeRaw = firstString(payload['groupMode']);
+  const groupMode = groupModeRaw === 'open' || groupModeRaw === 'selected' ? groupModeRaw : 'closed';
+
+  const rawGroups = asRecord(payload['groups']) ?? {};
+  const groups = Object.fromEntries(
+    Object.entries(rawGroups)
+      .filter(([key]) => key.startsWith('group:'))
+      .map(([key, rule]) => {
+        const parsedRule = asRecord(rule) ?? {};
+        return [key, {
+          requireMention: typeof parsedRule['requireMention'] === 'boolean' ? parsedRule['requireMention'] : undefined,
+          name: firstString(parsedRule['name']),
+        }];
+      })
+  ) as WhatsAppConfigState['groups'];
+
+  return {
+    linked: payload['linked'] === true,
+    linkedPhone: firstString(payload['linkedPhone']) ?? null,
+    authDir: firstString(payload['authDir']) ?? '',
+    dmPolicy,
+    allowFrom: Array.isArray(payload['allowFrom'])
+      ? payload['allowFrom']
+        .filter((entry): entry is string => typeof entry === 'string')
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0)
+      : [],
+    groupMode,
+    groups,
+    groupRequireMentionDefault: payload['groupRequireMentionDefault'] !== false,
+    sendReadReceipts: payload['sendReadReceipts'] !== false,
+  };
+}
+
 function parseBrowserConfig(value: unknown): BrowserConfigState | undefined {
   const payload = asRecord(value);
   if (!payload) {
@@ -416,6 +482,59 @@ function parseOriginListInput(value: unknown): string[] {
 
 function stringifyOriginList(origins: string[]): string {
   return origins.join(', ');
+}
+
+function stringifyWhatsAppAllowlist(entries: string[]): string {
+  return entries.join(', ');
+}
+
+function stringifyWhatsAppGroupRules(groups: WhatsAppConfigState['groups']): string {
+  return Object.entries(groups)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, rule]) => {
+      if (rule.requireMention === true) {
+        return `${key}|mention`;
+      }
+      if (rule.requireMention === false) {
+        return `${key}|no-mention`;
+      }
+      return key;
+    })
+    .join('\n');
+}
+
+function parseWhatsAppGroupRulesInput(value: string): WhatsAppConfigState['groups'] {
+  const groups: WhatsAppConfigState['groups'] = {};
+  const lines = value
+    .split(/\r?\n/g)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  for (const line of lines) {
+    const [rawKey, rawMode] = line.split('|').map((part) => part.trim());
+    if (!rawKey || !rawKey.startsWith('group:')) {
+      throw new Error(`Invalid group key: ${line}`);
+    }
+
+    if (!rawMode) {
+      groups[rawKey] = {};
+      continue;
+    }
+
+    if (rawMode === 'mention') {
+      groups[rawKey] = { requireMention: true };
+      continue;
+    }
+
+    if (rawMode === 'no-mention') {
+      groups[rawKey] = { requireMention: false };
+      continue;
+    }
+
+    throw new Error(`Invalid group rule mode: ${line}`);
+  }
+
+  return groups;
 }
 
 function parseScheduledJobs(value: unknown): ScheduledJobView[] {
@@ -694,6 +813,14 @@ function getChannelTypeForSession(sessionId: string): SessionChannelType {
     return 'discord';
   }
 
+  if (sessionId.startsWith('slack:')) {
+    return 'slack';
+  }
+
+  if (sessionId.startsWith('whatsapp:')) {
+    return 'whatsapp';
+  }
+
   if (sessionId.startsWith('terminal:')) {
     return 'terminal';
   }
@@ -753,7 +880,14 @@ function parseSessionSnapshotEntries(value: unknown): SessionSnapshotEntry[] {
     const updatedAtRaw = firstString(record['updatedAt']);
     const messagesRaw = record['messages'];
 
-    if (!sessionId || (channelTypeRaw !== 'web' && channelTypeRaw !== 'discord' && channelTypeRaw !== 'terminal' && channelTypeRaw !== 'slack')) {
+    if (
+      !sessionId ||
+      (channelTypeRaw !== 'web' &&
+        channelTypeRaw !== 'discord' &&
+        channelTypeRaw !== 'terminal' &&
+        channelTypeRaw !== 'slack' &&
+        channelTypeRaw !== 'whatsapp')
+    ) {
       return [];
     }
 
@@ -826,6 +960,17 @@ function App() {
   const [slackSigningSecretDraft, setSlackSigningSecretDraft] = useState('');
   const [slackClearToken, setSlackClearToken] = useState(false);
   const [slackSaving, setSlackSaving] = useState(false);
+  const [whatsappConfig, setWhatsAppConfig] = useState<WhatsAppConfigState>(DEFAULT_WHATSAPP_CONFIG_STATE);
+  const [whatsappAllowFromDraft, setWhatsAppAllowFromDraft] = useState('');
+  const [whatsappDmPolicyDraft, setWhatsAppDmPolicyDraft] = useState<WhatsAppConfigState['dmPolicy']>('pairing');
+  const [whatsappGroupModeDraft, setWhatsAppGroupModeDraft] = useState<WhatsAppConfigState['groupMode']>('closed');
+  const [whatsappGroupRequireMentionDraft, setWhatsAppGroupRequireMentionDraft] = useState(true);
+  const [whatsappGroupsDraft, setWhatsAppGroupsDraft] = useState('');
+  const [whatsappReadReceiptsDraft, setWhatsAppReadReceiptsDraft] = useState(true);
+  const [whatsappSaving, setWhatsAppSaving] = useState(false);
+  const [whatsappLoginPending, setWhatsAppLoginPending] = useState(false);
+  const [whatsappLoginQr, setWhatsAppLoginQr] = useState<string | null>(null);
+  const [whatsappLoginStatus, setWhatsAppLoginStatus] = useState<string>('');
   const slackSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const configScreenRef = useRef<HTMLDivElement | null>(null);
   const marketplaceConfigSectionRef = useRef<HTMLElement | null>(null);
@@ -1011,6 +1156,17 @@ function App() {
           setSlackClearToken(false);
         }
         setSlackSaving(false);
+        const whatsappState = parseWhatsAppConfig(data['whatsapp']);
+        if (whatsappState) {
+          setWhatsAppConfig(whatsappState);
+          setWhatsAppAllowFromDraft(stringifyWhatsAppAllowlist(whatsappState.allowFrom));
+          setWhatsAppDmPolicyDraft(whatsappState.dmPolicy);
+          setWhatsAppGroupModeDraft(whatsappState.groupMode);
+          setWhatsAppGroupRequireMentionDraft(whatsappState.groupRequireMentionDefault);
+          setWhatsAppGroupsDraft(stringifyWhatsAppGroupRules(whatsappState.groups));
+          setWhatsAppReadReceiptsDraft(whatsappState.sendReadReceipts);
+        }
+        setWhatsAppSaving(false);
         setBrowserSaving(false);
         setBrowserActionPending(null);
 
@@ -1392,6 +1548,40 @@ function App() {
         break;
       }
 
+      case 'whatsapp_config_updated': {
+        const whatsappState = parseWhatsAppConfig(data['whatsapp']);
+        if (whatsappState) {
+          setWhatsAppConfig(whatsappState);
+          setWhatsAppAllowFromDraft(stringifyWhatsAppAllowlist(whatsappState.allowFrom));
+          setWhatsAppDmPolicyDraft(whatsappState.dmPolicy);
+          setWhatsAppGroupModeDraft(whatsappState.groupMode);
+          setWhatsAppGroupRequireMentionDraft(whatsappState.groupRequireMentionDefault);
+          setWhatsAppGroupsDraft(stringifyWhatsAppGroupRules(whatsappState.groups));
+          setWhatsAppReadReceiptsDraft(whatsappState.sendReadReceipts);
+        }
+        setWhatsAppSaving(false);
+        break;
+      }
+
+      case 'whatsapp_login_qr': {
+        const whatsappState = asRecord(data['whatsapp']);
+        const qrDataUrl = firstString(whatsappState?.['qrDataUrl']);
+        setWhatsAppLoginPending(true);
+        setWhatsAppLoginQr(qrDataUrl ?? null);
+        setWhatsAppLoginStatus(firstString(whatsappState?.['statusText']) ?? 'Scan the QR code in WhatsApp.');
+        break;
+      }
+
+      case 'whatsapp_login_result': {
+        const result = asRecord(data['result']);
+        setWhatsAppLoginPending(false);
+        setWhatsAppLoginQr(null);
+        const message = firstString(result?.['error'])
+          ?? (result?.['ok'] === true ? 'WhatsApp linked successfully.' : '');
+        setWhatsAppLoginStatus(message);
+        break;
+      }
+
       case 'mcp_browser_status': {
         const browserState = parseBrowserConfig(data['browser']);
         if (browserState) {
@@ -1650,6 +1840,7 @@ function App() {
       case 'error': {
         setDiscordSaving(false);
         setSlackSaving(false);
+        setWhatsAppSaving(false);
         setBrowserSaving(false);
         setBrowserActionPending(null);
 
@@ -1698,6 +1889,8 @@ function App() {
     if (!connected) {
       setDiscordSaving(false);
       setSlackSaving(false);
+      setWhatsAppSaving(false);
+      setWhatsAppLoginPending(false);
       setBrowserSaving(false);
       setBrowserActionPending(null);
     }
@@ -2072,6 +2265,58 @@ function App() {
     }
   }, [slackBotTokenDraft, slackAppTokenDraft, slackSigningSecretDraft, slackClearToken, send]);
 
+  const handleWhatsAppSave = useCallback(() => {
+    let groups: WhatsAppConfigState['groups'];
+    try {
+      groups = parseWhatsAppGroupRulesInput(whatsappGroupsDraft);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Invalid WhatsApp group rules.');
+      return;
+    }
+
+    setWhatsAppSaving(true);
+    const sent = send({
+      type: 'set_whatsapp_config',
+      dmPolicy: whatsappDmPolicyDraft,
+      allowFrom: whatsappAllowFromDraft,
+      groupMode: whatsappGroupModeDraft,
+      groups,
+      groupRequireMentionDefault: whatsappGroupRequireMentionDraft,
+      sendReadReceipts: whatsappReadReceiptsDraft,
+    });
+
+    if (!sent) {
+      setWhatsAppSaving(false);
+    }
+  }, [
+    send,
+    whatsappAllowFromDraft,
+    whatsappDmPolicyDraft,
+    whatsappGroupModeDraft,
+    whatsappGroupRequireMentionDraft,
+    whatsappGroupsDraft,
+    whatsappReadReceiptsDraft,
+  ]);
+
+  const handleStartWhatsAppLogin = useCallback(() => {
+    setWhatsAppLoginPending(true);
+    setWhatsAppLoginStatus('Waiting for a QR code...');
+    setWhatsAppLoginQr(null);
+    const sent = send({ type: 'start_whatsapp_login' });
+    if (!sent) {
+      setWhatsAppLoginPending(false);
+      setWhatsAppLoginStatus('');
+    }
+  }, [send]);
+
+  const handleCancelWhatsAppLogin = useCallback(() => {
+    const sent = send({ type: 'cancel_whatsapp_login' });
+    if (!sent) {
+      setWhatsAppLoginPending(false);
+      setWhatsAppLoginQr(null);
+    }
+  }, [send]);
+
 
   const handleInstallMcpBrowser = useCallback(() => {
     setBrowserActionPending('install');
@@ -2234,6 +2479,14 @@ function App() {
     slackSigningSecretDraft.trim().length > 0 ||
     slackClearToken;
 
+  const whatsappHasChanges =
+    whatsappDmPolicyDraft !== whatsappConfig.dmPolicy ||
+    whatsappAllowFromDraft !== stringifyWhatsAppAllowlist(whatsappConfig.allowFrom) ||
+    whatsappGroupModeDraft !== whatsappConfig.groupMode ||
+    whatsappGroupRequireMentionDraft !== whatsappConfig.groupRequireMentionDefault ||
+    whatsappGroupsDraft !== stringifyWhatsAppGroupRules(whatsappConfig.groups) ||
+    whatsappReadReceiptsDraft !== whatsappConfig.sendReadReceipts;
+
   const browserPolicyHasChanges =
     browserPolicyDraft !== browserConfig.domainPolicy ||
     browserAllowlistDraft !== stringifyOriginList(browserConfig.domainAllowlist) ||
@@ -2251,12 +2504,20 @@ function App() {
     : null;
   const readOnlyTarget = activeReadOnlyChannel === 'discord'
     ? 'Discord'
+    : activeReadOnlyChannel === 'slack'
+      ? 'Slack'
+      : activeReadOnlyChannel === 'whatsapp'
+        ? 'WhatsApp'
     : activeReadOnlyChannel === 'terminal'
       ? 'Terminal TUI'
       : 'the original channel';
   const readOnlyHintText = `Read-only here. Reply in ${readOnlyTarget}.`;
   const readOnlyChipText = activeReadOnlyChannel === 'discord'
     ? 'Read-only (Discord)'
+    : activeReadOnlyChannel === 'slack'
+      ? 'Read-only (Slack)'
+      : activeReadOnlyChannel === 'whatsapp'
+        ? 'Read-only (WhatsApp)'
     : activeReadOnlyChannel === 'terminal'
       ? 'Read-only (Terminal)'
       : 'Read-only';
@@ -2388,6 +2649,7 @@ function App() {
               <div className="scheduler-job-list">
                 <div className="scheduler-job-item"><strong>Discord</strong><div className="config-note">{discordConfig.configured ? 'Configured' : 'Not configured'} · Prefix: {discordConfig.prefix}</div></div>
                 <div className="scheduler-job-item"><strong>Slack</strong><div className="config-note">{slackConfig.configured ? 'Configured' : 'Not configured'}</div></div>
+                <div className="scheduler-job-item"><strong>WhatsApp</strong><div className="config-note">{whatsappConfig.linked ? `Linked${whatsappConfig.linkedPhone ? ` (${whatsappConfig.linkedPhone})` : ''}` : 'Not linked'} · DM: {whatsappConfig.dmPolicy} · Groups: {whatsappConfig.groupMode}</div></div>
               </div>
               <div className="scheduler-actions">
                 <button className="btn-secondary" onClick={() => openConfigScreenAt('top')}>Open channel settings</button>
@@ -2824,6 +3086,142 @@ function App() {
                 <small className="config-note">
                   Policy changes reconfigure Playwright MCP when the browser server is already installed.
                 </small>
+              </section>
+
+              <section className="config-section">
+                <h3>WhatsApp</h3>
+                <p className="config-note">
+                  Status: {whatsappConfig.linked ? 'Linked' : 'Not linked'}
+                  {whatsappConfig.linkedPhone ? ` · ${whatsappConfig.linkedPhone}` : ''}
+                </p>
+                {whatsappConfig.authDir && (
+                  <p className="config-note">Auth directory: {whatsappConfig.authDir}</p>
+                )}
+
+                <div className="scheduler-actions">
+                  <button
+                    className="btn-secondary"
+                    onClick={handleStartWhatsAppLogin}
+                    disabled={!connected || activeIsStreaming || whatsappLoginPending}
+                  >
+                    Generate Login QR
+                  </button>
+                  {whatsappLoginPending && (
+                    <button
+                      className="btn-secondary"
+                      onClick={handleCancelWhatsAppLogin}
+                      disabled={!connected || activeIsStreaming}
+                    >
+                      Cancel QR
+                    </button>
+                  )}
+                </div>
+
+                {whatsappLoginStatus && (
+                  <small className="config-note">{whatsappLoginStatus}</small>
+                )}
+
+                {whatsappLoginQr && (
+                  <div className="browser-install-card" style={{ marginTop: 12 }}>
+                    <img
+                      src={whatsappLoginQr}
+                      alt="WhatsApp login QR"
+                      style={{ width: 220, maxWidth: '100%', borderRadius: 12, display: 'block' }}
+                    />
+                  </div>
+                )}
+
+                <label className="llm-control config-control">
+                  <span>DM Policy</span>
+                  <select
+                    className="config-select"
+                    value={whatsappDmPolicyDraft}
+                    onChange={(event) => setWhatsAppDmPolicyDraft(event.target.value as WhatsAppConfigState['dmPolicy'])}
+                    disabled={!connected || activeIsStreaming || whatsappSaving}
+                  >
+                    <option value="pairing">Pairing</option>
+                    <option value="open">Open</option>
+                    <option value="closed">Closed</option>
+                  </select>
+                </label>
+
+                <label className="llm-control config-control">
+                  <span>Allow From</span>
+                  <input
+                    className="config-text-input"
+                    type="text"
+                    value={whatsappAllowFromDraft}
+                    onChange={(event) => setWhatsAppAllowFromDraft(event.target.value)}
+                    placeholder="+15551234567, *"
+                    spellCheck={false}
+                    autoComplete="off"
+                    disabled={!connected || activeIsStreaming || whatsappSaving}
+                  />
+                </label>
+                <small className="config-note">Comma-separated E.164 numbers or `*`.</small>
+
+                <label className="llm-control config-control">
+                  <span>Group Mode</span>
+                  <select
+                    className="config-select"
+                    value={whatsappGroupModeDraft}
+                    onChange={(event) => setWhatsAppGroupModeDraft(event.target.value as WhatsAppConfigState['groupMode'])}
+                    disabled={!connected || activeIsStreaming || whatsappSaving}
+                  >
+                    <option value="closed">Closed</option>
+                    <option value="selected">Selected</option>
+                    <option value="open">Open</option>
+                  </select>
+                </label>
+
+                <label className="config-switch-row">
+                  <span className="config-switch-copy">
+                    <strong>Require mentions by default</strong>
+                    <small>Groups without an explicit override only trigger when the bot is mentioned or replied to.</small>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={whatsappGroupRequireMentionDraft}
+                    onChange={(event) => setWhatsAppGroupRequireMentionDraft(event.target.checked)}
+                    disabled={!connected || activeIsStreaming || whatsappSaving}
+                  />
+                </label>
+
+                <label className="llm-control config-control">
+                  <span>Explicit Groups</span>
+                  <textarea
+                    className="config-textarea"
+                    value={whatsappGroupsDraft}
+                    onChange={(event) => setWhatsAppGroupsDraft(event.target.value)}
+                    placeholder={'group:1234567890\ngroup:9988776655|mention\ngroup:1122334455|no-mention'}
+                    spellCheck={false}
+                    disabled={!connected || activeIsStreaming || whatsappSaving}
+                    rows={5}
+                  />
+                </label>
+                <small className="config-note">One `group:&lt;id&gt;` per line. Add `|mention` or `|no-mention` for an explicit override.</small>
+
+                <label className="config-switch-row">
+                  <span className="config-switch-copy">
+                    <strong>Send read receipts</strong>
+                    <small>Mark accepted inbound messages as read.</small>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={whatsappReadReceiptsDraft}
+                    onChange={(event) => setWhatsAppReadReceiptsDraft(event.target.checked)}
+                    disabled={!connected || activeIsStreaming || whatsappSaving}
+                  />
+                </label>
+
+                <button
+                  className="btn-secondary"
+                  onClick={handleWhatsAppSave}
+                  disabled={!connected || activeIsStreaming || whatsappSaving || !whatsappHasChanges}
+                >
+                  {whatsappSaving ? 'Saving...' : 'Save WhatsApp Config'}
+                </button>
+                <small className="config-note">Restart the WhatsApp runtime after saving updated settings.</small>
               </section>
 
               <section className="config-section">

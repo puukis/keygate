@@ -55,4 +55,28 @@ describe('pairing', () => {
     expect(isDmAllowedByPolicy({ policy: 'closed', userId: 'u1', allowFrom: ['u1'], paired: false })).toBe(true);
     expect(isDmAllowedByPolicy({ policy: 'closed', userId: 'u1', allowFrom: ['*'], paired: false })).toBe(true);
   });
+
+  it('auto-migrates pairing stores that predate whatsapp support', async () => {
+    const configDir = path.join(tempRoot, 'keygate');
+    await fs.mkdir(configDir, { recursive: true });
+    await fs.writeFile(
+      path.join(configDir, 'pairing.json'),
+      JSON.stringify({
+        version: 1,
+        allowlist: {
+          discord: ['d1'],
+          slack: ['s1'],
+        },
+        pending: [],
+      }),
+      'utf8'
+    );
+
+    expect(await isUserPaired('whatsapp', '+15551234567')).toBe(false);
+
+    const created = await createOrGetPairingCode('whatsapp', '+15551234567');
+    const approved = await approvePairingCode('whatsapp', created.code);
+    expect(approved.approved).toBe(true);
+    expect(await isUserPaired('whatsapp', '+15551234567')).toBe(true);
+  });
 });

@@ -92,6 +92,30 @@ export function normalizeSlackMessage(
 }
 
 /**
+ * Create a normalized message from WhatsApp
+ */
+export function normalizeWhatsAppMessage(
+  messageId: string,
+  chatId: string,
+  userId: string,
+  content: string,
+  channel: Channel,
+  attachments?: MessageAttachment[],
+  explicitSessionId?: string,
+): NormalizedMessage {
+  return {
+    id: messageId,
+    sessionId: explicitSessionId ?? `whatsapp:${chatId}`,
+    channelType: 'whatsapp',
+    channel,
+    userId,
+    content,
+    attachments,
+    timestamp: new Date(),
+  };
+}
+
+/**
  * Abstract channel implementation helper
  */
 export abstract class BaseChannel implements Channel {

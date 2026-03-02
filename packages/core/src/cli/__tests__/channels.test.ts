@@ -29,18 +29,21 @@ describe('channels command', () => {
     expect(parseChannelName('web')).toBe('web');
     expect(parseChannelName('discord')).toBe('discord');
     expect(parseChannelName('slack')).toBe('slack');
+    expect(parseChannelName('whatsapp')).toBe('whatsapp');
 
     expect(parseChannelAction('start')).toBe('start');
     expect(parseChannelAction('stop')).toBe('stop');
     expect(parseChannelAction('restart')).toBe('restart');
     expect(parseChannelAction('status')).toBe('status');
     expect(parseChannelAction('config')).toBe('config');
+    expect(parseChannelAction('login')).toBe('login');
+    expect(parseChannelAction('logout')).toBe('logout');
     expect(parseChannelAction('open')).toBeNull();
   });
 
   it('throws usage for invalid syntax', async () => {
     await expect(runChannelsCommand(makeArgs())).rejects.toThrow(
-      'Usage: keygate channels <web|discord|slack> <start|stop|restart|status|config>'
+      'Usage: keygate channels <web|discord|slack|whatsapp> <start|stop|restart|status|config|login|logout>'
     );
   });
 
@@ -212,5 +215,17 @@ describe('channels command', () => {
     });
 
     expect(logs.some((line) => line.includes('Slack channel status: stopped'))).toBe(true);
+  });
+
+  it('requires linked auth before starting whatsapp channel', async () => {
+    await expect(
+      runChannelsCommand(makeArgs('whatsapp', 'start'), {
+        cwd: '/repo',
+        configDir: '/tmp/test-config',
+        env: {} as NodeJS.ProcessEnv,
+        log: () => undefined,
+        pathExists: () => false,
+      })
+    ).rejects.toThrow('WhatsApp is not linked');
   });
 });

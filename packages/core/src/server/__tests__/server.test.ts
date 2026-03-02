@@ -7,6 +7,7 @@ import {
   WebSocketChannel,
   applyDiscordConfigUpdate,
   applySlackConfigUpdate,
+  applyWhatsAppConfigUpdate,
   applySpicyModeEnable,
   applySpicyObedienceUpdate,
   buildSessionChunkPayload,
@@ -63,6 +64,7 @@ describe('server spicy obedience payloads', () => {
       configured: true,
       prefix: '!kg ',
     });
+    expect((payload['whatsapp'] as Record<string, unknown>)['dmPolicy']).toBe('pairing');
   });
 
   it('includes spicyObedienceEnabled in status payload', () => {
@@ -94,6 +96,7 @@ describe('server spicy obedience payloads', () => {
       configured: false,
       prefix: '!keygate ',
     });
+    expect((payload['whatsapp'] as Record<string, unknown>)['groupMode']).toBe('closed');
   });
 });
 
@@ -122,6 +125,13 @@ describe('session snapshot payload', () => {
           createdAt: new Date('2026-02-08T11:06:00.000Z'),
           updatedAt: new Date('2026-02-08T11:07:00.000Z'),
         },
+        {
+          id: 'whatsapp:alpha',
+          channelType: 'whatsapp' as const,
+          messages: [{ role: 'assistant' as const, content: 'whatsapp latest' }],
+          createdAt: new Date('2026-02-08T11:08:00.000Z'),
+          updatedAt: new Date('2026-02-08T11:09:00.000Z'),
+        },
       ],
     } as any;
 
@@ -131,6 +141,7 @@ describe('session snapshot payload', () => {
     expect(payload['type']).toBe('session_snapshot');
     expect(sessions.map((session) => session['sessionId'])).toEqual([
       'web:current',
+      'whatsapp:alpha',
       'terminal:alpha',
       'discord:alpha',
       'web:other',
@@ -302,6 +313,65 @@ describe('applySpicyModeEnable', () => {
     ).rejects.toThrow('disk write failed');
 
     expect(enabled).toBe(false);
+  });
+});
+
+describe('applyWhatsAppConfigUpdate', () => {
+  it('validates and persists whatsapp config updates', async () => {
+    const config = {
+      whatsapp: {
+        dmPolicy: 'pairing',
+        allowFrom: [],
+        groupMode: 'closed',
+        groups: {},
+        groupRequireMentionDefault: true,
+        sendReadReceipts: true,
+      },
+    } as any;
+
+    const view = await applyWhatsAppConfigUpdate(
+      config,
+      {
+        dmPolicy: 'closed',
+        allowFrom: ['+15551234567'],
+        groupMode: 'selected',
+        groups: {
+          'group:12345': { requireMention: false },
+        },
+        groupRequireMentionDefault: false,
+        sendReadReceipts: false,
+      },
+      async (next) => next,
+    );
+
+    expect(view.dmPolicy).toBe('closed');
+    expect(view.allowFrom).toEqual(['+15551234567']);
+    expect(view.groupMode).toBe('selected');
+    expect(view.groups).toEqual({
+      'group:12345': { requireMention: false, name: undefined },
+    });
+    expect(view.sendReadReceipts).toBe(false);
+  });
+
+  it('rejects invalid whatsapp allowlist entries', async () => {
+    const config = {
+      whatsapp: {
+        dmPolicy: 'pairing',
+        allowFrom: [],
+        groupMode: 'closed',
+        groups: {},
+        groupRequireMentionDefault: true,
+        sendReadReceipts: true,
+      },
+    } as any;
+
+    await expect(applyWhatsAppConfigUpdate(
+      config,
+      {
+        allowFrom: ['not-a-phone'],
+      },
+      async (next) => next,
+    )).rejects.toThrow('Invalid WhatsApp allow-from entry');
   });
 });
 

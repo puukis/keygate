@@ -2,7 +2,12 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import dotenv from 'dotenv';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getKeygateFilePath, loadConfigFromEnv, loadEnvironment } from '../env.js';
+import {
+  getKeygateFilePath,
+  loadConfigFromEnv,
+  loadEnvironment,
+  savePersistedConfigObject,
+} from '../env.js';
 
 describe('loadConfigFromEnv', () => {
   afterEach(() => {
@@ -169,5 +174,68 @@ describe('loadConfigFromEnv', () => {
     expect(config.skills?.allowBundled).toEqual(['repo-triage']);
     expect(config.skills?.install.nodeManager).toBe('pnpm');
     expect(config.skills?.entries['repo-triage']?.env?.['TEST_ENV']).toBe('1');
+  });
+
+  it('loads default whatsapp config when config.json omits it', () => {
+    const config = loadConfigFromEnv();
+
+    expect(config.whatsapp).toEqual({
+      dmPolicy: 'pairing',
+      allowFrom: [],
+      groupMode: 'closed',
+      groups: {},
+      groupRequireMentionDefault: true,
+      sendReadReceipts: true,
+    });
+  });
+
+  it('persists whatsapp config without overwriting skills config', async () => {
+    if (process.platform === 'win32') {
+      vi.stubEnv('APPDATA', path.join('C:\\', 'Users', 'tester', 'AppData', 'Roaming'));
+    } else {
+      const configHome = await fs.mkdtemp('/tmp/keygate-whatsapp-config-');
+      vi.stubEnv('XDG_CONFIG_HOME', configHome);
+    }
+
+    const configDir = path.dirname(getKeygateFilePath());
+    await fs.mkdir(configDir, { recursive: true });
+    await fs.writeFile(
+      path.join(configDir, 'config.json'),
+      JSON.stringify({
+        skills: {
+          load: {
+            watch: true,
+            watchDebounceMs: 333,
+            extraDirs: [],
+            pluginDirs: ['/tmp/plug'],
+          },
+          entries: {},
+          install: { nodeManager: 'npm' },
+        },
+      }),
+      'utf8'
+    );
+
+    await savePersistedConfigObject((current) => ({
+      ...current,
+      whatsapp: {
+        dmPolicy: 'closed',
+        allowFrom: ['+15551234567'],
+        groupMode: 'selected',
+        groups: {
+          'group:123': { requireMention: false },
+        },
+        groupRequireMentionDefault: false,
+        sendReadReceipts: false,
+      },
+    }));
+
+    const config = loadConfigFromEnv();
+    expect(config.skills?.load.watchDebounceMs).toBe(333);
+    expect(config.whatsapp?.dmPolicy).toBe('closed');
+    expect(config.whatsapp?.groups).toEqual({
+      'group:123': { requireMention: false, name: undefined },
+    });
+    expect(config.whatsapp?.sendReadReceipts).toBe(false);
   });
 });

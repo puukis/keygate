@@ -5,7 +5,12 @@ export {
   getDeviceId,
   getDefaultModelForProvider,
   getKeygateFilePath,
+  getPersistedConfigPath,
   loadConfigFromEnv,
+  loadPersistedConfigObject,
+  loadPersistedSkillsConfig,
+  loadPersistedWhatsAppConfig,
   loadEnvironment,
+  savePersistedConfigObject,
   updateKeygateFile,
 } from './env.js';

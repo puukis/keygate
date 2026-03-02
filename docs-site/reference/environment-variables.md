@@ -12,6 +12,14 @@ Use environment variables for secrets and environment-specific overrides.
 - Network/host/port bindings
 - Logging and debug levels
 
+## WhatsApp note
+
+WhatsApp does not require a new `.keygate` environment variable for login.
+
+- Login is done through a linked-device QR flow
+- Structured WhatsApp policy is stored in `~/.config/keygate/config.json`
+- Linked auth credentials are stored in `~/.config/keygate/channels/whatsapp/auth/`
+
 ## Recommended policy
 
 - Store secrets in `.env`/secret manager, not source control

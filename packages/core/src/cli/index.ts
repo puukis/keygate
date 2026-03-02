@@ -99,7 +99,7 @@ Usage:
   keygate uninstall [--yes] [--remove-config] [--remove-workspace]
   keygate update [--check-only]
   keygate gateway <open|close|status|restart>
-  keygate channels <web|discord|slack> <start|stop|restart|status|config>
+  keygate channels <web|discord|slack|whatsapp> <start|stop|restart|status|config|login|logout>
   keygate mcp browser <install|status|remove|update>
   keygate skills <list|doctor|validate|where|install|update|remove|search|info|publish|unpublish|featured>
   keygate memory <list|get|set|delete|search|namespaces|clear>

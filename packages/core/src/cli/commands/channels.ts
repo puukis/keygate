@@ -1,12 +1,19 @@
 import path from 'node:path';
 import { existsSync, promises as fs } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
-import { getConfigDir } from '../../config/env.js';
-import type { ParsedArgs } from '../argv.js';
+import { getConfigDir, loadConfigFromEnv } from '../../config/env.js';
+import {
+  buildWhatsAppConfigView,
+  hasWhatsAppLinkedAuth,
+  logoutWhatsAppLinkedDevice,
+  startWhatsAppLogin,
+  waitForActiveWhatsAppLoginResult,
+} from '../../whatsapp/index.js';
+import { getFlagString, hasFlag, type ParsedArgs } from '../argv.js';
 import { runGatewayCommand, type GatewayAction } from './gateway.js';
 
-export type ChannelName = 'web' | 'discord' | 'slack';
-export type ChannelAction = 'start' | 'stop' | 'restart' | 'status' | 'config';
+export type ChannelName = 'web' | 'discord' | 'slack' | 'whatsapp';
+export type ChannelAction = 'start' | 'stop' | 'restart' | 'status' | 'config' | 'login' | 'logout';
 export type DiscordChannelState = {
   pid: number;
   command: string;
@@ -15,6 +22,7 @@ export type DiscordChannelState = {
   startedAt: string;
 };
 export type SlackChannelState = DiscordChannelState;
+export type WhatsAppChannelState = DiscordChannelState;
 export type ChannelRuntimeState = 'running' | 'stopped' | 'unknown';
 
 interface ChannelStatus {
@@ -47,7 +55,7 @@ interface ChannelCommandDeps {
   now: () => Date;
 }
 
-const CHANNELS_USAGE = 'Usage: keygate channels <web|discord|slack> <start|stop|restart|status|config>';
+const CHANNELS_USAGE = 'Usage: keygate channels <web|discord|slack|whatsapp> <start|stop|restart|status|config|login|logout>';
 const DISABLED_ENV_VALUES = new Set(['0', 'false', 'no', 'off']);
 const DEFAULT_DISCORD_PREFIX = '!keygate ';
 
@@ -74,11 +82,16 @@ export async function runChannelsCommand(
     return;
   }
 
+  if (channel === 'whatsapp') {
+    await runWhatsAppChannelAction(action, args, deps);
+    return;
+  }
+
   await runDiscordChannelAction(action, deps);
 }
 
 export function parseChannelName(value: string | undefined): ChannelName | null {
-  if (value === 'web' || value === 'discord' || value === 'slack') {
+  if (value === 'web' || value === 'discord' || value === 'slack' || value === 'whatsapp') {
     return value;
   }
 
@@ -86,7 +99,15 @@ export function parseChannelName(value: string | undefined): ChannelName | null 
 }
 
 export function parseChannelAction(value: string | undefined): ChannelAction | null {
-  if (value === 'start' || value === 'stop' || value === 'restart' || value === 'status' || value === 'config') {
+  if (
+    value === 'start' ||
+    value === 'stop' ||
+    value === 'restart' ||
+    value === 'status' ||
+    value === 'config' ||
+    value === 'login' ||
+    value === 'logout'
+  ) {
     return value;
   }
 
@@ -173,6 +194,10 @@ function createChannelDeps(overrides?: Partial<ChannelCommandDeps>): ChannelComm
 }
 
 async function runWebChannelAction(action: ChannelAction, deps: ChannelCommandDeps): Promise<void> {
+  if (action === 'login' || action === 'logout') {
+    throw new Error('Web channel does not support login or logout actions.');
+  }
+
   if (action === 'config') {
     printWebChannelConfig(deps);
     return;
@@ -194,6 +219,10 @@ function printWebChannelConfig(deps: ChannelCommandDeps): void {
 }
 
 async function runDiscordChannelAction(action: ChannelAction, deps: ChannelCommandDeps): Promise<void> {
+  if (action === 'login' || action === 'logout') {
+    throw new Error('Discord channel does not support login or logout actions.');
+  }
+
   if (action === 'config') {
     await printDiscordChannelConfig(deps);
     return;
@@ -396,7 +425,7 @@ function resolveDiscordLaunchCommand(deps: ChannelCommandDeps): string {
   }
 }
 
-function toGatewayAction(action: Exclude<ChannelAction, 'config'>): GatewayAction {
+function toGatewayAction(action: Extract<ChannelAction, 'start' | 'stop' | 'restart' | 'status'>): GatewayAction {
   switch (action) {
     case 'start':
       return 'open';
@@ -577,6 +606,10 @@ function resolveRepoRoot(deps: ChannelCommandDeps): string | null {
 // ── Slack channel ──
 
 async function runSlackChannelAction(action: ChannelAction, deps: ChannelCommandDeps): Promise<void> {
+  if (action === 'login' || action === 'logout') {
+    throw new Error('Slack channel does not support login or logout actions.');
+  }
+
   if (action === 'config') {
     await printSlackChannelConfig(deps);
     return;
@@ -844,4 +877,311 @@ async function waitForSlackStart(deps: ChannelCommandDeps, pid: number): Promise
 
   await clearSlackState(deps);
   throw new Error('Slack channel failed to stay running after start.');
+}
+
+// ── WhatsApp channel ──
+
+async function runWhatsAppChannelAction(
+  action: ChannelAction,
+  args: ParsedArgs,
+  deps: ChannelCommandDeps
+): Promise<void> {
+  if (action === 'login') {
+    const timeoutSecondsRaw = getFlagString(args.flags, 'timeout', '120');
+    const timeoutSeconds = Number.parseInt(timeoutSecondsRaw, 10);
+    const timeoutMs = Number.isFinite(timeoutSeconds) && timeoutSeconds > 0 ? timeoutSeconds * 1000 : 120_000;
+    await startWhatsAppLogin({
+      force: hasFlag(args.flags, 'force'),
+      timeoutMs,
+      printQrToTerminal: true,
+    });
+
+    const result = await waitForActiveWhatsAppLoginResult();
+    if (!result?.ok) {
+      throw new Error(result?.error ?? 'WhatsApp login did not complete.');
+    }
+
+    deps.log(`WhatsApp linked successfully${result.linkedPhone ? ` (${result.linkedPhone})` : ''}.`);
+    return;
+  }
+
+  if (action === 'logout') {
+    await stopWhatsAppChannel(deps);
+    await logoutWhatsAppLinkedDevice();
+    deps.log('WhatsApp linked session cleared.');
+    return;
+  }
+
+  if (action === 'config') {
+    await printWhatsAppChannelConfig(deps);
+    return;
+  }
+
+  if (action === 'status') {
+    const status = await getWhatsAppStatus(deps);
+    await printWhatsAppStatus(deps, status);
+    return;
+  }
+
+  if (action === 'restart') {
+    await stopWhatsAppChannel(deps);
+    await startWhatsAppChannel(deps);
+    const status = await getWhatsAppStatus(deps);
+    deps.log('WhatsApp channel restart requested.');
+    await printWhatsAppStatus(deps, status);
+    return;
+  }
+
+  if (action === 'start') {
+    const before = await getWhatsAppStatus(deps);
+    if (before.state === 'running') {
+      deps.log('WhatsApp channel is already running.');
+      await printWhatsAppStatus(deps, before);
+      return;
+    }
+
+    await startWhatsAppChannel(deps);
+    const after = await getWhatsAppStatus(deps);
+    deps.log('WhatsApp channel start requested.');
+    await printWhatsAppStatus(deps, after);
+    return;
+  }
+
+  const before = await getWhatsAppStatus(deps);
+  if (before.state === 'stopped') {
+    deps.log('WhatsApp channel is already stopped.');
+    await printWhatsAppStatus(deps, before);
+    return;
+  }
+
+  await stopWhatsAppChannel(deps);
+  const after = await getWhatsAppStatus(deps);
+  deps.log('WhatsApp channel stop requested.');
+  await printWhatsAppStatus(deps, after);
+}
+
+async function printWhatsAppChannelConfig(deps: ChannelCommandDeps): Promise<void> {
+  const config = loadConfigFromEnv();
+  const view = await buildWhatsAppConfigView(config);
+  const state = await readWhatsAppState(deps);
+  const launchCommand = resolveWhatsAppLaunchCommand(deps);
+
+  deps.log('Channel: whatsapp');
+  deps.log(`Linked: ${view.linked ? 'yes' : 'no'}`);
+  deps.log(`Linked phone: ${view.linkedPhone ?? 'unknown'}`);
+  deps.log(`Auth directory: ${view.authDir}`);
+  deps.log(`DM policy: ${view.dmPolicy}`);
+  deps.log(`Allow-from: ${view.allowFrom.length > 0 ? view.allowFrom.join(', ') : '(empty)'}`);
+  deps.log(`Group mode: ${view.groupMode}`);
+  deps.log(`Explicit groups: ${Object.keys(view.groups).length > 0 ? Object.keys(view.groups).join(', ') : '(none)'}`);
+  deps.log(`Read receipts: ${view.sendReadReceipts ? 'enabled' : 'disabled'}`);
+  if (state) {
+    deps.log(`Managed process state file: ${whatsappStateFilePath(deps)}`);
+    deps.log(`Last known pid: ${state.pid}`);
+  }
+  deps.log(`Launch command: ${launchCommand}`);
+}
+
+async function startWhatsAppChannel(deps: ChannelCommandDeps): Promise<void> {
+  if (!await hasWhatsAppLinkedAuth()) {
+    throw new Error('WhatsApp is not linked. Run `keygate channels whatsapp login` first.');
+  }
+
+  const launchSpec = resolveWhatsAppLaunchSpec(deps);
+  const pid = deps.spawnDetached(launchSpec);
+
+  await deps.mkdir(path.dirname(whatsappStateFilePath(deps)));
+  const state: WhatsAppChannelState = {
+    pid,
+    command: launchSpec.command,
+    args: launchSpec.args,
+    cwd: launchSpec.cwd,
+    startedAt: deps.now().toISOString(),
+  };
+  await writeWhatsAppState(deps, state);
+  await waitForWhatsAppStart(deps, pid);
+}
+
+async function stopWhatsAppChannel(deps: ChannelCommandDeps): Promise<void> {
+  const state = await readWhatsAppState(deps);
+  if (!state) {
+    return;
+  }
+
+  if (!isProcessAlive(deps, state.pid)) {
+    await clearWhatsAppState(deps);
+    return;
+  }
+
+  try {
+    deps.kill(state.pid, 'SIGTERM');
+  } catch {
+    await clearWhatsAppState(deps);
+    return;
+  }
+
+  await waitForExit(deps, state.pid, 5_000);
+  if (isProcessAlive(deps, state.pid)) {
+    try {
+      deps.kill(state.pid, 'SIGKILL');
+    } catch {
+      // no-op
+    }
+    await waitForExit(deps, state.pid, 2_000);
+  }
+
+  if (isProcessAlive(deps, state.pid)) {
+    throw new Error(`Unable to stop whatsapp channel process pid=${state.pid}.`);
+  }
+
+  await clearWhatsAppState(deps);
+}
+
+async function getWhatsAppStatus(deps: ChannelCommandDeps): Promise<ChannelStatus> {
+  const state = await readWhatsAppState(deps);
+  if (!state) {
+    return {
+      state: 'stopped',
+      detail: 'no managed whatsapp process state found',
+    };
+  }
+
+  if (isProcessAlive(deps, state.pid)) {
+    const args = state.args.map((value) => JSON.stringify(value)).join(' ');
+    const command = `${state.command}${args.length > 0 ? ` ${args}` : ''}`;
+    return {
+      state: 'running',
+      detail: `pid=${state.pid}, cwd=${state.cwd}, startedAt=${state.startedAt}, command=${command}`,
+    };
+  }
+
+  await clearWhatsAppState(deps);
+  return {
+    state: 'stopped',
+    detail: 'stale whatsapp process state removed',
+  };
+}
+
+async function printWhatsAppStatus(deps: ChannelCommandDeps, status: ChannelStatus): Promise<void> {
+  const view = await buildWhatsAppConfigView(loadConfigFromEnv());
+  deps.log(`WhatsApp channel status: ${status.state}`);
+  if (status.detail.trim().length > 0) {
+    deps.log(`Detail: ${status.detail}`);
+  }
+  deps.log(`Linked: ${view.linked ? 'yes' : 'no'}`);
+  deps.log(`Linked phone: ${view.linkedPhone ?? 'unknown'}`);
+  deps.log(`DM policy: ${view.dmPolicy}`);
+  deps.log(`Allowlist entries: ${view.allowFrom.length}`);
+  deps.log(`Group mode: ${view.groupMode}`);
+  deps.log(`Configured group rules: ${Object.keys(view.groups).length}`);
+}
+
+function resolveWhatsAppLaunchSpec(deps: ChannelCommandDeps): LaunchSpec {
+  const configured = deps.env['KEYGATE_WHATSAPP_START_COMMAND']?.trim();
+  if (configured) {
+    return {
+      command: shellForPlatform(),
+      args: shellArgsForPlatform(configured),
+      cwd: deps.cwd,
+    };
+  }
+
+  const repoRoot = resolveRepoRoot(deps);
+  if (!repoRoot) {
+    throw new Error(
+      'Unable to resolve whatsapp channel runtime. Set KEYGATE_WHATSAPP_START_COMMAND or run from the keygate repository.'
+    );
+  }
+
+  const distEntry = path.join(repoRoot, 'packages', 'whatsapp', 'dist', 'index.js');
+  if (deps.pathExists(distEntry)) {
+    return {
+      command: deps.execPath,
+      args: [distEntry],
+      cwd: repoRoot,
+    };
+  }
+
+  const sourceEntry = path.join(repoRoot, 'packages', 'whatsapp', 'src', 'index.ts');
+  if (deps.pathExists(sourceEntry) && deps.hasCommand('pnpm')) {
+    return {
+      command: 'pnpm',
+      args: ['--filter', '@puukis/whatsapp', 'exec', 'tsx', 'src/index.ts'],
+      cwd: repoRoot,
+    };
+  }
+
+  throw new Error(
+    'Unable to resolve whatsapp channel runtime. Build @puukis/whatsapp (`pnpm --filter @puukis/whatsapp build`) or set KEYGATE_WHATSAPP_START_COMMAND.'
+  );
+}
+
+function resolveWhatsAppLaunchCommand(deps: ChannelCommandDeps): string {
+  try {
+    const spec = resolveWhatsAppLaunchSpec(deps);
+    return `${spec.command} ${spec.args.join(' ')}`.trim();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return `unresolved (${message})`;
+  }
+}
+
+function whatsappStateFilePath(deps: ChannelCommandDeps): string {
+  return path.join(deps.configDir, 'channels', 'whatsapp.json');
+}
+
+async function readWhatsAppState(deps: ChannelCommandDeps): Promise<WhatsAppChannelState | null> {
+  const statePath = whatsappStateFilePath(deps);
+  if (!deps.pathExists(statePath)) {
+    return null;
+  }
+
+  try {
+    const raw = await deps.readFile(statePath);
+    const parsed = JSON.parse(raw) as Partial<WhatsAppChannelState>;
+    if (
+      typeof parsed.pid !== 'number' ||
+      !Number.isInteger(parsed.pid) ||
+      parsed.pid <= 0 ||
+      typeof parsed.command !== 'string' ||
+      !Array.isArray(parsed.args) ||
+      !parsed.args.every((item) => typeof item === 'string') ||
+      typeof parsed.cwd !== 'string' ||
+      typeof parsed.startedAt !== 'string'
+    ) {
+      return null;
+    }
+
+    return {
+      pid: parsed.pid,
+      command: parsed.command,
+      args: parsed.args,
+      cwd: parsed.cwd,
+      startedAt: parsed.startedAt,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function writeWhatsAppState(deps: ChannelCommandDeps, state: WhatsAppChannelState): Promise<void> {
+  await deps.writeFile(whatsappStateFilePath(deps), `${JSON.stringify(state, null, 2)}\n`);
+}
+
+async function clearWhatsAppState(deps: ChannelCommandDeps): Promise<void> {
+  try {
+    await deps.unlink(whatsappStateFilePath(deps));
+  } catch {
+    // no-op
+  }
+}
+
+async function waitForWhatsAppStart(deps: ChannelCommandDeps, pid: number): Promise<void> {
+  await wait(250);
+  if (isProcessAlive(deps, pid)) {
+    return;
+  }
+
+  await clearWhatsAppState(deps);
+  throw new Error('WhatsApp channel failed to stay running after start.');
 }

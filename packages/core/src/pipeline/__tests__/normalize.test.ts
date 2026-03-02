@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeDiscordMessage, normalizeSlackMessage, normalizeTerminalMessage, normalizeWebMessage } from '../normalize.js';
+import {
+  normalizeDiscordMessage,
+  normalizeSlackMessage,
+  normalizeTerminalMessage,
+  normalizeWhatsAppMessage,
+  normalizeWebMessage,
+} from '../normalize.js';
 import type { Channel } from '../../types.js';
 
 function createChannel(type: Channel['type']): Channel {
@@ -103,5 +109,36 @@ describe('normalize message helpers', () => {
     expect(normalized.userId).toBe('U99');
     expect(normalized.content).toBe('hello from slack');
     expect(normalized.attachments?.[0]?.id).toBe('s-att-1');
+  });
+
+  it('normalizes whatsapp messages with whatsapp session prefix', () => {
+    const channel = createChannel('whatsapp');
+    const normalized = normalizeWhatsAppMessage(
+      'wamid-1',
+      'dm:+15551234567',
+      '+15551234567',
+      'hello from whatsapp',
+      channel,
+    );
+
+    expect(normalized.id).toBe('wamid-1');
+    expect(normalized.sessionId).toBe('whatsapp:dm:+15551234567');
+    expect(normalized.channelType).toBe('whatsapp');
+    expect(normalized.userId).toBe('+15551234567');
+  });
+
+  it('uses explicit whatsapp session ids when routing already resolved them', () => {
+    const channel = createChannel('whatsapp');
+    const normalized = normalizeWhatsAppMessage(
+      'wamid-2',
+      'group:12345',
+      '+15557654321',
+      'group hello',
+      channel,
+      undefined,
+      'whatsapp:main:group:12345',
+    );
+
+    expect(normalized.sessionId).toBe('whatsapp:main:group:12345');
   });
 });

@@ -25,6 +25,7 @@ export default defineConfig({
             { text: 'Architecture', link: '/guide/architecture' },
             { text: 'Web App', link: '/guide/web-app' },
             { text: 'Channels', link: '/guide/channels' },
+            { text: 'WhatsApp', link: '/guide/whatsapp' },
             { text: 'Sessions & Automations', link: '/guide/sessions-and-automations' },
             { text: 'Providers & Models', link: '/guide/providers-and-models' },
           ],

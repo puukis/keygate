@@ -15,7 +15,7 @@ This page is the fastest path from zero to a working local instance.
 - Session-based AI chat with streaming output
 - Tool execution with confirmation flow for sensitive actions
 - Multi-provider model support (including OpenAI Codex flow)
-- Optional external channels (Discord, Slack)
+- Optional external channels (Discord, Slack, WhatsApp)
 - Browser MCP integration and policy controls
 - Scheduler/automation workflows tied to sessions
 
@@ -39,6 +39,7 @@ Then open the web app and complete onboarding.
 5. Create a second session and rename it
 6. Open Automations and create a disabled cron job
 7. Verify settings drawer (model/provider, security, browser)
+8. If you want mobile chat ingress, link WhatsApp from the config screen or with `keygate channels whatsapp login`
 
 ## Where to go next
 

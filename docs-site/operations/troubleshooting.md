@@ -58,6 +58,22 @@ Actions:
 - verify app config in Discord/Slack portals
 - reduce message burst rate
 
+## 4a) WhatsApp is not receiving messages
+
+Checks:
+
+- is the linked-device session still present?
+- does `keygate channels whatsapp status` show linked auth?
+- is the runtime process started?
+- are DM/group policies blocking the sender?
+
+Actions:
+
+- run `keygate channels whatsapp status`
+- re-link with `keygate channels whatsapp login` if auth was logged out
+- restart with `keygate channels whatsapp restart`
+- verify `groupMode`, explicit `group:<id>` keys, and mention rules
+
 ## 5) Scheduler job not running
 
 Checks:

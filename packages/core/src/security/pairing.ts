@@ -4,7 +4,7 @@ import { promises as fs } from 'node:fs';
 import { getConfigDir } from '../config/env.js';
 import type { DmPolicy } from '../types.js';
 
-export type PairingChannel = 'discord' | 'slack';
+export type PairingChannel = 'discord' | 'slack' | 'whatsapp';
 
 interface PendingPairing {
   channel: PairingChannel;
@@ -22,6 +22,7 @@ interface PairingStore {
 
 const DEFAULT_TTL_MS = 15 * 60 * 1000;
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const PAIRING_CHANNELS: PairingChannel[] = ['discord', 'slack', 'whatsapp'];
 
 function getStorePath(): string {
   return path.join(getConfigDir(), 'pairing.json');
@@ -33,9 +34,14 @@ function createDefaultStore(): PairingStore {
     allowlist: {
       discord: [],
       slack: [],
+      whatsapp: [],
     },
     pending: [],
   };
+}
+
+function isPairingChannel(value: unknown): value is PairingChannel {
+  return typeof value === 'string' && PAIRING_CHANNELS.includes(value as PairingChannel);
 }
 
 async function loadStore(): Promise<PairingStore> {
@@ -48,12 +54,12 @@ async function loadStore(): Promise<PairingStore> {
       allowlist: {
         discord: Array.isArray(parsed?.allowlist?.discord) ? parsed.allowlist.discord.filter((v) => typeof v === 'string') : [],
         slack: Array.isArray(parsed?.allowlist?.slack) ? parsed.allowlist.slack.filter((v) => typeof v === 'string') : [],
+        whatsapp: Array.isArray(parsed?.allowlist?.whatsapp) ? parsed.allowlist.whatsapp.filter((v) => typeof v === 'string') : [],
       },
       pending: Array.isArray(parsed?.pending)
         ? parsed.pending.filter((entry): entry is PendingPairing =>
           Boolean(entry)
-          && (entry as PendingPairing).channel !== undefined
-          && ((entry as PendingPairing).channel === 'discord' || (entry as PendingPairing).channel === 'slack')
+          && isPairingChannel((entry as PendingPairing).channel)
           && typeof (entry as PendingPairing).userId === 'string'
           && typeof (entry as PendingPairing).code === 'string'
           && typeof (entry as PendingPairing).createdAt === 'string'
@@ -83,8 +89,13 @@ function isExpired(entry: PendingPairing, now = nowMs()): boolean {
 function compactStore(store: PairingStore): PairingStore {
   const now = nowMs();
   store.pending = store.pending.filter((entry) => !isExpired(entry, now));
-  store.allowlist.discord = Array.from(new Set(store.allowlist.discord.map((id) => id.trim()).filter((id) => id.length > 0)));
-  store.allowlist.slack = Array.from(new Set(store.allowlist.slack.map((id) => id.trim()).filter((id) => id.length > 0)));
+  for (const channel of PAIRING_CHANNELS) {
+    store.allowlist[channel] = Array.from(new Set(
+      store.allowlist[channel]
+        .map((id) => id.trim())
+        .filter((id) => id.length > 0)
+    ));
+  }
   return store;
 }
 

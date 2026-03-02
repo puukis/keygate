@@ -1,4 +1,4 @@
-export type SessionChannelType = 'web' | 'discord' | 'terminal' | 'slack';
+export type SessionChannelType = 'web' | 'discord' | 'terminal' | 'slack' | 'whatsapp';
 
 export interface SessionAttachment {
   id: string;
@@ -113,6 +113,14 @@ function inferChannelType(sessionId: string): SessionChannelType {
 
   if (sessionId.startsWith('terminal:')) {
     return 'terminal';
+  }
+
+  if (sessionId.startsWith('slack:')) {
+    return 'slack';
+  }
+
+  if (sessionId.startsWith('whatsapp:')) {
+    return 'whatsapp';
   }
 
   return 'web';
@@ -421,11 +429,17 @@ export function buildSessionOptions(
     });
 
   let discordIndex = 0;
+  let slackIndex = 0;
   let terminalIndex = 0;
+  let whatsappIndex = 0;
   let webIndex = 0;
   const readOnlyOptions = readOnlyEntries.map(([sessionId, meta]) => {
     const defaultLabel = meta.channelType === 'discord'
       ? `discord:agent-${++discordIndex}`
+      : meta.channelType === 'slack'
+        ? `slack:agent-${++slackIndex}`
+        : meta.channelType === 'whatsapp'
+          ? `whatsapp:agent-${++whatsappIndex}`
       : meta.channelType === 'terminal'
         ? `terminal:agent-${++terminalIndex}`
         : `web:agent-${++webIndex}`;

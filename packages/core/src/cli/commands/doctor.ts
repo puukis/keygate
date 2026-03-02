@@ -1,9 +1,11 @@
-import { existsSync } from 'node:fs';
+import path from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
 import { OpenAICodexProvider } from '../../llm/OpenAICodexProvider.js';
 import { readTokens, isTokenExpired } from '../../auth/index.js';
-import { loadConfigFromEnv, getKeygateFilePath } from '../../config/env.js';
+import { loadConfigFromEnv, getConfigDir, getKeygateFilePath } from '../../config/env.js';
 import { SkillsManager } from '../../skills/manager.js';
 import { MCPBrowserManager } from '../../codex/mcpBrowserManager.js';
+import { hasWhatsAppLinkedAuth } from '../../whatsapp/index.js';
 import { ensureCodexInstalled } from '../codexInstall.js';
 import { runGatewayCommand } from './gateway.js';
 import type { ParsedArgs } from '../argv.js';
@@ -110,9 +112,30 @@ export async function runDoctorChecks(): Promise<DoctorCheck[]> {
       : 'SLACK_BOT_TOKEN or SLACK_APP_TOKEN missing',
   });
 
+  const whatsappLinked = await hasWhatsAppLinkedAuth();
+  const whatsappRuntimeRunning = isManagedChannelRunning(path.join(getConfigDir(), 'channels', 'whatsapp.json'));
+  checks.push({
+    id: 'channels.whatsapp.linked',
+    title: 'WhatsApp linked',
+    severity: whatsappLinked ? 'pass' : 'warn',
+    detail: whatsappLinked ? 'linked-device auth is present' : 'run `keygate channels whatsapp login`',
+  });
+  checks.push({
+    id: 'channels.whatsapp.runtime',
+    title: 'WhatsApp runtime',
+    severity: whatsappLinked
+      ? (whatsappRuntimeRunning ? 'pass' : 'warn')
+      : 'warn',
+    detail: whatsappLinked
+      ? (whatsappRuntimeRunning ? 'managed runtime is running' : 'linked but runtime is stopped')
+      : 'runtime disabled until the channel is linked',
+  });
+
   // Routing/trust checks
   checks.push(validateDmPolicy('discord', config.discord?.dmPolicy ?? 'pairing', config.discord?.allowFrom ?? []));
   checks.push(validateDmPolicy('slack', config.slack?.dmPolicy ?? 'pairing', config.slack?.allowFrom ?? []));
+  checks.push(validateDmPolicy('whatsapp', config.whatsapp?.dmPolicy ?? 'pairing', config.whatsapp?.allowFrom ?? []));
+  checks.push(validateWhatsAppGroupPolicy(config));
 
   // MCP/browser health
   try {
@@ -231,7 +254,11 @@ async function runAuthCheck(provider: string, model: string, workspacePath: stri
   }
 }
 
-function validateDmPolicy(channel: 'discord' | 'slack', policy: 'pairing' | 'open' | 'closed', allowFrom: string[]): DoctorCheck {
+function validateDmPolicy(
+  channel: 'discord' | 'slack' | 'whatsapp',
+  policy: 'pairing' | 'open' | 'closed',
+  allowFrom: string[]
+): DoctorCheck {
   if (policy === 'closed' && allowFrom.length === 0) {
     return {
       id: `routing.${channel}.dmPolicy`,
@@ -256,6 +283,42 @@ function validateDmPolicy(channel: 'discord' | 'slack', policy: 'pairing' | 'ope
     severity: 'pass',
     detail: `${policy} (${allowFrom.length} allowlist entries)`,
   };
+}
+
+function validateWhatsAppGroupPolicy(config: ReturnType<typeof loadConfigFromEnv>): DoctorCheck {
+  if (config.whatsapp?.groupMode === 'open' && config.whatsapp.groupRequireMentionDefault === false) {
+    return {
+      id: 'routing.whatsapp.groupPolicy',
+      title: 'whatsapp group routing policy',
+      severity: 'warn',
+      detail: 'open group mode without mention gating will process all group messages',
+    };
+  }
+
+  return {
+    id: 'routing.whatsapp.groupPolicy',
+    title: 'whatsapp group routing policy',
+    severity: 'pass',
+    detail: `${config.whatsapp?.groupMode ?? 'closed'} (${Object.keys(config.whatsapp?.groups ?? {}).length} explicit group rules)`,
+  };
+}
+
+function isManagedChannelRunning(statePath: string): boolean {
+  try {
+    const raw = readFileSync(statePath, 'utf8');
+    const parsed = JSON.parse(raw) as { pid?: unknown };
+    if (typeof parsed.pid !== 'number' || !Number.isInteger(parsed.pid) || parsed.pid <= 0) {
+      return false;
+    }
+
+    process.kill(parsed.pid, 0);
+    return true;
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'EPERM') {
+      return true;
+    }
+    return false;
+  }
 }
 
 function printDoctorReport(checks: DoctorCheck[], options: { nonInteractive: boolean }): void {

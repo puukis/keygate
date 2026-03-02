@@ -26,8 +26,11 @@ async function main(): Promise<void> {
       return;
     }
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    printHelp();
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(message);
+    if (shouldPrintHelpForError(message)) {
+      printHelp();
+    }
     process.exitCode = 1;
     return;
   }
@@ -73,6 +76,10 @@ async function main(): Promise<void> {
 }
 
 void main();
+
+function shouldPrintHelpForError(message: string): boolean {
+  return message.startsWith('Usage:') || message.startsWith('Unknown command:');
+}
 
 function shouldOpenChatSiteOnStart(): boolean {
   const rawValue = process.env['KEYGATE_OPEN_CHAT_ON_START'];

@@ -8,6 +8,7 @@ Keygate supports operating from multiple input/output surfaces.
 - Terminal/TUI
 - Discord
 - Slack
+- WhatsApp
 
 ## Recommended rollout order
 
@@ -42,6 +43,32 @@ Operational notes:
 
 - rotate tokens on membership/security events
 - validate event subscriptions and scopes in Slack app config
+
+## WhatsApp setup
+
+WhatsApp uses a linked-device session instead of a static token.
+
+Primary steps:
+
+1. Run `keygate channels whatsapp login`
+2. Scan the QR in WhatsApp on your phone
+3. Start the runtime with `keygate channels whatsapp start`
+4. Configure DM and group policy in the web app
+
+Key settings:
+
+- `dmPolicy`: `pairing`, `open`, or `closed`
+- `allowFrom`: explicit E.164 allowlist or `*`
+- `groupMode`: `closed`, `selected`, or `open`
+- `groupRequireMentionDefault`: default group mention gate
+- `groups`: explicit `group:<id>` overrides
+
+Operational notes:
+
+- structured config lives in `config.json`
+- auth state lives in `~/.config/keygate/channels/whatsapp/auth/`
+- restart the WhatsApp runtime after changing policy
+- use `keygate pairing approve whatsapp <code>` for DM pairing approvals
 
 ## Channel safety guidance
 

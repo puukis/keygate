@@ -41,7 +41,18 @@ This page summarizes the major websocket events used by the web app runtime brid
 
 - `discord_config_updated`
 - `slack_config_updated`
+- `whatsapp_config_updated`
+- `whatsapp_login_qr`
+- `whatsapp_login_result`
 - `mcp_browser_status`
+
+## WhatsApp request messages
+
+The web app sends these websocket requests for the WhatsApp channel:
+
+- `set_whatsapp_config`
+- `start_whatsapp_login`
+- `cancel_whatsapp_login`
 
 ## Scheduler and memory events
 

@@ -6,6 +6,8 @@ This page summarizes practical configuration surfaces used in Keygate.
 
 - `.keygate` – local runtime configuration
 - `.keygate.example` – baseline template used for bootstrapping
+- `~/.config/keygate/config.json` – persisted structured settings such as skills and WhatsApp channel policy
+- `~/.config/keygate/channels/whatsapp/auth/` – linked-device WhatsApp auth state
 
 ## Key configuration domains
 
@@ -25,6 +27,26 @@ This page summarizes practical configuration surfaces used in Keygate.
 
 - Discord token + prefixes
 - Slack bot token, app token, signing secret
+- WhatsApp DM policy, allowlist, group policy, and read-receipt settings (stored in `config.json`, not `.keygate`)
+
+Example persisted WhatsApp block:
+
+```json
+{
+  "whatsapp": {
+    "dmPolicy": "pairing",
+    "allowFrom": ["+15551234567"],
+    "groupMode": "selected",
+    "groups": {
+      "group:120363025870000000": {
+        "requireMention": true
+      }
+    },
+    "groupRequireMentionDefault": true,
+    "sendReadReceipts": true
+  }
+}
+```
 
 ### Browser MCP
 
@@ -42,6 +64,7 @@ This page summarizes practical configuration surfaces used in Keygate.
 ## Configuration hygiene
 
 - Never commit secrets
+- Never commit the WhatsApp auth directory
 - Keep production and local values separate
 - Prefer explicit values over hidden defaults for critical behavior
 - Re-test key workflows after changing security/model settings

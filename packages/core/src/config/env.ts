@@ -3,13 +3,21 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { readFileSync } from 'node:fs';
 import dotenv from 'dotenv';
-import type { BrowserDomainPolicy, CodexReasoningEffort, DmPolicy, KeygateConfig } from '../types.js';
+import type {
+  BrowserDomainPolicy,
+  CodexReasoningEffort,
+  DmPolicy,
+  KeygateConfig,
+  WhatsAppConfig,
+  WhatsAppGroupMode,
+} from '../types.js';
 
 const DEFAULT_ALLOWED_BINARIES = ['git', 'ls', 'npm', 'cat', 'node', 'python3'];
 const DEFAULT_DISCORD_PREFIX = '!keygate ';
 const DEFAULT_BROWSER_TRACE_RETENTION_DAYS = 7;
 const DEFAULT_MCP_PLAYWRIGHT_VERSION = '0.0.64';
 const DEFAULT_DM_POLICY: DmPolicy = 'pairing';
+const DEFAULT_WHATSAPP_GROUP_MODE: WhatsAppGroupMode = 'closed';
 const DEFAULT_BROWSER_ARTIFACTS_DIRNAME = '.keygate-browser-runs';
 const DEFAULT_SKILLS_WATCH = true;
 const DEFAULT_SKILLS_WATCH_DEBOUNCE_MS = 250;
@@ -52,13 +60,19 @@ export function getKeygateFilePath(): string {
   return path.join(getConfigDir(), '.keygate');
 }
 
+export function getPersistedConfigPath(): string {
+  return path.join(getConfigDir(), 'config.json');
+}
+
 export function loadEnvironment(): void {
   dotenv.config({ path: getKeygateFilePath() });
   dotenv.config({ path: path.resolve(process.cwd(), '.keygate') });
 }
 
 export function loadConfigFromEnv(): KeygateConfig {
-  const persistedSkillsConfig = loadPersistedSkillsConfig();
+  const persistedConfig = loadPersistedConfigObject();
+  const persistedSkillsConfig = loadPersistedSkillsConfig(persistedConfig);
+  const persistedWhatsAppConfig = loadPersistedWhatsAppConfig(persistedConfig);
   const provider = normalizeProvider(process.env['LLM_PROVIDER']);
   const workspacePath = resolveWorkspacePath(process.env['WORKSPACE_PATH']);
   const spicyModeEnabled = process.env['SPICY_MODE_ENABLED'] === 'true';
@@ -119,8 +133,40 @@ export function loadConfigFromEnv(): KeygateConfig {
       dmPolicy: normalizeDmPolicy(process.env['SLACK_DM_POLICY']),
       allowFrom: parseIdList(process.env['SLACK_ALLOW_FROM']),
     },
+    whatsapp: persistedWhatsAppConfig,
     skills: persistedSkillsConfig,
   };
+}
+
+export function loadPersistedConfigObject(): Record<string, unknown> {
+  const configPath = getPersistedConfigPath();
+
+  try {
+    const parsed = JSON.parse(readFileSync(configPath, 'utf8')) as Record<string, unknown>;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed;
+    }
+  } catch {
+    // Fall through to empty object.
+  }
+
+  return {};
+}
+
+export async function savePersistedConfigObject(
+  mutator: (current: Record<string, unknown>) => Record<string, unknown> | Promise<Record<string, unknown>>
+): Promise<Record<string, unknown>> {
+  const current = loadPersistedConfigObject();
+  const nextCandidate = await mutator({ ...current });
+  const next =
+    nextCandidate && typeof nextCandidate === 'object' && !Array.isArray(nextCandidate)
+      ? nextCandidate
+      : {};
+
+  const configPath = getPersistedConfigPath();
+  await fs.mkdir(path.dirname(configPath), { recursive: true });
+  await fs.writeFile(configPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+  return next;
 }
 
 function resolveWorkspacePath(value: string | undefined): string {
@@ -372,22 +418,15 @@ function parseDiscordPrefixes(value: string | undefined): string[] {
     .filter((prefix) => prefix.length > 0);
 }
 
-function loadPersistedSkillsConfig(): NonNullable<KeygateConfig['skills']> {
+export function loadPersistedSkillsConfig(
+  parsedConfig: Record<string, unknown> | null = loadPersistedConfigObject()
+): NonNullable<KeygateConfig['skills']> {
   const defaults = buildDefaultSkillsConfig();
-  const configPath = path.join(getConfigDir(), 'config.json');
-
-  let parsed: Record<string, unknown> | null = null;
-  try {
-    parsed = JSON.parse(readFileSync(configPath, 'utf8')) as Record<string, unknown>;
-  } catch {
-    parsed = null;
-  }
-
-  if (!parsed || typeof parsed !== 'object') {
+  if (!parsedConfig || typeof parsedConfig !== 'object') {
     return defaults;
   }
 
-  const skills = parsed['skills'];
+  const skills = parsedConfig['skills'];
   if (!skills || typeof skills !== 'object') {
     return defaults;
   }
@@ -428,6 +467,37 @@ function loadPersistedSkillsConfig(): NonNullable<KeygateConfig['skills']> {
   };
 }
 
+export function loadPersistedWhatsAppConfig(
+  parsedConfig: Record<string, unknown> | null = loadPersistedConfigObject()
+): WhatsAppConfig {
+  const defaults = buildDefaultWhatsAppConfig();
+
+  if (!parsedConfig || typeof parsedConfig !== 'object') {
+    return defaults;
+  }
+
+  const raw = parsedConfig['whatsapp'];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return defaults;
+  }
+
+  const source = raw as Record<string, unknown>;
+  return {
+    dmPolicy: normalizeDmPolicy(typeof source['dmPolicy'] === 'string' ? source['dmPolicy'] : undefined),
+    allowFrom: normalizeStringArray(source['allowFrom']),
+    groupMode: normalizeWhatsAppGroupMode(source['groupMode']),
+    groups: normalizeWhatsAppGroupRules(source['groups']),
+    groupRequireMentionDefault:
+      typeof source['groupRequireMentionDefault'] === 'boolean'
+        ? source['groupRequireMentionDefault']
+        : defaults.groupRequireMentionDefault,
+    sendReadReceipts:
+      typeof source['sendReadReceipts'] === 'boolean'
+        ? source['sendReadReceipts']
+        : defaults.sendReadReceipts,
+  };
+}
+
 function buildDefaultSkillsConfig(): NonNullable<KeygateConfig['skills']> {
   return {
     load: {
@@ -440,6 +510,17 @@ function buildDefaultSkillsConfig(): NonNullable<KeygateConfig['skills']> {
     install: {
       nodeManager: DEFAULT_SKILLS_NODE_MANAGER,
     },
+  };
+}
+
+function buildDefaultWhatsAppConfig(): WhatsAppConfig {
+  return {
+    dmPolicy: DEFAULT_DM_POLICY,
+    allowFrom: [],
+    groupMode: DEFAULT_WHATSAPP_GROUP_MODE,
+    groups: {},
+    groupRequireMentionDefault: true,
+    sendReadReceipts: true,
   };
 }
 
@@ -469,6 +550,45 @@ function normalizeStringArray(value: unknown): string[] {
     .filter((entry): entry is string => typeof entry === 'string')
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
+}
+
+function normalizeWhatsAppGroupMode(value: unknown): WhatsAppGroupMode {
+  if (typeof value !== 'string') {
+    return DEFAULT_WHATSAPP_GROUP_MODE;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'open' || normalized === 'selected') {
+    return normalized;
+  }
+
+  return DEFAULT_WHATSAPP_GROUP_MODE;
+}
+
+function normalizeWhatsAppGroupRules(value: unknown): WhatsAppConfig['groups'] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+
+  const result: WhatsAppConfig['groups'] = {};
+  for (const [groupKey, rawRule] of Object.entries(value as Record<string, unknown>)) {
+    if (!groupKey.startsWith('group:')) {
+      continue;
+    }
+
+    if (!rawRule || typeof rawRule !== 'object' || Array.isArray(rawRule)) {
+      result[groupKey] = {};
+      continue;
+    }
+
+    const rule = rawRule as Record<string, unknown>;
+    result[groupKey] = {
+      requireMention: typeof rule['requireMention'] === 'boolean' ? rule['requireMention'] : undefined,
+      name: typeof rule['name'] === 'string' && rule['name'].trim().length > 0 ? rule['name'].trim() : undefined,
+    };
+  }
+
+  return result;
 }
 
 function normalizeSkillEntries(value: unknown): Record<string, NonNullable<KeygateConfig['skills']>['entries'][string]> {

@@ -1,10 +1,11 @@
 // Core types for Keygate
 
 export type SecurityMode = 'safe' | 'spicy';
-export type ChannelType = 'web' | 'discord' | 'terminal' | 'slack';
+export type ChannelType = 'web' | 'discord' | 'terminal' | 'slack' | 'whatsapp';
 export type CodexReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 export type BrowserDomainPolicy = 'none' | 'allowlist' | 'blocklist';
 export type DmPolicy = 'pairing' | 'open' | 'closed';
+export type WhatsAppGroupMode = 'closed' | 'selected' | 'open';
 export type SkillSourceType = 'workspace' | 'global' | 'plugin' | 'bundled' | 'extra';
 export type SessionCancelReason = 'user' | 'disconnect';
 export type SkillEligibilityReason =
@@ -226,6 +227,21 @@ export interface KeygateConfig {
     dmPolicy?: DmPolicy;
     allowFrom?: string[];
   };
+  whatsapp?: WhatsAppConfig;
+}
+
+export interface WhatsAppGroupRule {
+  requireMention?: boolean;
+  name?: string;
+}
+
+export interface WhatsAppConfig {
+  dmPolicy: DmPolicy;
+  allowFrom: string[];
+  groupMode: WhatsAppGroupMode;
+  groups: Record<string, WhatsAppGroupRule>;
+  groupRequireMentionDefault: boolean;
+  sendReadReceipts: boolean;
 }
 
 export interface SkillEntryConfig {

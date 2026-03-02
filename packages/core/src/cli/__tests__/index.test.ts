@@ -50,6 +50,7 @@ describe('cli index', () => {
       const helpText = consoleSpy.mock.calls.map((call) => call[0]).join('\n');
       expect(helpText).toContain('keygate tui');
       expect(helpText).toContain('keygate doctor');
+      expect(helpText).toContain('web|discord|slack|whatsapp');
     } finally {
       consoleSpy.mockRestore();
     }

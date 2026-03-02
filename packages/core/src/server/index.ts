@@ -8,6 +8,17 @@ import { normalizeWebMessage, BaseChannel } from '../pipeline/index.js';
 import { updateKeygateFile } from '../config/env.js';
 import { MCPBrowserManager, type MCPBrowserStatus } from '../codex/mcpBrowserManager.js';
 import {
+  buildWhatsAppConfigViewSync,
+  cancelActiveWhatsAppLogin,
+  getActiveWhatsAppLoginSnapshot,
+  normalizeWhatsAppGroupKey,
+  normalizeWhatsAppPhoneNumber,
+  persistWhatsAppConfig,
+  startWhatsAppLogin,
+  waitForActiveWhatsAppLoginResult,
+  type WhatsAppConfigView,
+} from '../whatsapp/index.js';
+import {
   loadRegistry,
   searchMarketplace,
   getMarketplaceEntry,
@@ -56,6 +67,9 @@ interface WSMessage {
     | 'set_spicy_obedience'
     | 'set_discord_config'
     | 'set_slack_config'
+    | 'set_whatsapp_config'
+    | 'start_whatsapp_login'
+    | 'cancel_whatsapp_login'
     | 'clear_session'
     | 'new_session'
     | 'delete_session'
@@ -127,6 +141,14 @@ interface WSMessage {
   appToken?: string;
   signingSecret?: string;
   clearBotToken?: boolean;
+  dmPolicy?: 'pairing' | 'open' | 'closed';
+  allowFrom?: string[] | string;
+  groupMode?: 'closed' | 'selected' | 'open';
+  groups?: Record<string, { requireMention?: boolean; name?: string }>;
+  groupRequireMentionDefault?: boolean;
+  sendReadReceipts?: boolean;
+  force?: boolean;
+  timeoutSeconds?: number;
   query?: string;
   tags?: string[];
   scope?: string;
@@ -639,6 +661,90 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
                 error: error instanceof Error ? error.message : 'Failed to save Slack configuration',
               }));
             }
+            break;
+          }
+
+          case 'set_whatsapp_config': {
+            try {
+              const whatsapp = await applyWhatsAppConfigUpdate(config, {
+                dmPolicy: msg.dmPolicy,
+                allowFrom: msg.allowFrom,
+                groupMode: msg.groupMode,
+                groups: msg.groups,
+                groupRequireMentionDefault: msg.groupRequireMentionDefault,
+                sendReadReceipts: msg.sendReadReceipts,
+              });
+
+              ws.send(JSON.stringify({
+                type: 'whatsapp_config_updated',
+                whatsapp,
+              }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Failed to save WhatsApp configuration',
+              }));
+            }
+            break;
+          }
+
+          case 'start_whatsapp_login': {
+            try {
+              const snapshot = await startWhatsAppLogin({
+                force: msg.force === true,
+                timeoutMs: typeof msg.timeoutSeconds === 'number' && Number.isFinite(msg.timeoutSeconds)
+                  ? Math.max(10, msg.timeoutSeconds) * 1000
+                  : 120_000,
+                onQr: async (qrState) => {
+                  ws.send(JSON.stringify({
+                    type: 'whatsapp_login_qr',
+                    whatsapp: qrState,
+                  }));
+                },
+              });
+
+              const immediate = getActiveWhatsAppLoginSnapshot() ?? snapshot;
+              if (immediate.qrDataUrl) {
+                ws.send(JSON.stringify({
+                  type: 'whatsapp_login_qr',
+                  whatsapp: immediate,
+                }));
+              }
+
+              void waitForActiveWhatsAppLoginResult().then((result) => {
+                if (!result) {
+                  return;
+                }
+
+                ws.send(JSON.stringify({
+                  type: 'whatsapp_login_result',
+                  result,
+                }));
+                ws.send(JSON.stringify({
+                  type: 'whatsapp_config_updated',
+                  whatsapp: buildWhatsAppConfigViewSync(config),
+                }));
+              });
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Failed to start WhatsApp login',
+              }));
+            }
+            break;
+          }
+
+          case 'cancel_whatsapp_login': {
+            const result = await cancelActiveWhatsAppLogin();
+            ws.send(JSON.stringify({
+              type: 'whatsapp_login_result',
+              result: result ?? {
+                ok: false,
+                reason: 'cancelled',
+                linkedPhone: null,
+                error: 'No active WhatsApp login was running.',
+              },
+            }));
             break;
           }
 
@@ -1597,6 +1703,7 @@ export function buildStatusPayload(gateway: Gateway, config: KeygateConfig): Rec
     llm: gateway.getLLMState(),
     discord: buildDiscordConfigView(config),
     slack: buildSlackConfigView(config),
+    whatsapp: buildWhatsAppConfigViewSync(config),
     browser: buildBrowserConfigViewFromConfig(config),
     skills,
   };
@@ -1620,6 +1727,7 @@ export function buildConnectedPayload(
     llm: llmState,
     discord: buildDiscordConfigView(config),
     slack: buildSlackConfigView(config),
+    whatsapp: buildWhatsAppConfigViewSync(config),
     browser: buildBrowserConfigViewFromConfig(config),
     skills,
   };
@@ -1631,7 +1739,11 @@ export function buildSessionSnapshotPayload(
 ): Record<string, unknown> {
   const sessions = gateway.listSessions();
   const visibleSessions = sessions.filter((session) => (
-    session.channelType === 'web' || session.channelType === 'discord' || session.channelType === 'terminal' || session.channelType === 'slack'
+    session.channelType === 'web' ||
+    session.channelType === 'discord' ||
+    session.channelType === 'terminal' ||
+    session.channelType === 'slack' ||
+    session.channelType === 'whatsapp'
   ));
 
   if (!visibleSessions.some((session) => session.id === webSessionId)) {
@@ -2235,6 +2347,51 @@ export async function applySlackConfigUpdate(
   return buildSlackConfigView(config);
 }
 
+export async function applyWhatsAppConfigUpdate(
+  config: KeygateConfig,
+  update: {
+    dmPolicy?: 'pairing' | 'open' | 'closed';
+    allowFrom?: string[] | string;
+    groupMode?: 'closed' | 'selected' | 'open';
+    groups?: Record<string, { requireMention?: boolean; name?: string }>;
+    groupRequireMentionDefault?: boolean;
+    sendReadReceipts?: boolean;
+  },
+  persistConfig: typeof persistWhatsAppConfig = persistWhatsAppConfig,
+): Promise<WhatsAppConfigView> {
+  const current = buildWhatsAppConfigViewSync(config);
+  const nextDmPolicy = update.dmPolicy ?? current.dmPolicy;
+  if (nextDmPolicy !== 'pairing' && nextDmPolicy !== 'open' && nextDmPolicy !== 'closed') {
+    throw new Error('WhatsApp DM policy must be pairing, open, or closed.');
+  }
+
+  const nextGroupMode = update.groupMode ?? current.groupMode;
+  if (nextGroupMode !== 'closed' && nextGroupMode !== 'selected' && nextGroupMode !== 'open') {
+    throw new Error('WhatsApp group mode must be closed, selected, or open.');
+  }
+
+  const nextAllowFrom = normalizeWhatsAppAllowlist(update.allowFrom ?? current.allowFrom);
+  const nextGroups = normalizeWhatsAppGroupRules(update.groups ?? current.groups);
+
+  const persisted = await persistConfig({
+    dmPolicy: nextDmPolicy,
+    allowFrom: nextAllowFrom,
+    groupMode: nextGroupMode,
+    groups: nextGroups,
+    groupRequireMentionDefault:
+      typeof update.groupRequireMentionDefault === 'boolean'
+        ? update.groupRequireMentionDefault
+        : current.groupRequireMentionDefault,
+    sendReadReceipts:
+      typeof update.sendReadReceipts === 'boolean'
+        ? update.sendReadReceipts
+        : current.sendReadReceipts,
+  });
+
+  config.whatsapp = persisted;
+  return buildWhatsAppConfigViewSync(config);
+}
+
 function normalizeDiscordPrefix(value: string | undefined, fallbackToDefault = true): string {
   const parsed = parseDiscordPrefixes(value);
   if (parsed.length === 0) {
@@ -2261,6 +2418,51 @@ function parseDiscordPrefixes(value: string | undefined): string[] {
     .split(',')
     .map((prefix) => prefix.trim())
     .filter((prefix) => prefix.length > 0);
+}
+
+function normalizeWhatsAppAllowlist(value: string[] | string): string[] {
+  const entries = Array.isArray(value)
+    ? value
+    : value.split(',').map((entry) => entry.trim());
+
+  const normalized: string[] = [];
+  for (const entry of entries) {
+    const trimmed = entry.trim();
+    if (!trimmed) {
+      continue;
+    }
+    if (trimmed === '*') {
+      normalized.push('*');
+      continue;
+    }
+
+    const phoneNumber = normalizeWhatsAppPhoneNumber(trimmed);
+    if (!phoneNumber) {
+      throw new Error(`Invalid WhatsApp allow-from entry: ${trimmed}`);
+    }
+    normalized.push(phoneNumber);
+  }
+
+  return Array.from(new Set(normalized));
+}
+
+function normalizeWhatsAppGroupRules(
+  value: Record<string, { requireMention?: boolean; name?: string }>
+): Record<string, { requireMention?: boolean; name?: string }> {
+  const normalized: Record<string, { requireMention?: boolean; name?: string }> = {};
+  for (const [key, rule] of Object.entries(value)) {
+    const groupKey = normalizeWhatsAppGroupKey(key);
+    if (!groupKey || groupKey !== key.trim()) {
+      throw new Error(`Invalid WhatsApp group key: ${key}`);
+    }
+
+    normalized[groupKey] = {
+      requireMention: typeof rule?.requireMention === 'boolean' ? rule.requireMention : undefined,
+      name: typeof rule?.name === 'string' && rule.name.trim().length > 0 ? rule.name.trim() : undefined,
+    };
+  }
+
+  return normalized;
 }
 
 export async function handleImageUploadRequest(
