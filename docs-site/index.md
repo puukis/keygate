@@ -24,6 +24,8 @@ features:
     details: From local setup and onboarding to deployment, channels, and production troubleshooting.
   - title: Operationally useful
     details: Includes verification checklists, runbooks, and failure-mode guidance for real incidents.
+  - title: Extensible runtime
+    details: Covers the full plugin platform for tools, RPC methods, HTTP routes, CLI commands, services, and bundled skills.
   - title: Contributor-ready
     details: Clear architecture, command references, and release process documentation.
   - title: Built for growth
@@ -36,3 +38,10 @@ features:
 - **Reference**: exact settings and command surfaces
 - **Operations**: deploy, run, monitor, troubleshoot
 - **Community**: contribution and release lifecycle
+
+Plugin entry points:
+
+- [Plugins Guide](/guide/plugins)
+- [Plugin SDK Reference](/reference/plugin-sdk)
+- [Plugin Manifest Reference](/reference/plugin-manifest)
+- [Plugin Configuration](/reference/plugin-configuration)

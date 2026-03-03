@@ -5,6 +5,12 @@ import { SecurityBadge } from './components/SecurityBadge';
 import { ConfirmationModal } from './components/ConfirmationModal';
 import { MarketplacePanel, type MarketplaceEntryView } from './components/MarketplacePanel';
 import { MemoryPanel, type MemoryEntryView } from './components/MemoryPanel';
+import {
+  PluginsPanel,
+  type PluginInfoView,
+  type PluginListEntryView,
+  type PluginValidationView,
+} from './components/PluginsPanel';
 import { SessionSidebar, type SidebarActionId, type SidebarTabId } from './components/SessionSidebar';
 import { useWebSocket } from './hooks/useWebSocket';
 import { buildEnableSpicyModeMessage, buildSetSpicyObedienceMessage } from './spicyObedience';
@@ -39,7 +45,7 @@ export type LLMProviderId = 'openai' | 'gemini' | 'ollama' | 'openai-codex';
 type CodexReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 type ConfirmationDecision = 'allow_once' | 'allow_always' | 'cancel';
 type BrowserDomainPolicy = 'none' | 'allowlist' | 'blocklist';
-type ConfigSectionTarget = 'top' | 'marketplace' | 'mcp-browser';
+type ConfigSectionTarget = 'top' | 'marketplace' | 'mcp-browser' | 'plugins';
 
 interface BrowserConfigState {
   installed: boolean;
@@ -924,6 +930,38 @@ function parseSessionSnapshotEntries(value: unknown): SessionSnapshotEntry[] {
   });
 }
 
+function upsertPluginListEntry(
+  current: PluginListEntryView[],
+  nextEntry: PluginListEntryView,
+): PluginListEntryView[] {
+  const filtered = current.filter((entry) => entry.manifest.id !== nextEntry.manifest.id);
+  return [...filtered, nextEntry].sort((left, right) => left.manifest.id.localeCompare(right.manifest.id));
+}
+
+function mergePluginDetailsIntoList(
+  current: PluginListEntryView[],
+  detail: PluginInfoView,
+): PluginListEntryView[] {
+  const asListEntry: PluginListEntryView = {
+    manifest: detail.manifest,
+    status: detail.status,
+    enabled: detail.enabled,
+    sourceKind: detail.sourceKind,
+    scope: detail.scope,
+    version: detail.version,
+    description: detail.description,
+    tools: detail.tools,
+    rpcMethods: detail.rpcMethods,
+    httpRoutes: detail.httpRoutes,
+    cliCommands: detail.cliCommands,
+    serviceIds: detail.serviceIds,
+    lastError: detail.lastError,
+    configSchema: detail.configSchema,
+  };
+
+  return upsertPluginListEntry(current, asListEntry);
+}
+
 function App() {
   const [sessionState, setSessionState] = useState(EMPTY_SESSION_CHAT_STATE);
   const [toolEventsBySession, setToolEventsBySession] = useState<Record<string, ToolEvent[]>>({});
@@ -973,6 +1011,7 @@ function App() {
   const [whatsappLoginStatus, setWhatsAppLoginStatus] = useState<string>('');
   const slackSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const configScreenRef = useRef<HTMLDivElement | null>(null);
+  const pluginsConfigSectionRef = useRef<HTMLElement | null>(null);
   const marketplaceConfigSectionRef = useRef<HTMLElement | null>(null);
   const mcpBrowserConfigSectionRef = useRef<HTMLElement | null>(null);
 
@@ -992,6 +1031,10 @@ function App() {
   const [marketplaceFeatured, setMarketplaceFeatured] = useState<MarketplaceEntryView[]>([]);
   const [marketplaceSelected, setMarketplaceSelected] = useState<MarketplaceEntryView | null>(null);
   const [marketplaceInstallStatus, setMarketplaceInstallStatus] = useState<{ name: string; success: boolean; message: string } | null>(null);
+  const [plugins, setPlugins] = useState<PluginListEntryView[]>([]);
+  const [selectedPluginId, setSelectedPluginId] = useState<string | null>(null);
+  const [selectedPlugin, setSelectedPlugin] = useState<PluginInfoView | null>(null);
+  const [pluginValidation, setPluginValidation] = useState<PluginValidationView | null>(null);
 
   const [agentMemories, setAgentMemories] = useState<MemoryEntryView[]>([]);
   const [agentMemoryNamespaces, setAgentMemoryNamespaces] = useState<string[]>([]);
@@ -1766,6 +1809,78 @@ function App() {
         break;
       }
 
+      case 'plugins_list_result': {
+        const entries = Array.isArray(data['plugins']) ? data['plugins'] as PluginListEntryView[] : [];
+        setPlugins(entries);
+        setSelectedPluginId((previous) => {
+          if (previous && entries.some((entry) => entry.manifest.id === previous)) {
+            return previous;
+          }
+          return entries[0]?.manifest.id ?? null;
+        });
+        break;
+      }
+
+      case 'plugins_info_result': {
+        const plugin = data['plugin'] as PluginInfoView | null;
+        if (plugin) {
+          setSelectedPlugin(plugin);
+          setSelectedPluginId(plugin.manifest.id);
+          setPlugins((previous) => mergePluginDetailsIntoList(previous, plugin));
+        }
+        break;
+      }
+
+      case 'plugins_install_result':
+      case 'plugins_enable_result':
+      case 'plugins_disable_result':
+      case 'plugins_set_config_result': {
+        const plugin = data['plugin'] as PluginInfoView | null;
+        if (plugin) {
+          setSelectedPlugin(plugin);
+          setSelectedPluginId(plugin.manifest.id);
+          setPlugins((previous) => mergePluginDetailsIntoList(previous, plugin));
+        }
+        break;
+      }
+
+      case 'plugins_update_result':
+      case 'plugins_reload_result': {
+        const pluginEntries = Array.isArray(data['plugins']) ? data['plugins'] as PluginInfoView[] : [];
+        if (pluginEntries.length > 0) {
+          setPlugins((previous) => (
+            pluginEntries.reduce((acc, entry) => mergePluginDetailsIntoList(acc, entry), previous)
+          ));
+          setSelectedPlugin((previous) => {
+            if (!previous) {
+              return previous;
+            }
+            return pluginEntries.find((entry) => entry.manifest.id === previous.manifest.id) ?? previous;
+          });
+        }
+        break;
+      }
+
+      case 'plugins_remove_result': {
+        const pluginId = typeof data['pluginId'] === 'string' ? data['pluginId'] : '';
+        const removed = data['removed'] === true;
+        if (!pluginId || !removed) {
+          break;
+        }
+
+        setPlugins((previous) => previous.filter((entry) => entry.manifest.id !== pluginId));
+        setSelectedPlugin((previous) => previous?.manifest.id === pluginId ? null : previous);
+        setSelectedPluginId((previous) => previous === pluginId ? null : previous);
+        setPluginValidation(null);
+        break;
+      }
+
+      case 'plugins_validate_result': {
+        const validationResult = data['validation'] as PluginValidationView | null;
+        setPluginValidation(validationResult);
+        break;
+      }
+
       case 'memory_list_result':
       case 'memory_search_result': {
         const memories = Array.isArray(data['memories']) ? data['memories'] as MemoryEntryView[] : [];
@@ -1882,6 +1997,31 @@ function App() {
   ]);
 
   const { send, connected, connecting } = useWebSocket(getWebSocketUrl(), handleMessage);
+
+  useEffect(() => {
+    if (!connected) {
+      return;
+    }
+
+    send({ type: 'plugins_list' });
+  }, [connected, send]);
+
+  useEffect(() => {
+    if (!connected) {
+      return;
+    }
+
+    if (!selectedPluginId) {
+      setSelectedPlugin(null);
+      setPluginValidation(null);
+      return;
+    }
+
+    send({
+      type: 'plugins_info',
+      pluginId: selectedPluginId,
+    });
+  }, [connected, selectedPluginId, send]);
 
 
   // Reset saving/pending states when connection drops so UI never gets stuck.
@@ -2007,6 +2147,8 @@ function App() {
     const frame = window.requestAnimationFrame(() => {
       if (configSectionTarget === 'top') {
         configScreenRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+      } else if (configSectionTarget === 'plugins') {
+        pluginsConfigSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       } else if (configSectionTarget === 'marketplace') {
         marketplaceConfigSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       } else {
@@ -2216,6 +2358,9 @@ function App() {
 
   const handleSidebarAction = useCallback((action: SidebarActionId) => {
     switch (action) {
+      case 'open_config_plugins':
+        openConfigScreenAt('plugins');
+        return;
       case 'open_config_marketplace':
         openConfigScreenAt('marketplace');
         return;
@@ -3399,6 +3544,52 @@ function App() {
                     Terminate all sessions
                   </button>
                 </div>
+              </section>
+
+              <section className="config-section" ref={pluginsConfigSectionRef}>
+                <h3>Plugins</h3>
+                <PluginsPanel
+                  connected={connected}
+                  disabled={activeIsStreaming}
+                  plugins={plugins}
+                  selectedPlugin={selectedPlugin}
+                  validation={pluginValidation}
+                  onRefresh={() => {
+                    send({ type: 'plugins_list' });
+                    if (selectedPluginId) {
+                      send({ type: 'plugins_info', pluginId: selectedPluginId });
+                    }
+                  }}
+                  onSelectPlugin={(pluginId) => {
+                    setPluginValidation(null);
+                    setSelectedPluginId(pluginId);
+                    send({ type: 'plugins_info', pluginId });
+                  }}
+                  onInstall={(source, scope, link) => {
+                    send({ type: 'plugins_install', source, scope, link });
+                  }}
+                  onEnable={(pluginId) => {
+                    send({ type: 'plugins_enable', pluginId });
+                  }}
+                  onDisable={(pluginId) => {
+                    send({ type: 'plugins_disable', pluginId });
+                  }}
+                  onReload={(pluginId) => {
+                    send({ type: 'plugins_reload', pluginId });
+                  }}
+                  onUpdate={(pluginId) => {
+                    send({ type: 'plugins_update', pluginId });
+                  }}
+                  onRemove={(pluginId, purge) => {
+                    send({ type: 'plugins_remove', pluginId, purge });
+                  }}
+                  onValidate={(pluginId) => {
+                    send({ type: 'plugins_validate', pluginId });
+                  }}
+                  onSaveConfig={(pluginId, configValue) => {
+                    send({ type: 'plugins_set_config', pluginId, json: configValue });
+                  }}
+                />
               </section>
 
               <section className="config-section" ref={marketplaceConfigSectionRef}>

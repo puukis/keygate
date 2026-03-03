@@ -8,6 +8,7 @@ export {
   getPersistedConfigPath,
   loadConfigFromEnv,
   loadPersistedConfigObject,
+  loadPersistedPluginsConfig,
   loadPersistedSkillsConfig,
   loadPersistedWhatsAppConfig,
   loadEnvironment,

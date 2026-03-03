@@ -66,6 +66,40 @@ The web app sends these websocket requests for the WhatsApp channel:
 - `memory_set_result`
 - `memory_delete_result`
 
+## Plugin management messages
+
+Requests:
+
+- `plugins_list`
+- `plugins_info`
+- `plugins_install`
+- `plugins_update`
+- `plugins_remove`
+- `plugins_enable`
+- `plugins_disable`
+- `plugins_reload`
+- `plugins_set_config`
+- `plugins_validate`
+
+Results:
+
+- `plugins_list_result`
+- `plugins_info_result`
+- `plugins_install_result`
+- `plugins_update_result`
+- `plugins_remove_result`
+- `plugins_enable_result`
+- `plugins_disable_result`
+- `plugins_reload_result`
+- `plugins_set_config_result`
+- `plugins_validate_result`
+
+## Plugin runtime invocation
+
+- `plugin_invoke`: generic request envelope for plugin-defined RPC methods
+- `plugin_result`: successful plugin RPC response
+- `plugin_error`: sanitized plugin RPC failure response
+
 ## Error event
 
 - `error`: generic runtime error payload; should be surfaced in active session state

@@ -61,7 +61,7 @@ jobs:
       - name: Validate publish manifests
         run: node ./scripts/check-publish-manifests.mjs
 
-      - name: Publish @puukis/core and @puukis/cli if versions are new
+      - name: Publish @puukis/plugin-sdk, @puukis/core, and @puukis/cli if versions are new
         shell: bash
         run: |
           set -euo pipefail
@@ -99,5 +99,6 @@ jobs:
             return 1
           }
 
+          publish_if_needed "@puukis/plugin-sdk" "packages/plugin-sdk/package.json" "packages/plugin-sdk"
           publish_if_needed "@puukis/core" "packages/core/package.json" "packages/core"
           publish_if_needed "@puukis/cli" "packages/cli/package.json" "packages/cli"

@@ -82,6 +82,17 @@ interface WSMessage {
     | 'setup_mcp_browser'
     | 'remove_mcp_browser'
     | 'set_browser_policy'
+    | 'plugins_list'
+    | 'plugins_info'
+    | 'plugins_install'
+    | 'plugins_update'
+    | 'plugins_remove'
+    | 'plugins_enable'
+    | 'plugins_disable'
+    | 'plugins_reload'
+    | 'plugins_set_config'
+    | 'plugins_validate'
+    | 'plugin_invoke'
     | 'marketplace_search'
     | 'marketplace_info'
     | 'marketplace_featured'
@@ -162,6 +173,12 @@ interface WSMessage {
   prompt?: string;
   jobId?: string;
   name?: string;
+  pluginId?: string;
+  method?: string;
+  source?: string;
+  link?: boolean;
+  json?: unknown;
+  purge?: boolean;
   promptPrefix?: string;
   secret?: string;
   routeId?: string;
@@ -363,6 +380,7 @@ class WebSocketChannel extends BaseChannel {
  */
 export function startWebServer(config: KeygateConfig, options: StartWebServerOptions = {}): WebServerHandle {
   const gateway = Gateway.getInstance(config);
+  const pluginManager = gateway.plugins;
   const staticAssetsDir = options.staticAssetsDir;
   const mcpBrowserManager = new MCPBrowserManager(config);
   const browserStatusTracker: BrowserStatusTracker = {
@@ -408,8 +426,8 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
   const server = createServer((req, res) => {
     // CORS headers
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-keygate-signature');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, x-keygate-signature');
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
@@ -449,6 +467,11 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
     if (url.pathname.startsWith('/api/webhooks/')) {
       const webhookId = url.pathname.slice('/api/webhooks/'.length).trim();
       void handleWebhookInboundRequest(req, res, webhookService, webhookId);
+      return;
+    }
+
+    if (url.pathname.startsWith('/api/plugins/')) {
+      void handlePluginHttpRequest(req, res, pluginManager, url);
       return;
     }
 
@@ -967,6 +990,250 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
               ws.send(JSON.stringify({
                 type: 'error',
                 error: error instanceof Error ? error.message : 'Failed to update browser policy',
+              }));
+            }
+            break;
+          }
+
+          case 'plugins_list': {
+            try {
+              const plugins = await pluginManager.listPlugins();
+              ws.send(JSON.stringify({
+                type: 'plugins_list_result',
+                plugins,
+              }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Plugin listing failed',
+              }));
+            }
+            break;
+          }
+
+          case 'plugins_info': {
+            const pluginId = typeof msg.pluginId === 'string' ? msg.pluginId.trim() : '';
+            if (!pluginId) {
+              ws.send(JSON.stringify({ type: 'error', error: 'pluginId is required' }));
+              break;
+            }
+
+            try {
+              const plugin = await pluginManager.getPluginInfo(pluginId);
+              ws.send(JSON.stringify({
+                type: 'plugins_info_result',
+                plugin,
+              }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Plugin info failed',
+              }));
+            }
+            break;
+          }
+
+          case 'plugins_install': {
+            const source = typeof msg.source === 'string' ? msg.source.trim() : '';
+            if (!source) {
+              ws.send(JSON.stringify({ type: 'error', error: 'source is required' }));
+              break;
+            }
+
+            try {
+              const plugin = await pluginManager.installPlugin({
+                source,
+                scope: msg.scope === 'global' ? 'global' : 'workspace',
+                link: msg.link === true,
+              });
+              ws.send(JSON.stringify({
+                type: 'plugins_install_result',
+                plugin,
+              }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Plugin install failed',
+              }));
+            }
+            break;
+          }
+
+          case 'plugins_update': {
+            try {
+              const pluginId = typeof msg.pluginId === 'string' ? msg.pluginId.trim() : undefined;
+              const plugins = await pluginManager.updatePlugin(pluginId);
+              ws.send(JSON.stringify({
+                type: 'plugins_update_result',
+                plugins,
+              }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Plugin update failed',
+              }));
+            }
+            break;
+          }
+
+          case 'plugins_remove': {
+            const pluginId = typeof msg.pluginId === 'string' ? msg.pluginId.trim() : '';
+            if (!pluginId) {
+              ws.send(JSON.stringify({ type: 'error', error: 'pluginId is required' }));
+              break;
+            }
+
+            try {
+              const removed = await pluginManager.removePlugin(pluginId, msg.purge === true);
+              ws.send(JSON.stringify({
+                type: 'plugins_remove_result',
+                pluginId,
+                removed,
+              }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Plugin remove failed',
+              }));
+            }
+            break;
+          }
+
+          case 'plugins_enable': {
+            const pluginId = typeof msg.pluginId === 'string' ? msg.pluginId.trim() : '';
+            if (!pluginId) {
+              ws.send(JSON.stringify({ type: 'error', error: 'pluginId is required' }));
+              break;
+            }
+
+            try {
+              const plugin = await pluginManager.enablePlugin(pluginId);
+              ws.send(JSON.stringify({
+                type: 'plugins_enable_result',
+                plugin,
+              }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Plugin enable failed',
+              }));
+            }
+            break;
+          }
+
+          case 'plugins_disable': {
+            const pluginId = typeof msg.pluginId === 'string' ? msg.pluginId.trim() : '';
+            if (!pluginId) {
+              ws.send(JSON.stringify({ type: 'error', error: 'pluginId is required' }));
+              break;
+            }
+
+            try {
+              const plugin = await pluginManager.disablePlugin(pluginId);
+              ws.send(JSON.stringify({
+                type: 'plugins_disable_result',
+                plugin,
+              }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Plugin disable failed',
+              }));
+            }
+            break;
+          }
+
+          case 'plugins_reload': {
+            try {
+              const pluginId = typeof msg.pluginId === 'string' ? msg.pluginId.trim() : undefined;
+              const plugins = await pluginManager.reloadPlugin(pluginId);
+              ws.send(JSON.stringify({
+                type: 'plugins_reload_result',
+                plugins,
+              }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Plugin reload failed',
+              }));
+            }
+            break;
+          }
+
+          case 'plugins_set_config': {
+            const pluginId = typeof msg.pluginId === 'string' ? msg.pluginId.trim() : '';
+            const json = (msg.json && typeof msg.json === 'object' && !Array.isArray(msg.json))
+              ? msg.json as Record<string, unknown>
+              : null;
+
+            if (!pluginId || !json) {
+              ws.send(JSON.stringify({ type: 'error', error: 'pluginId and json object are required' }));
+              break;
+            }
+
+            try {
+              const plugin = await pluginManager.setPluginConfig(pluginId, json);
+              ws.send(JSON.stringify({
+                type: 'plugins_set_config_result',
+                plugin,
+              }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Plugin config update failed',
+              }));
+            }
+            break;
+          }
+
+          case 'plugins_validate': {
+            const pluginId = typeof msg.pluginId === 'string' ? msg.pluginId.trim() : '';
+            if (!pluginId) {
+              ws.send(JSON.stringify({ type: 'error', error: 'pluginId is required' }));
+              break;
+            }
+
+            try {
+              const validation = await pluginManager.validatePlugin(pluginId);
+              ws.send(JSON.stringify({
+                type: 'plugins_validate_result',
+                pluginId,
+                validation,
+              }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Plugin validation failed',
+              }));
+            }
+            break;
+          }
+
+          case 'plugin_invoke': {
+            const pluginId = typeof msg.pluginId === 'string' ? msg.pluginId.trim() : '';
+            const method = typeof msg.method === 'string' ? msg.method.trim() : '';
+            const requestId = typeof msg.requestId === 'string' ? msg.requestId : undefined;
+            if (!pluginId || !method) {
+              ws.send(JSON.stringify({ type: 'error', error: 'pluginId and method are required' }));
+              break;
+            }
+
+            try {
+              const result = await pluginManager.invokeRpc(pluginId, method, msg.params);
+              ws.send(JSON.stringify({
+                type: 'plugin_result',
+                pluginId,
+                method,
+                requestId,
+                result,
+              }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'plugin_error',
+                pluginId,
+                method,
+                requestId,
+                error: sanitizePluginError(error),
               }));
             }
             break;
@@ -2603,6 +2870,105 @@ export async function handleWebhookInboundRequest(
   }));
 }
 
+async function handlePluginHttpRequest(
+  req: import('node:http').IncomingMessage,
+  res: import('node:http').ServerResponse,
+  pluginManager: Gateway['plugins'],
+  url: URL,
+): Promise<void> {
+  const pathname = url.pathname.slice('/api/plugins/'.length);
+  const [rawPluginId, ...rest] = pathname.split('/');
+  const pluginId = rawPluginId?.trim();
+  const subPath = rest.join('/').trim();
+
+  if (!pluginId) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Plugin id is required.' }));
+    return;
+  }
+
+  const method = (req.method ?? 'GET').toUpperCase();
+  if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+    res.writeHead(405, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Method not allowed' }));
+    return;
+  }
+
+  let body: unknown = null;
+  if (!['GET', 'HEAD'].includes(method)) {
+    try {
+      const rawBody = await readRequestBody(req, WEBHOOK_MAX_BODY_BYTES);
+      const text = rawBody.toString('utf8');
+      if (text.trim().length > 0) {
+        try {
+          body = JSON.parse(text) as unknown;
+        } catch {
+          body = text;
+        }
+      }
+    } catch (error) {
+      res.writeHead(413, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: error instanceof Error ? error.message : 'Request body too large' }));
+      return;
+    }
+  }
+
+  const headers = Object.fromEntries(
+    Object.entries(req.headers).map(([key, value]) => [
+      key.toLowerCase(),
+      Array.isArray(value) ? value.join(', ') : (value ?? ''),
+    ])
+  );
+
+  try {
+    const result = await pluginManager.handleHttpRoute(pluginId, method, subPath, {
+      request: req,
+      body,
+      method: method as 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+      path: subPath,
+      query: url.searchParams,
+      headers,
+    });
+
+    if (!result) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Plugin route not found.' }));
+      return;
+    }
+
+    const responseHeaders = { ...(result.headers ?? {}) };
+    if ('json' in result) {
+      res.writeHead(result.status, {
+        'Content-Type': 'application/json',
+        ...responseHeaders,
+      });
+      res.end(JSON.stringify(result.json));
+      return;
+    }
+
+    if ('text' in result) {
+      res.writeHead(result.status, {
+        'Content-Type': 'text/plain; charset=utf-8',
+        ...responseHeaders,
+      });
+      res.end(result.text);
+      return;
+    }
+
+    res.writeHead(result.status, {
+      'Content-Type': result.contentType,
+      ...responseHeaders,
+    });
+    res.end(Buffer.from(result.body));
+  } catch (error) {
+    const statusCode = error instanceof Error && error.message.includes('Unauthorized') ? 401 : 500;
+    res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      error: sanitizePluginError(error),
+    }));
+  }
+}
+
 async function readRequestBody(
   req: import('node:http').IncomingMessage,
   maxBytes: number
@@ -2643,6 +3009,11 @@ export function sanitizeUploadSessionId(value: string | null): string | null {
 
 export function sanitizeUploadAttachmentId(value: string | null): string | null {
   return sanitizeUploadAttachmentIdFromStore(value);
+}
+
+function sanitizePluginError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.trim().length > 0 ? message : 'Plugin invocation failed.';
 }
 
 export async function resolveUploadPathByAttachmentId(

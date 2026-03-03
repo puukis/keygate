@@ -13,6 +13,9 @@ import { runSkillsCommand } from './commands/skills.js';
 import { runMemoryCommand } from './commands/memory.js';
 import { runPairingCommand } from './commands/pairing.js';
 import { runDoctorCommand } from './commands/doctor.js';
+import { runPluginsCommand } from './commands/plugins.js';
+import { loadConfigFromEnv } from '../config/env.js';
+import { runPluginCliBridge } from '../plugins/index.js';
 
 export async function runCli(argv: string[]): Promise<boolean> {
   if (argv.length === 0) {
@@ -79,7 +82,13 @@ export async function runCli(argv: string[]): Promise<boolean> {
     case 'doctor':
       await runDoctorCommand(args);
       return true;
+    case 'plugins':
+      await runPluginsCommand(args);
+      return true;
     default:
+      if (await runPluginCliBridge(loadConfigFromEnv(), args)) {
+        return true;
+      }
       throw new Error(`Unknown command: ${command}`);
   }
 }
@@ -102,6 +111,7 @@ Usage:
   keygate channels <web|discord|slack|whatsapp> <start|stop|restart|status|config|login|logout>
   keygate mcp browser <install|status|remove|update>
   keygate skills <list|doctor|validate|where|install|update|remove|search|info|publish|unpublish|featured>
+  keygate plugins <list|info|install|update|remove|enable|disable|reload|config|doctor>
   keygate memory <list|get|set|delete|search|namespaces|clear>
   keygate pairing <approve|pending>
   keygate doctor [--non-interactive]

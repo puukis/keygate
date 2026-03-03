@@ -5,8 +5,8 @@
   "description": "Personal AI agent gateway - control your computer via a single Brain",
   "type": "module",
   "scripts": {
-    "dev": "pnpm --filter @puukis/core build && pnpm -r --parallel dev",
-    "build": "pnpm --filter @puukis/core build && pnpm --filter @puukis/discord build && pnpm --filter @puukis/whatsapp build && pnpm --filter @puukis/cli build",
+    "dev": "pnpm --filter @puukis/plugin-sdk build && pnpm --filter @puukis/core build && pnpm -r --parallel dev",
+    "build": "pnpm --filter @puukis/plugin-sdk build && pnpm --filter @puukis/core build && pnpm --filter @puukis/discord build && pnpm --filter @puukis/whatsapp build && pnpm --filter @puukis/cli build",
     "macos:app": "bash packages/macos/scripts/build-app.sh",
     "macos:dmg": "bash packages/macos/scripts/build-dmg.sh",
     "test": "pnpm -r test",

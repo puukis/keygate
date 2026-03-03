@@ -24,6 +24,7 @@
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.18",
     "@google/generative-ai": "^0.21.0",
+    "ajv": "^8.17.1",
     "better-sqlite3": "^11.7.0",
     "dotenv": "^16.4.0",
     "eventemitter3": "^5.0.0",

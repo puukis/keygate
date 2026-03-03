@@ -2,6 +2,14 @@
 
 Use this page as a runbook for common issues.
 
+## Plugin runtime quick checks
+
+- Run `keygate plugins doctor --json` to inspect duplicate ids, command collisions, config validation failures, and manifest diagnostics.
+- If a plugin is `unhealthy`, inspect `lastError` in the web app Plugins panel or `keygate plugins info <id>`.
+- If a plugin HTTP route returns `401`, verify `server.apiToken` and the `Authorization: Bearer <token>` header.
+- If install/update fails, confirm the configured package manager can run `pack` and `install --ignore-scripts`.
+- If hot reload does not trigger, verify `plugins.load.watch` and retry a manual `keygate plugins reload <id>`.
+
 ## 1) Web app says disconnected
 
 Checks:

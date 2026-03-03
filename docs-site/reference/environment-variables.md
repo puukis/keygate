@@ -8,9 +8,18 @@ Use environment variables for secrets and environment-specific overrides.
 
 - Provider credentials/tokens
 - Channel credentials (Discord/Slack)
+- Plugin runtime and plugin install behavior
 - Runtime mode flags
 - Network/host/port bindings
 - Logging and debug levels
+
+## Plugin environment variables
+
+- `KEYGATE_SERVER_API_TOKEN`
+- `KEYGATE_PLUGINS_WATCH`
+- `KEYGATE_PLUGINS_WATCH_DEBOUNCE_MS`
+- `KEYGATE_PLUGINS_PATHS`
+- `KEYGATE_PLUGINS_NODE_MANAGER`
 
 ## WhatsApp note
 

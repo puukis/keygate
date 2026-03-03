@@ -8,6 +8,8 @@ import type {
   CodexReasoningEffort,
   DmPolicy,
   KeygateConfig,
+  NodeManager,
+  PluginEntryConfig,
   WhatsAppConfig,
   WhatsAppGroupMode,
 } from '../types.js';
@@ -21,7 +23,10 @@ const DEFAULT_WHATSAPP_GROUP_MODE: WhatsAppGroupMode = 'closed';
 const DEFAULT_BROWSER_ARTIFACTS_DIRNAME = '.keygate-browser-runs';
 const DEFAULT_SKILLS_WATCH = true;
 const DEFAULT_SKILLS_WATCH_DEBOUNCE_MS = 250;
-const DEFAULT_SKILLS_NODE_MANAGER: 'npm' | 'pnpm' | 'yarn' | 'bun' = 'npm';
+const DEFAULT_SKILLS_NODE_MANAGER: NodeManager = 'npm';
+const DEFAULT_PLUGINS_WATCH = true;
+const DEFAULT_PLUGINS_WATCH_DEBOUNCE_MS = 250;
+const DEFAULT_PLUGINS_NODE_MANAGER: NodeManager = 'npm';
 
 export function getConfigHomeDir(): string {
   if (process.platform === 'win32') {
@@ -72,6 +77,7 @@ export function loadEnvironment(): void {
 export function loadConfigFromEnv(): KeygateConfig {
   const persistedConfig = loadPersistedConfigObject();
   const persistedSkillsConfig = loadPersistedSkillsConfig(persistedConfig);
+  const persistedPluginsConfig = loadPersistedPluginsConfig(persistedConfig);
   const persistedWhatsAppConfig = loadPersistedWhatsAppConfig(persistedConfig);
   const provider = normalizeProvider(process.env['LLM_PROVIDER']);
   const workspacePath = resolveWorkspacePath(process.env['WORKSPACE_PATH']);
@@ -111,6 +117,7 @@ export function loadConfigFromEnv(): KeygateConfig {
     },
     server: {
       port: parseInt(process.env['PORT'] ?? '18790', 10),
+      apiToken: process.env['KEYGATE_SERVER_API_TOKEN'] ?? loadPersistedServerApiToken(persistedConfig),
     },
     browser: {
       domainPolicy,
@@ -135,6 +142,7 @@ export function loadConfigFromEnv(): KeygateConfig {
     },
     whatsapp: persistedWhatsAppConfig,
     skills: persistedSkillsConfig,
+    plugins: persistedPluginsConfig,
   };
 }
 
@@ -467,6 +475,62 @@ export function loadPersistedSkillsConfig(
   };
 }
 
+export function loadPersistedPluginsConfig(
+  parsedConfig: Record<string, unknown> | null = loadPersistedConfigObject()
+): NonNullable<KeygateConfig['plugins']> {
+  const defaults = buildDefaultPluginsConfig();
+  const asPlugins = parsedConfig && typeof parsedConfig === 'object'
+    && parsedConfig['plugins'] && typeof parsedConfig['plugins'] === 'object' && !Array.isArray(parsedConfig['plugins'])
+    ? parsedConfig['plugins'] as Record<string, unknown>
+    : {};
+  const load = asPlugins['load'];
+  const entries = asPlugins['entries'];
+  const install = asPlugins['install'];
+
+  const watch = typeof (load as Record<string, unknown> | undefined)?.['watch'] === 'boolean'
+    ? Boolean((load as Record<string, unknown>)['watch'])
+    : defaults.load.watch;
+
+  const watchDebounceMs = parsePositiveInteger(
+    String((load as Record<string, unknown> | undefined)?.['watchDebounceMs'] ?? ''),
+    defaults.load.watchDebounceMs
+  );
+
+  const persistedPaths = normalizeStringArray((load as Record<string, unknown> | undefined)?.['paths']);
+  const envPaths = parseBooleanEnv(process.env['KEYGATE_PLUGINS_WATCH']) === undefined
+    ? undefined
+    : parseBooleanEnv(process.env['KEYGATE_PLUGINS_WATCH']);
+  const effectiveWatch = typeof envPaths === 'boolean' ? envPaths : watch;
+
+  const envDebounceRaw = process.env['KEYGATE_PLUGINS_WATCH_DEBOUNCE_MS'];
+  const effectiveDebounce = envDebounceRaw
+    ? parsePositiveInteger(envDebounceRaw, watchDebounceMs)
+    : watchDebounceMs;
+
+  const envRoots = normalizeStringArray(
+    typeof process.env['KEYGATE_PLUGINS_PATHS'] === 'string'
+      ? process.env['KEYGATE_PLUGINS_PATHS']!.split(',')
+      : []
+  );
+  const paths = envRoots.length > 0 ? envRoots : persistedPaths;
+  const nodeManager = normalizeNodeManager(
+    process.env['KEYGATE_PLUGINS_NODE_MANAGER'] ?? (install as Record<string, unknown> | undefined)?.['nodeManager'],
+    DEFAULT_PLUGINS_NODE_MANAGER
+  );
+
+  return {
+    load: {
+      watch: effectiveWatch,
+      watchDebounceMs: effectiveDebounce,
+      paths,
+    },
+    entries: normalizePluginEntries(entries),
+    install: {
+      nodeManager,
+    },
+  };
+}
+
 export function loadPersistedWhatsAppConfig(
   parsedConfig: Record<string, unknown> | null = loadPersistedConfigObject()
 ): WhatsAppConfig {
@@ -513,6 +577,20 @@ function buildDefaultSkillsConfig(): NonNullable<KeygateConfig['skills']> {
   };
 }
 
+function buildDefaultPluginsConfig(): NonNullable<KeygateConfig['plugins']> {
+  return {
+    load: {
+      watch: DEFAULT_PLUGINS_WATCH,
+      watchDebounceMs: DEFAULT_PLUGINS_WATCH_DEBOUNCE_MS,
+      paths: [],
+    },
+    entries: {},
+    install: {
+      nodeManager: DEFAULT_PLUGINS_NODE_MANAGER,
+    },
+  };
+}
+
 function buildDefaultWhatsAppConfig(): WhatsAppConfig {
   return {
     dmPolicy: DEFAULT_DM_POLICY,
@@ -524,9 +602,9 @@ function buildDefaultWhatsAppConfig(): WhatsAppConfig {
   };
 }
 
-function normalizeNodeManager(value: unknown): 'npm' | 'pnpm' | 'yarn' | 'bun' {
+function normalizeNodeManager(value: unknown, fallback: NodeManager = DEFAULT_SKILLS_NODE_MANAGER): NodeManager {
   if (typeof value !== 'string') {
-    return DEFAULT_SKILLS_NODE_MANAGER;
+    return fallback;
   }
 
   const normalized = value.trim().toLowerCase();
@@ -537,7 +615,7 @@ function normalizeNodeManager(value: unknown): 'npm' | 'pnpm' | 'yarn' | 'bun' {
     case 'bun':
       return normalized;
     default:
-      return DEFAULT_SKILLS_NODE_MANAGER;
+      return fallback;
   }
 }
 
@@ -617,6 +695,60 @@ function normalizeSkillEntries(value: unknown): Record<string, NonNullable<Keyga
   }
 
   return result;
+}
+
+function normalizePluginEntries(value: unknown): Record<string, PluginEntryConfig> {
+  if (!value || typeof value !== 'object') {
+    return {};
+  }
+
+  const source = value as Record<string, unknown>;
+  const result: Record<string, PluginEntryConfig> = {};
+
+  for (const [key, rawEntry] of Object.entries(source)) {
+    if (!rawEntry || typeof rawEntry !== 'object') {
+      continue;
+    }
+
+    const entry = rawEntry as Record<string, unknown>;
+    const normalizedEnv = normalizeEnvMap(entry['env']);
+    const normalizedConfig = normalizeConfigBag(entry['config']);
+
+    result[key] = {
+      enabled: typeof entry['enabled'] === 'boolean' ? entry['enabled'] : undefined,
+      env: Object.keys(normalizedEnv).length > 0 ? normalizedEnv : undefined,
+      config: Object.keys(normalizedConfig).length > 0 ? normalizedConfig : undefined,
+    };
+  }
+
+  return result;
+}
+
+function loadPersistedServerApiToken(parsedConfig: Record<string, unknown>): string {
+  const server = parsedConfig['server'];
+  if (!server || typeof server !== 'object' || Array.isArray(server)) {
+    return '';
+  }
+
+  const apiToken = (server as Record<string, unknown>)['apiToken'];
+  return typeof apiToken === 'string' ? apiToken : '';
+}
+
+function parseBooleanEnv(value: string | undefined): boolean | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on') {
+    return true;
+  }
+
+  if (normalized === 'false' || normalized === '0' || normalized === 'no' || normalized === 'off') {
+    return false;
+  }
+
+  return undefined;
 }
 
 function normalizeEnvMap(value: unknown): Record<string, string> {

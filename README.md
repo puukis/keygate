@@ -124,6 +124,38 @@ Notes:
 - This lifecycle is start/stop-on-demand only (no login/boot auto-start is configured).
 - `keygate gateway open` forces `KEYGATE_OPEN_CHAT_ON_START=false` for the managed process, so it will not auto-open a browser tab.
 
+### Runtime Plugins
+
+```bash
+# Install from npm, git, a local directory, or a tarball
+keygate plugins install @acme/keygate-plugin --scope workspace
+keygate plugins install https://github.com/acme/keygate-plugin.git --scope global
+keygate plugins install ./path/to/local-plugin --link
+keygate plugins install ./keygate-plugin.tgz --scope global
+
+# Inspect installed plugins
+keygate plugins list
+keygate plugins info <plugin-id>
+
+# Run a plugin-provided CLI command (if the plugin registers one)
+keygate <plugin-command> ...
+```
+
+Local plugin directories must include a `keygate.plugin.json` manifest and the built `entry` file declared inside it.
+
+Plugin capabilities in this release:
+
+- runtime-loaded tool, RPC, HTTP, CLI, and background service extensions
+- JSON Schema validated plugin config
+- hot reload with rollback on failure
+- full plugin management in the web app Plugins panel
+
+Documentation:
+
+- `docs/PLUGIN_RUNTIME.md`
+- `docs/PLUGIN_MANIFEST.md`
+- `docs-site/guide/plugins.md`
+
 ### Channel Lifecycle and Config
 
 ```bash

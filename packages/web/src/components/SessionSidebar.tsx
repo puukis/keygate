@@ -14,7 +14,7 @@ export type SidebarTabId =
   | 'debug'
   | 'logs'
   | 'docs';
-export type SidebarActionId = 'open_config_marketplace' | 'open_config_mcp_browser';
+export type SidebarActionId = 'open_config_plugins' | 'open_config_marketplace' | 'open_config_mcp_browser';
 type SidebarSectionId = 'chat' | 'control' | 'agent' | 'settings' | 'resources';
 type SidebarIconId =
   | 'chat'
@@ -26,6 +26,7 @@ type SidebarIconId =
   | 'cronJobs'
   | 'agents'
   | 'skills'
+  | 'plugins'
   | 'nodes'
   | 'config'
   | 'debug'
@@ -85,6 +86,7 @@ export const SIDEBAR_SECTIONS: SidebarSection[] = [
     label: 'Agent',
     items: [
       { kind: 'tab', id: 'agents', label: 'Agents', icon: 'agents' },
+      { kind: 'action', id: 'open_config_plugins', label: 'Plugins', icon: 'plugins' },
       { kind: 'action', id: 'open_config_marketplace', label: 'Skills', icon: 'skills' },
       { kind: 'action', id: 'open_config_mcp_browser', label: 'Nodes', icon: 'nodes' },
     ],
@@ -173,6 +175,16 @@ function SidebarIcon({ id }: { id: SidebarIconId }) {
       return (
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <path d="m13 2.5-9 11h6l-1 8 9-11h-6l1-8Z" />
+        </svg>
+      );
+    case 'plugins':
+      return (
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M7.5 4.5h4v4h-4Z" />
+          <path d="M12.5 4.5h4v4h-4Z" />
+          <path d="M7.5 9.5h4v4h-4Z" />
+          <path d="M12.5 9.5h4v4h-4Z" />
+          <path d="M10 14.5v4M14 14.5v4M8 18.5h8" />
         </svg>
       );
     case 'nodes':

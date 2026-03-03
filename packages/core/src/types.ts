@@ -8,6 +8,7 @@ export type DmPolicy = 'pairing' | 'open' | 'closed';
 export type WhatsAppGroupMode = 'closed' | 'selected' | 'open';
 export type SkillSourceType = 'workspace' | 'global' | 'plugin' | 'bundled' | 'extra';
 export type SessionCancelReason = 'user' | 'disconnect';
+export type NodeManager = 'npm' | 'pnpm' | 'yarn' | 'bun';
 export type SkillEligibilityReason =
   | 'eligible'
   | 'disabled'
@@ -192,6 +193,7 @@ export interface KeygateConfig {
   };
   server: {
     port: number;
+    apiToken: string;
   };
   browser: {
     domainPolicy: BrowserDomainPolicy;
@@ -211,7 +213,18 @@ export interface KeygateConfig {
     entries: Record<string, SkillEntryConfig>;
     allowBundled?: string[];
     install: {
-      nodeManager: 'npm' | 'pnpm' | 'yarn' | 'bun';
+      nodeManager: NodeManager;
+    };
+  };
+  plugins?: {
+    load: {
+      watch: boolean;
+      watchDebounceMs: number;
+      paths: string[];
+    };
+    entries: Record<string, PluginEntryConfig>;
+    install: {
+      nodeManager: NodeManager;
     };
   };
   discord?: {
@@ -247,6 +260,12 @@ export interface WhatsAppConfig {
 export interface SkillEntryConfig {
   enabled?: boolean;
   apiKey?: string;
+  env?: Record<string, string>;
+  config?: Record<string, unknown>;
+}
+
+export interface PluginEntryConfig {
+  enabled?: boolean;
   env?: Record<string, string>;
   config?: Record<string, unknown>;
 }

@@ -53,6 +53,7 @@ export class ToolExecutor {
   private allowedBinaries: Set<string>;
   private allowAlwaysSignatures = new Set<string>();
   private toolRegistry = new Map<string, Tool>();
+  private toolOwners = new Map<string, string | null>();
   private gateway: Gateway;
 
   constructor(
@@ -71,8 +72,25 @@ export class ToolExecutor {
   /**
    * Register a tool
    */
-  registerTool(tool: Tool): void {
+  registerTool(tool: Tool, owner: string | null = null): void {
+    if (this.toolRegistry.has(tool.name)) {
+      throw new Error(`Tool is already registered: ${tool.name}`);
+    }
     this.toolRegistry.set(tool.name, tool);
+    this.toolOwners.set(tool.name, owner);
+  }
+
+  unregisterTool(name: string): void {
+    this.toolRegistry.delete(name);
+    this.toolOwners.delete(name);
+  }
+
+  hasTool(name: string): boolean {
+    return this.toolRegistry.has(name);
+  }
+
+  getToolOwner(name: string): string | null | undefined {
+    return this.toolOwners.get(name);
   }
 
   /**

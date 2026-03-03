@@ -9,6 +9,7 @@ export * from './auth/index.js';
 export * from './codex/index.js';
 export * from './config/index.js';
 export * from './skills/index.js';
+export * from './plugins/index.js';
 export * from './runtime/index.js';
 export * from './security/pairing.js';
 export * from './scheduler/index.js';

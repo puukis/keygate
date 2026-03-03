@@ -21,6 +21,7 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @puukis/plugin-sdk build
       - run: pnpm --filter @puukis/core build
       - run: pnpm --filter @puukis/web build
       - run: pnpm --filter @puukis/cli build

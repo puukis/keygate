@@ -39,6 +39,18 @@ Tool calls are not all equal. Keygate treats sensitive actions with stronger con
 - Confirmation prompts for actions requiring explicit user consent
 - Browser MCP has domain policy controls (none/allowlist/blocklist)
 
+## Plugin host
+
+The gateway now embeds a plugin host alongside the skills system.
+
+- plugin manifests are discovered before activation
+- plugin config is validated against JSON Schema before code loads
+- plugin setup happens in a staging registry
+- services start before a staged instance replaces the live one
+- failed hot reloads keep the previous healthy instance active
+
+This keeps tool, RPC, HTTP, and CLI extensions rollback-safe instead of partially registered.
+
 ## UI architecture
 
 The web app maintains session-scoped state maps:

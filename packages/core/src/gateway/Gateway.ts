@@ -22,6 +22,7 @@ import { Database } from '../db/index.js';
 import { AgentMemoryStore } from '../db/agentMemory.js';
 import { createLLMProvider } from '../llm/index.js';
 import { SkillsManager } from '../skills/index.js';
+import { PluginRuntimeManager } from '../plugins/index.js';
 import { allBuiltinTools } from '../tools/builtin/index.js';
 import { SchedulerService, SchedulerStore, type ScheduledJob, type ScheduledJobCreateInput, type ScheduledJobUpdateInput } from '../scheduler/index.js';
 
@@ -69,6 +70,7 @@ export class Gateway extends EventEmitter<KeygateEvents> {
   public readonly memory: AgentMemoryStore;
   public readonly config: KeygateConfig;
   public readonly skills: SkillsManager;
+  public readonly plugins: PluginRuntimeManager;
   public readonly schedulerStore: SchedulerStore;
   public readonly schedulerService: SchedulerService;
 
@@ -100,12 +102,14 @@ export class Gateway extends EventEmitter<KeygateEvents> {
     // Initialize brain with LLM provider
     this.brain = new Brain(config, this.toolExecutor, this, this.memory);
     this.skills = new SkillsManager({ config });
+    this.plugins = new PluginRuntimeManager(this);
     this.schedulerStore = new SchedulerStore();
     this.schedulerService = new SchedulerService(this.schedulerStore, async (job) => {
       await this.sendMessageToSession(job.sessionId, job.prompt, `scheduler:${job.id}`);
     });
 
     void this.skills.ensureReady();
+    void this.plugins.start();
     this.schedulerService.start();
   }
 
@@ -128,12 +132,17 @@ export class Gateway extends EventEmitter<KeygateEvents> {
   static reset(): void {
     if (Gateway.instance) {
       Gateway.instance.skills.stop();
+      Gateway.instance.plugins.stop();
       Gateway.instance.schedulerService.stop();
       for (const sessionId of Gateway.instance.activeRuns.keys()) {
         Gateway.instance.cancelSessionRun(sessionId, 'disconnect');
       }
     }
     Gateway.instance = null;
+  }
+
+  static peekInstance(): Gateway | null {
+    return Gateway.instance;
   }
 
   /**

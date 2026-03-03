@@ -70,7 +70,21 @@ Includes:
 - Theme preferences
 - Security mode toggles
 - Provider/model selection and reasoning effort
+- Plugin management (install, reload, enable/disable, config editing)
 - Browser MCP management and policy settings
 - Discord/Slack config
 - Session controls
 - Marketplace and memory utilities
+
+## Plugins panel
+
+The Plugins panel is now the operator surface for the runtime plugin system.
+
+It supports:
+
+- install from npm, git, local directories, or `.tgz`
+- inspect plugin tools, routes, commands, and services
+- enable, disable, reload, update, remove, or purge plugins
+- validate plugin config
+- schema-driven config forms for supported JSON Schema shapes
+- raw JSON editing fallback for complex schemas

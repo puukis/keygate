@@ -32,8 +32,14 @@ describe('SIDEBAR_SECTIONS', () => {
     });
   });
 
-  it('keeps action routes for skills/nodes and a dedicated config tab', () => {
+  it('keeps action routes for plugins/skills/nodes and a dedicated config tab', () => {
     const allItems = SIDEBAR_SECTIONS.flatMap((section) => section.items);
+
+    const plugins = allItems.find((item) => item.label === 'Plugins');
+    expect(plugins).toMatchObject({
+      kind: 'action',
+      id: 'open_config_plugins',
+    });
 
     const skills = allItems.find((item) => item.label === 'Skills');
     expect(skills).toMatchObject({
@@ -70,6 +76,7 @@ describe('SessionSidebar rendering', () => {
     expect(html).toContain('Settings');
     expect(html).toContain('Resources');
     expect(html).toContain('Cron Jobs');
+    expect(html).toContain('Plugins');
     expect(html).toContain('aria-expanded="true"');
   });
 

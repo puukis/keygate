@@ -5,8 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { getConfigDir } from '../config/env.js';
 import type { KeygateConfig, SkillDefinition, SkillSourceType } from '../types.js';
+import { discoverPluginCatalog } from '../plugins/catalog.js';
 import { parseSkillAtPath } from './parser.js';
-import { discoverPluginSkillDirs } from './pluginManifest.js';
 import type {
   DiscoveredSkill,
   DiscoveryDiagnostic,
@@ -90,7 +90,7 @@ interface ResolvedSourceRoots extends SkillSourceRoots {
 
 async function resolveSourceRoots(
   config: KeygateConfig,
-  mergedConfig: Record<string, unknown>
+  _mergedConfig: Record<string, unknown>
 ): Promise<ResolvedSourceRoots> {
   const workspacePath = path.resolve(expandHome(config.security.workspacePath));
   const workspaceRoot = path.join(workspacePath, 'skills');
@@ -105,21 +105,22 @@ async function resolveSourceRoots(
     .filter((entry) => entry.length > 0)
     .map((entry) => path.resolve(expandHome(entry)));
 
-  const pluginRoots = (config.skills?.load.pluginDirs ?? [])
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0)
-    .map((entry) => path.resolve(expandHome(entry)));
-
-  const pluginDiscovery = await discoverPluginSkillDirs(pluginRoots, mergedConfig);
+  const pluginDiscovery = await discoverPluginCatalog(config);
 
   return {
     workspaceRoot,
     globalRoot,
     bundledRoots,
     extraRoots,
-    pluginRoots,
+    pluginRoots: pluginDiscovery.roots.map((entry) => entry.path),
     pluginSkillRoots: pluginDiscovery.pluginSkillRoots,
-    pluginDiagnostics: pluginDiscovery.diagnostics,
+    pluginDiagnostics: [
+      ...pluginDiscovery.diagnostics,
+      ...pluginDiscovery.duplicates.map((entry) => ({
+        location: entry.dropped,
+        error: `Duplicate plugin id "${entry.id}" ignored; higher-precedence manifest kept at ${entry.kept}`,
+      })),
+    ],
   };
 }
 

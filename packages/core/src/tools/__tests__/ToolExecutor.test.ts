@@ -283,4 +283,19 @@ describe('ToolExecutor', () => {
     expect(result.success).toBe(false);
     expect(result.error).toContain('outside Safe Mode workspace');
   });
+
+  it('tracks owners for registered tools and removes them cleanly', () => {
+    const gateway = { emit: vi.fn() } as any;
+    const executor = new ToolExecutor('safe', '/tmp/keygate-safe-workspace', ['cat'], gateway);
+
+    executor.registerTool(readFileTool, 'plugin:test');
+
+    expect(executor.hasTool('read_file')).toBe(true);
+    expect(executor.getToolOwner('read_file')).toBe('plugin:test');
+
+    executor.unregisterTool('read_file');
+
+    expect(executor.hasTool('read_file')).toBe(false);
+    expect(executor.getToolOwner('read_file')).toBeUndefined();
+  });
 });

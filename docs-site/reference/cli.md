@@ -54,6 +54,24 @@ keygate pairing approve whatsapp <code>
 keygate pairing pending [whatsapp]
 ```
 
+## Plugin commands
+
+```bash
+keygate plugins list [--json]
+keygate plugins info <id> [--json]
+keygate plugins install <source> [--scope workspace|global] [--link]
+keygate plugins update <id|--all>
+keygate plugins remove <id> [--purge]
+keygate plugins enable <id>
+keygate plugins disable <id>
+keygate plugins reload [id]
+keygate plugins config get <id>
+keygate plugins config set <id> --json '{"key":"value"}'
+keygate plugins doctor [--json]
+```
+
+Plugins can also reserve their own top-level commands. If the first CLI token is not a built-in Keygate command, the CLI checks enabled plugin manifests for a reserved command name and dispatches to the owning plugin.
+
 ## Troubleshooting CLI failures
 
 - verify Node/pnpm versions

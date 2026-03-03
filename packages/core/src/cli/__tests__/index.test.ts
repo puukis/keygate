@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const { runTuiCommand, runSkillsCommand, runDoctorCommand } = vi.hoisted(() => ({
+const { runTuiCommand, runSkillsCommand, runDoctorCommand, runPluginsCommand, runPluginCliBridge, loadConfigFromEnv } = vi.hoisted(() => ({
   runTuiCommand: vi.fn(async () => undefined),
   runSkillsCommand: vi.fn(async () => undefined),
   runDoctorCommand: vi.fn(async () => undefined),
+  runPluginsCommand: vi.fn(async () => undefined),
+  runPluginCliBridge: vi.fn(async () => false),
+  loadConfigFromEnv: vi.fn(() => ({}) as any),
 }));
 
 vi.mock('../commands/tui.js', () => ({
@@ -15,6 +18,15 @@ vi.mock('../commands/skills.js', () => ({
 vi.mock('../commands/doctor.js', () => ({
   runDoctorCommand,
 }));
+vi.mock('../commands/plugins.js', () => ({
+  runPluginsCommand,
+}));
+vi.mock('../../plugins/index.js', () => ({
+  runPluginCliBridge,
+}));
+vi.mock('../../config/env.js', () => ({
+  loadConfigFromEnv,
+}));
 
 import { printHelp, runCli } from '../index.js';
 
@@ -23,6 +35,9 @@ describe('cli index', () => {
     runTuiCommand.mockClear();
     runSkillsCommand.mockClear();
     runDoctorCommand.mockClear();
+    runPluginsCommand.mockClear();
+    runPluginCliBridge.mockClear();
+    loadConfigFromEnv.mockClear();
   });
 
   it('routes tui command to runTuiCommand', async () => {
@@ -43,6 +58,12 @@ describe('cli index', () => {
     expect(runDoctorCommand).toHaveBeenCalledTimes(1);
   });
 
+  it('routes plugins command to runPluginsCommand', async () => {
+    const handled = await runCli(['plugins', 'list']);
+    expect(handled).toBe(true);
+    expect(runPluginsCommand).toHaveBeenCalledTimes(1);
+  });
+
   it('prints tui command in help output', () => {
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     try {
@@ -50,6 +71,7 @@ describe('cli index', () => {
       const helpText = consoleSpy.mock.calls.map((call) => call[0]).join('\n');
       expect(helpText).toContain('keygate tui');
       expect(helpText).toContain('keygate doctor');
+      expect(helpText).toContain('keygate plugins');
       expect(helpText).toContain('web|discord|slack|whatsapp');
     } finally {
       consoleSpy.mockRestore();

@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const manifestPaths = ['packages/core/package.json', 'packages/cli/package.json'].map((manifestPath) =>
+const manifestPaths = ['packages/plugin-sdk/package.json', 'packages/core/package.json', 'packages/cli/package.json'].map((manifestPath) =>
   path.resolve(manifestPath)
 );
 

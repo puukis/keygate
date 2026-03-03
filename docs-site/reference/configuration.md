@@ -61,6 +61,19 @@ Example persisted WhatsApp block:
 - session target mapping
 - enabled/disabled state
 
+### Plugins
+
+- plugin search roots
+- install node manager
+- per-plugin enabled flag
+- persisted plugin config and env overlays
+- `server.apiToken` for authenticated plugin HTTP routes
+
+See the dedicated pages:
+
+- `/reference/plugin-configuration`
+- `/reference/plugin-manifest`
+
 ## Configuration hygiene
 
 - Never commit secrets
