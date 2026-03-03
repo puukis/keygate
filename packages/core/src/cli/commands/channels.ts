@@ -4,7 +4,6 @@ import { spawn, spawnSync } from 'node:child_process';
 import { getConfigDir, loadConfigFromEnv } from '../../config/env.js';
 import {
   buildWhatsAppConfigView,
-  hasWhatsAppLinkedAuth,
   logoutWhatsAppLinkedDevice,
   startWhatsAppLogin,
   waitForActiveWhatsAppLoginResult,
@@ -983,7 +982,7 @@ async function printWhatsAppChannelConfig(deps: ChannelCommandDeps): Promise<voi
 }
 
 async function startWhatsAppChannel(deps: ChannelCommandDeps): Promise<void> {
-  if (!await hasWhatsAppLinkedAuth()) {
+  if (!deps.pathExists(whatsappAuthCredsPath(deps))) {
     throw new Error('WhatsApp is not linked. Run `keygate channels whatsapp login` first.');
   }
 
@@ -1128,6 +1127,10 @@ function resolveWhatsAppLaunchCommand(deps: ChannelCommandDeps): string {
 
 function whatsappStateFilePath(deps: ChannelCommandDeps): string {
   return path.join(deps.configDir, 'channels', 'whatsapp.json');
+}
+
+function whatsappAuthCredsPath(deps: ChannelCommandDeps): string {
+  return path.join(deps.configDir, 'channels', 'whatsapp', 'auth', 'creds.json');
 }
 
 async function readWhatsAppState(deps: ChannelCommandDeps): Promise<WhatsAppChannelState | null> {
