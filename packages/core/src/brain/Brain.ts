@@ -12,6 +12,7 @@ import type {
 import type { ToolExecutor } from '../tools/ToolExecutor.js';
 import type { Gateway } from '../gateway/Gateway.js';
 import type { AgentMemoryStore } from '../db/agentMemory.js';
+import type { MemoryManager } from '../memory/manager.js';
 import { createLLMProvider } from '../llm/index.js';
 import { getDefaultWorkspacePath } from '../config/env.js';
 import type { SkillTurnContext } from '../skills/index.js';
@@ -113,15 +114,17 @@ export class Brain {
   private toolExecutor: ToolExecutor;
   private gateway: Gateway;
   private memoryStore: AgentMemoryStore | null;
+  private memoryManager: MemoryManager | null;
   private maxIterations = 10;
   private maxConcurrentTools = DEFAULT_MAX_CONCURRENT_TOOLS;
 
-  constructor(config: KeygateConfig, toolExecutor: ToolExecutor, gateway: Gateway, memoryStore?: AgentMemoryStore) {
+  constructor(config: KeygateConfig, toolExecutor: ToolExecutor, gateway: Gateway, memoryStore?: AgentMemoryStore, memoryManager?: MemoryManager) {
     this.config = config;
     this.llm = createLLMProvider(config);
     this.toolExecutor = toolExecutor;
     this.gateway = gateway;
     this.memoryStore = memoryStore ?? null;
+    this.memoryManager = memoryManager ?? null;
   }
 
   /**
@@ -538,7 +541,13 @@ ${continuityPathGuidance}`;
       ? `\n\nPERSISTENT AGENT MEMORY\nThe following facts were stored across sessions. Reference them when relevant.\n${memorySummary}`
       : '';
 
-    return BASE_SYSTEM_PROMPT + modeInfo + workspaceFiles + bootstrapRules + contextSection + memorySection + skillSection;
+    let vectorMemorySection = '';
+    if (this.memoryManager?.isInitialized()) {
+      const status = this.memoryManager.status();
+      vectorMemorySection = `\n\nVECTOR MEMORY SYSTEM\nSemantic memory is active (provider: ${status.provider}, model: ${status.model}, ${status.totalChunks} indexed chunks).\nUse the memory_search tool to find relevant stored knowledge and past session context.`;
+    }
+
+    return BASE_SYSTEM_PROMPT + modeInfo + workspaceFiles + bootstrapRules + contextSection + memorySection + vectorMemorySection + skillSection;
   }
 
   private emitContextUsage(sessionId: string, messages: Message[], limitTokens: number): void {

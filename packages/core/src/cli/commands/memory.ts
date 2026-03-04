@@ -1,9 +1,24 @@
 import type { ParsedArgs } from '../argv.js';
 import { getFlagString, hasFlag } from '../argv.js';
 import { AgentMemoryStore } from '../../db/agentMemory.js';
+import { MemoryManager } from '../../memory/manager.js';
+import { loadConfigFromEnv } from '../../config/env.js';
 
 export async function runMemoryCommand(args: ParsedArgs): Promise<void> {
   const action = args.positional[1] ?? 'list';
+
+  // Vector memory subcommands (don't need AgentMemoryStore)
+  if (action === 'vsearch' || action === 'reindex' || action === 'vstatus') {
+    switch (action) {
+      case 'vsearch':
+        return runVectorSearch(args);
+      case 'reindex':
+        return runReindex();
+      case 'vstatus':
+        return runVectorStatus();
+    }
+  }
+
   const store = new AgentMemoryStore();
 
   try {
@@ -24,7 +39,7 @@ export async function runMemoryCommand(args: ParsedArgs): Promise<void> {
         return runClear(store, args);
       default:
         console.error(`Unknown memory action: ${action}`);
-        console.log('Available: list, get, set, delete, search, namespaces, clear');
+        console.log('Available: list, get, set, delete, search, namespaces, clear, vsearch, reindex, vstatus');
         process.exitCode = 1;
     }
   } finally {
@@ -174,4 +189,102 @@ function runClear(store: AgentMemoryStore, args: ParsedArgs): void {
 
   const count = store.clearNamespace(namespace);
   console.log(`Cleared ${count} memories from namespace "${namespace}".`);
+}
+
+// ==================== Vector Memory Subcommands ====================
+
+async function createCliMemoryManager(): Promise<MemoryManager> {
+  const config = loadConfigFromEnv();
+  const memoryConfig = config.memory ?? {
+    provider: 'auto' as const,
+    vectorWeight: 0.7,
+    textWeight: 0.3,
+    maxResults: 10,
+    minScore: 0.25,
+    autoIndex: true,
+    indexSessions: false,
+    temporalDecay: true,
+    temporalHalfLifeDays: 30,
+    mmr: true,
+  };
+  const manager = new MemoryManager(config, memoryConfig);
+  await manager.initialize();
+  return manager;
+}
+
+async function runVectorSearch(args: ParsedArgs): Promise<void> {
+  const query = args.positional[2] ?? '';
+  const json = hasFlag(args.flags, 'json');
+  const maxResults = Number.parseInt(getFlagString(args.flags, 'limit') ?? '10', 10) || 10;
+  const source = (getFlagString(args.flags, 'source') ?? 'all') as 'memory' | 'session' | 'all';
+
+  if (!query) {
+    console.error('Usage: keygate memory vsearch <query> [--limit N] [--source memory|session|all] [--json]');
+    process.exitCode = 1;
+    return;
+  }
+
+  let manager: MemoryManager | undefined;
+  try {
+    manager = await createCliMemoryManager();
+    const results = await manager.search(query, { maxResults, source });
+
+    if (json) {
+      console.log(JSON.stringify(results, null, 2));
+      return;
+    }
+
+    if (results.length === 0) {
+      console.log('No results found.');
+      return;
+    }
+
+    console.log(`Vector search "${query}": ${results.length} result(s)\n`);
+    for (const r of results) {
+      const preview = r.snippet.length > 100 ? `${r.snippet.slice(0, 97)}...` : r.snippet;
+      const scoreStr = r.score.toFixed(3);
+      console.log(`  [${scoreStr}] ${r.source} ${r.path}:${r.startLine}  ${preview}`);
+    }
+  } catch (error) {
+    console.error('Vector search failed:', error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+  } finally {
+    manager?.shutdown();
+  }
+}
+
+async function runReindex(): Promise<void> {
+  let manager: MemoryManager | undefined;
+  try {
+    manager = await createCliMemoryManager();
+    await manager.reindex();
+    console.log('Reindex complete.');
+  } catch (error) {
+    console.error('Reindex failed:', error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+  } finally {
+    manager?.shutdown();
+  }
+}
+
+async function runVectorStatus(): Promise<void> {
+  let manager: MemoryManager | undefined;
+  try {
+    manager = await createCliMemoryManager();
+    const s = manager.status();
+    console.log(`Vector Memory Status:`);
+    console.log(`  Provider:    ${s.provider}`);
+    console.log(`  Model:       ${s.model}`);
+    console.log(`  Dimensions:  ${s.dimensions}`);
+    console.log(`  Initialized: ${manager.isInitialized()}`);
+    console.log(`  Chunks:      ${s.totalChunks}`);
+    console.log(`  Files:       ${s.indexedFiles.length}`);
+    if (s.lastIndexed) {
+      console.log(`  Last indexed: ${s.lastIndexed}`);
+    }  } catch (error) {
+    console.error('Status failed:', error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+  } finally {
+    manager?.shutdown();
+  }
 }

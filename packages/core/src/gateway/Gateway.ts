@@ -20,6 +20,8 @@ import { formatCapabilitiesAndLimitsForReadability } from '../brain/assistantOut
 import { ToolExecutor } from '../tools/ToolExecutor.js';
 import { Database } from '../db/index.js';
 import { AgentMemoryStore } from '../db/agentMemory.js';
+import { MemoryManager } from '../memory/manager.js';
+import type { MemoryConfig } from '../memory/embedding/types.js';
 import { createLLMProvider } from '../llm/index.js';
 import { SkillsManager } from '../skills/index.js';
 import { PluginRuntimeManager } from '../plugins/index.js';
@@ -73,6 +75,7 @@ export class Gateway extends EventEmitter<KeygateEvents> {
   public readonly plugins: PluginRuntimeManager;
   public readonly schedulerStore: SchedulerStore;
   public readonly schedulerService: SchedulerService;
+  public readonly memoryManager: MemoryManager;
 
   private constructor(config: KeygateConfig) {
     super();
@@ -99,8 +102,23 @@ export class Gateway extends EventEmitter<KeygateEvents> {
       this.toolExecutor.registerTool(tool);
     }
 
+    // Initialize vector memory manager
+    const memoryConfig: MemoryConfig = config.memory ?? {
+      provider: 'auto',
+      vectorWeight: 0.7,
+      textWeight: 0.3,
+      maxResults: 6,
+      minScore: 0.35,
+      autoIndex: true,
+      indexSessions: true,
+      temporalDecay: false,
+      temporalHalfLifeDays: 30,
+      mmr: false,
+    };
+    this.memoryManager = new MemoryManager(config, memoryConfig);
+
     // Initialize brain with LLM provider
-    this.brain = new Brain(config, this.toolExecutor, this, this.memory);
+    this.brain = new Brain(config, this.toolExecutor, this, this.memory, this.memoryManager);
     this.skills = new SkillsManager({ config });
     this.plugins = new PluginRuntimeManager(this);
     this.schedulerStore = new SchedulerStore();
@@ -111,6 +129,25 @@ export class Gateway extends EventEmitter<KeygateEvents> {
     void this.skills.ensureReady();
     void this.plugins.start();
     this.schedulerService.start();
+
+    // Initialize vector memory (non-blocking)
+    void this.memoryManager.initialize().catch(() => {
+      // Memory system initialization failed — search will be unavailable
+    });
+
+    // Start periodic session indexing if enabled
+    if (memoryConfig.indexSessions) {
+      this.memoryManager.startSessionIndexing(async () => {
+        const sessions = this.db.listSessions();
+        return sessions.map((s) => ({
+          id: s.id,
+          messages: s.messages
+            .filter((m) => m.role === 'user' || m.role === 'assistant')
+            .map((m) => ({ role: m.role, content: m.content })),
+          updatedAt: s.updatedAt,
+        }));
+      });
+    }
   }
 
   /**
@@ -134,6 +171,7 @@ export class Gateway extends EventEmitter<KeygateEvents> {
       Gateway.instance.skills.stop();
       Gateway.instance.plugins.stop();
       Gateway.instance.schedulerService.stop();
+      Gateway.instance.memoryManager.shutdown();
       for (const sessionId of Gateway.instance.activeRuns.keys()) {
         Gateway.instance.cancelSessionRun(sessionId, 'disconnect');
       }

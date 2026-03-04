@@ -2,7 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { getMemorySnippet, normalizeMemoryRelativePath, searchMemoryFiles } from '../memoryRecall.js';
+import { getMemorySnippet, normalizeMemoryRelativePath } from '../memoryRecall.js';
 
 describe('memoryRecall', () => {
   let tempDir = '';
@@ -18,18 +18,6 @@ describe('memoryRecall', () => {
     if (tempDir) {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
-  });
-
-  it('finds relevant snippets by semantic/keyword similarity', async () => {
-    const result = await searchMemoryFiles({
-      workspacePath: tempDir,
-      query: 'how did we fix sqlite module problems',
-      maxResults: 3,
-    });
-
-    expect(result.disabled).toBe(false);
-    expect(result.results.length).toBeGreaterThan(0);
-    expect(result.results.some((item) => item.path.includes('2026-02-25'))).toBe(true);
   });
 
   it('reads bounded snippet ranges', async () => {

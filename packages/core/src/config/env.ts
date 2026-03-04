@@ -187,6 +187,19 @@ export function loadConfigFromEnv(): KeygateConfig {
     whatsapp: persistedWhatsAppConfig,
     skills: persistedSkillsConfig,
     plugins: persistedPluginsConfig,
+    memory: {
+      provider: (process.env['KEYGATE_MEMORY_PROVIDER'] ?? 'auto') as 'auto' | 'openai' | 'codex' | 'gemini' | 'ollama',
+      model: process.env['KEYGATE_MEMORY_MODEL'] || undefined,
+      vectorWeight: parseFloat(process.env['KEYGATE_MEMORY_VECTOR_WEIGHT'] ?? '0.7'),
+      textWeight: parseFloat(process.env['KEYGATE_MEMORY_TEXT_WEIGHT'] ?? '0.3'),
+      maxResults: parseInt(process.env['KEYGATE_MEMORY_MAX_RESULTS'] ?? '6', 10),
+      minScore: parseFloat(process.env['KEYGATE_MEMORY_MIN_SCORE'] ?? '0.35'),
+      autoIndex: process.env['KEYGATE_MEMORY_AUTO_INDEX'] !== 'false',
+      indexSessions: process.env['KEYGATE_MEMORY_INDEX_SESSIONS'] !== 'false',
+      temporalDecay: process.env['KEYGATE_MEMORY_TEMPORAL_DECAY'] === 'true',
+      temporalHalfLifeDays: parseInt(process.env['KEYGATE_MEMORY_TEMPORAL_HALF_LIFE'] ?? '30', 10),
+      mmr: process.env['KEYGATE_MEMORY_MMR'] === 'true',
+    },
   };
 }
 

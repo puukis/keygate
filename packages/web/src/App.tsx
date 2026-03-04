@@ -1035,6 +1035,7 @@ function App() {
   const [selectedPluginId, setSelectedPluginId] = useState<string | null>(null);
   const [selectedPlugin, setSelectedPlugin] = useState<PluginInfoView | null>(null);
   const [pluginValidation, setPluginValidation] = useState<PluginValidationView | null>(null);
+  const [slashCommands, setSlashCommands] = useState<{ command: string; description: string; source: 'builtin' | 'skill' }[]>([]);
 
   const [agentMemories, setAgentMemories] = useState<MemoryEntryView[]>([]);
   const [agentMemoryNamespaces, setAgentMemoryNamespaces] = useState<string[]>([]);
@@ -1338,6 +1339,13 @@ function App() {
 
         if (!sessionId) {
           break;
+        }
+
+        // Routing may transform session ID (e.g. web:uuid → web:default:uuid).
+        // Keep the client's main/selected IDs in sync with the routed session.
+        if (sessionId !== mainSessionId && sessionId.startsWith('web:')) {
+          setMainSessionId(sessionId);
+          setSelectedSessionId((prev) => prev === mainSessionId ? sessionId : prev);
         }
 
         const timestamp = new Date();
@@ -1881,6 +1889,12 @@ function App() {
         break;
       }
 
+      case 'slash_commands_result': {
+        const commands = Array.isArray(data['commands']) ? data['commands'] as { command: string; description: string; source: 'builtin' | 'skill' }[] : [];
+        setSlashCommands(commands);
+        break;
+      }
+
       case 'memory_list_result':
       case 'memory_search_result': {
         const memories = Array.isArray(data['memories']) ? data['memories'] as MemoryEntryView[] : [];
@@ -2004,6 +2018,7 @@ function App() {
     }
 
     send({ type: 'plugins_list' });
+    send({ type: 'list_slash_commands' });
   }, [connected, send]);
 
   useEffect(() => {
@@ -2771,6 +2786,8 @@ function App() {
                 inputPlaceholder={composerPlaceholder}
                 sessionIdForUploads={activeSessionId}
                 readOnlyHint={activeIsReadOnly ? readOnlyHintText : undefined}
+                slashCommands={slashCommands}
+                onRequestSlashCommands={() => send({ type: 'list_slash_commands' })}
               />
             </>
           )}

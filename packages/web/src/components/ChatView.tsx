@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import type { Message, StreamActivity } from '../App';
 import { buildScreenshotImageUrl, extractScreenshotFilenamesFromText } from '../browserPreview';
 import { parseMessageSegments } from './messageContent';
+import { SlashCommandMenu, useSlashCommandFilter, type SlashCommand } from './SlashCommandMenu';
 import './ChatView.css';
 
 interface ChatViewProps {
@@ -16,6 +17,8 @@ interface ChatViewProps {
   inputPlaceholder: string;
   sessionIdForUploads?: string | null;
   readOnlyHint?: string;
+  slashCommands?: SlashCommand[];
+  onRequestSlashCommands?: () => void;
 }
 
 interface MessageRowProps {
@@ -258,6 +261,8 @@ export function ChatView({
   inputPlaceholder,
   sessionIdForUploads,
   readOnlyHint,
+  slashCommands = [],
+  onRequestSlashCommands,
 }: ChatViewProps) {
   const [input, setInput] = useState('');
   const [copiedCodeBlockId, setCopiedCodeBlockId] = useState<string | null>(null);
@@ -265,6 +270,8 @@ export function ChatView({
   const [composerError, setComposerError] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
+  const [slashMenuOpen, setSlashMenuOpen] = useState(false);
+  const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
 
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(true);
@@ -390,6 +397,35 @@ export function ChatView({
     addFiles(files);
   };
 
+  // Slash command menu logic
+  const slashQuery = slashMenuOpen && input.startsWith('/')
+    ? input.slice(1).split(/\s/)[0] ?? ''
+    : '';
+  const filteredSlashCommands = useSlashCommandFilter(slashCommands, slashQuery);
+
+  const handleInputChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const value = event.target.value;
+    setInput(value);
+
+    if (value.startsWith('/') && !value.includes('\n')) {
+      if (!slashMenuOpen) {
+        onRequestSlashCommands?.();
+        setSlashMenuOpen(true);
+        setSlashSelectedIndex(0);
+      } else {
+        setSlashSelectedIndex(0);
+      }
+    } else {
+      setSlashMenuOpen(false);
+    }
+  };
+
+  const handleSlashSelect = (cmd: SlashCommand) => {
+    setInput(`/${cmd.command} `);
+    setSlashMenuOpen(false);
+    inputRef.current?.focus();
+  };
+
   const handleSubmit = async (event?: React.FormEvent) => {
     event?.preventDefault();
 
@@ -447,11 +483,45 @@ export function ChatView({
 
     onSendMessage(content, uploadedAttachments);
     setInput('');
+    setSlashMenuOpen(false);
     clearPendingAttachments();
     setIsUploading(false);
   };
 
   const handleKeyDown = (event: React.KeyboardEvent) => {
+    if (slashMenuOpen && filteredSlashCommands.length > 0) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setSlashSelectedIndex((prev) =>
+          prev < filteredSlashCommands.length - 1 ? prev + 1 : 0
+        );
+        return;
+      }
+
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setSlashSelectedIndex((prev) =>
+          prev > 0 ? prev - 1 : filteredSlashCommands.length - 1
+        );
+        return;
+      }
+
+      if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey)) {
+        event.preventDefault();
+        const selected = filteredSlashCommands[slashSelectedIndex];
+        if (selected) {
+          handleSlashSelect(selected);
+        }
+        return;
+      }
+
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setSlashMenuOpen(false);
+        return;
+      }
+    }
+
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       void handleSubmit();
@@ -592,11 +662,18 @@ export function ChatView({
         onDragLeave={() => setDragActive(false)}
         onDrop={handleDrop}
       >
-        <div className="composer-field">
+        <div className="composer-field" style={{ position: 'relative' }}>
+          {slashMenuOpen && filteredSlashCommands.length > 0 && (
+            <SlashCommandMenu
+              commands={filteredSlashCommands}
+              selectedIndex={slashSelectedIndex}
+              onSelect={handleSlashSelect}
+            />
+          )}
           <textarea
             ref={inputRef}
             value={input}
-            onChange={(event) => setInput(event.target.value)}
+            onChange={handleInputChange}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             placeholder={inputPlaceholder}
@@ -647,20 +724,31 @@ export function ChatView({
             <p className="composer-error">{composerError}</p>
           )}
         </div>
-        <button
-          type={sendButtonType}
-          disabled={isSendButtonDisabled}
-          className={`send-btn${isStopButton ? ' send-btn-stop' : ''}`}
-          onClick={isStopButton ? onStop : undefined}
-        >
-          {isUploading ? (
-            <span className="spinner" />
-          ) : isStopButton ? (
-            <span>Stop</span>
-          ) : (
-            <span>Send</span>
-          )}
-        </button>
+        <div className="composer-buttons">
+          <button
+            type="button"
+            className="new-session-btn"
+            onClick={() => onSendMessage('/new')}
+            title="New session"
+            disabled={disabled || isStreaming || isUploading}
+          >
+            +
+          </button>
+          <button
+            type={sendButtonType}
+            disabled={isSendButtonDisabled}
+            className={`send-btn${isStopButton ? ' send-btn-stop' : ''}`}
+            onClick={isStopButton ? onStop : undefined}
+          >
+            {isUploading ? (
+              <span className="spinner" />
+            ) : isStopButton ? (
+              <span>Stop</span>
+            ) : (
+              <span>Send</span>
+            )}
+          </button>
+        </div>
       </form>
     </div>
   );
