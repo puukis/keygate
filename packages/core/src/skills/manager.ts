@@ -2,6 +2,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { watch, type FSWatcher, promises as fs } from 'node:fs';
 import type { KeygateConfig, SkillDefinition, SkillRuntimeEntry, SkillRuntimeSnapshot } from '../types.js';
+import { getConfigDir } from '../config/env.js';
 import { discoverSkills } from './discovery.js';
 import { buildEligibilityContext, evaluateSkillEligibility, getSkillEntryKey } from './eligibility.js';
 import { parseSlashSkillInvocation, selectActiveSkills } from './matcher.js';
@@ -335,7 +336,7 @@ export class SkillsManager {
       return path.resolve(expandHome(this.config.security.workspacePath), 'skills');
     }
 
-    return path.join(getKeygateConfigDir(), 'skills');
+    return path.join(getConfigDir(), 'skills');
   }
 
   stop(): void {
@@ -427,24 +428,6 @@ function expandHome(value: string): string {
   }
 
   return value;
-}
-
-function getKeygateConfigDir(): string {
-  if (process.platform === 'win32') {
-    const appData = process.env['APPDATA']?.trim();
-    if (appData) {
-      return path.join(appData, 'keygate');
-    }
-
-    return path.join(os.homedir(), 'AppData', 'Roaming', 'keygate');
-  }
-
-  const xdgConfig = process.env['XDG_CONFIG_HOME']?.trim();
-  if (xdgConfig) {
-    return path.join(xdgConfig, 'keygate');
-  }
-
-  return path.join(os.homedir(), '.config', 'keygate');
 }
 
 async function safeStat(targetPath: string): Promise<import('node:fs').Stats | null> {

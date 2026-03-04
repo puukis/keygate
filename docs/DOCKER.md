@@ -43,11 +43,13 @@ docker compose exec keygate node /app/packages/cli/dist/main.js auth login --pro
 
 The login/session data persists in the `keygate-codex` volume.
 
+Current images use `/home/node/.keygate` for the Keygate config root. Older `/home/node/.config/keygate` installs are copied forward on first run when the new directory is missing, or when `/home/node/.keygate` only contains bootstrap/cache files and no primary config yet.
+
 ## Persistent Data
 
 Named volumes are used by default:
 
-- `keygate-config` -> `/home/node/.config/keygate`
+- `keygate-config` -> `/home/node/.keygate`
 - `keygate-codex` -> `/home/node/.codex`
 - `keygate-playwright-cache` -> `/home/node/.cache/ms-playwright`
 - `keygate-workspace` -> `/workspace`

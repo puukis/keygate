@@ -15,6 +15,8 @@ describe('riskEngine', () => {
 
   beforeEach(async () => {
     tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'keygate-risk-'));
+    vi.stubEnv('HOME', tempRoot);
+    vi.stubEnv('USERPROFILE', tempRoot);
     vi.stubEnv('XDG_CONFIG_HOME', tempRoot);
   });
 
@@ -58,7 +60,7 @@ describe('riskEngine', () => {
       detail: 'user confirmed',
     });
 
-    const auditPath = path.join(tempRoot, 'keygate', 'approvals-audit.jsonl');
+    const auditPath = path.join(tempRoot, '.keygate', 'approvals-audit.jsonl');
     const raw = await fs.readFile(auditPath, 'utf8');
     expect(raw).toContain('"tool":"write_file"');
     expect(raw).toContain('"decision":"allow_once"');

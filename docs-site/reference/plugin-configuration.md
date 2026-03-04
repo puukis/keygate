@@ -1,6 +1,6 @@
 # Plugin Configuration
 
-Plugin settings live in `~/.config/keygate/config.json` under the `plugins` block.
+Plugin settings live in `~/.keygate/config.json` under the `plugins` block.
 
 ## Persisted shape
 

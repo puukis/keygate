@@ -19,11 +19,13 @@ Keygate uses WhatsApp linked devices through Baileys. Your normal phone account 
 
 Important storage locations:
 
-- Structured settings: `~/.config/keygate/config.json`
-- Linked auth state: `~/.config/keygate/channels/whatsapp/auth/`
-- Auth metadata: `~/.config/keygate/channels/whatsapp/meta.json`
+- Structured settings: `~/.keygate/config.json`
+- Linked auth state: `~/.keygate/channels/whatsapp/auth/`
+- Auth metadata: `~/.keygate/channels/whatsapp/meta.json`
 
-No new `.keygate` environment variable is required for WhatsApp login.
+Legacy `~/.config/keygate` installs are copied into `~/.keygate` on first run when the new root is missing. The old directory is left in place.
+
+No new `.env` entry is required for WhatsApp login.
 
 ## CLI login
 
@@ -172,7 +174,7 @@ keygate channels whatsapp restart
 
 ## Privacy and security
 
-- Do not commit `~/.config/keygate/channels/whatsapp/auth/`
+- Do not commit `~/.keygate/channels/whatsapp/auth/`
 - Treat the linked auth directory like a credential store
 - Use `pairing` or `closed` for DMs unless you intentionally want public access
 - Keep `groupRequireMentionDefault` enabled if you use `groupMode=open`

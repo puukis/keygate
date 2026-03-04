@@ -5,7 +5,12 @@ import { spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import { hasFlag, type ParsedArgs } from '../argv.js';
-import { getConfigDir, getDefaultWorkspacePath } from '../../config/env.js';
+import {
+  getConfigDir,
+  getDefaultWorkspacePath,
+  getLegacyConfigDir,
+  getPreferredConfigDir,
+} from '../../config/env.js';
 
 interface NpmUninstallResult {
   packageName: string;
@@ -185,6 +190,8 @@ function getRemovalTargets(options: { removeConfig: boolean; removeWorkspace: bo
 
   if (options.removeConfig) {
     targets.push(getConfigDir());
+    targets.push(getPreferredConfigDir());
+    targets.push(getLegacyConfigDir());
   }
 
   if (options.removeWorkspace) {

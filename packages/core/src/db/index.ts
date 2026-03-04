@@ -1,8 +1,8 @@
 import Database from 'better-sqlite3';
 import * as path from 'node:path';
-import * as os from 'node:os';
 import * as fs from 'node:fs';
 import type { Message, MessageAttachment, Session, ToolResult } from '../types.js';
+import { getConfigDir } from '../config/env.js';
 
 /**
  * SQLite Database for Keygate persistence
@@ -11,12 +11,12 @@ export class KeygateDatabase {
   private db: Database.Database;
 
   constructor(dbPath?: string) {
-    const defaultPath = path.join(os.homedir(), '.config', 'keygate', 'keygate.db');
+    const defaultPath = path.join(getConfigDir(), 'keygate.db');
     const targetPath = dbPath ?? defaultPath;
-    
+
     // Ensure directory exists
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-    
+
     this.db = new Database(targetPath);
     this.initialize();
   }
@@ -119,7 +119,7 @@ export class KeygateDatabase {
 
     const stmt = this.db.prepare('SELECT * FROM sessions WHERE id = ?');
     const row = stmt.get(sessionId) as SessionRow | undefined;
-    
+
     if (!row) return null;
 
     const messages = this.getMessages(sessionId);

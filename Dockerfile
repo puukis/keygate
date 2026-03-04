@@ -110,13 +110,13 @@ COPY --from=build /app /app
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
-    && mkdir -p /workspace /home/node/.config/keygate /home/node/.codex /home/node/.cache/ms-playwright \
-    && chown -R node:node /workspace /home/node/.config /home/node/.codex /home/node/.cache /app
+    && mkdir -p /workspace /home/node/.keygate /home/node/.codex /home/node/.cache/ms-playwright \
+    && chown -R node:node /workspace /home/node/.keygate /home/node/.codex /home/node/.cache /app
 
 USER node
 
 EXPOSE 18790
-VOLUME ["/home/node/.config/keygate", "/home/node/.codex", "/home/node/.cache/ms-playwright", "/workspace"]
+VOLUME ["/home/node/.keygate", "/home/node/.codex", "/home/node/.cache/ms-playwright", "/workspace"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=5 \
   CMD curl -fsS "http://127.0.0.1:${PORT}/api/status" || exit 1

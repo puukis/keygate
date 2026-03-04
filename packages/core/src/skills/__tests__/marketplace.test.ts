@@ -16,10 +16,14 @@ import {
 
 // Override config dir to use a temp directory
 const originalEnv = process.env['XDG_CONFIG_HOME'];
+const originalHome = process.env['HOME'];
+const originalUserProfile = process.env['USERPROFILE'];
 let tmpDir: string;
 
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'keygate-marketplace-test-'));
+  process.env['HOME'] = tmpDir;
+  process.env['USERPROFILE'] = tmpDir;
   process.env['XDG_CONFIG_HOME'] = tmpDir;
 });
 
@@ -28,6 +32,18 @@ afterEach(async () => {
     delete process.env['XDG_CONFIG_HOME'];
   } else {
     process.env['XDG_CONFIG_HOME'] = originalEnv;
+  }
+
+  if (originalHome === undefined) {
+    delete process.env['HOME'];
+  } else {
+    process.env['HOME'] = originalHome;
+  }
+
+  if (originalUserProfile === undefined) {
+    delete process.env['USERPROFILE'];
+  } else {
+    process.env['USERPROFILE'] = originalUserProfile;
   }
 
   await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
@@ -68,7 +84,7 @@ describe('marketplace registry', () => {
   });
 
   it('loadRegistry handles corrupted file gracefully', async () => {
-    const registryPath = path.join(tmpDir, 'keygate', 'marketplace', 'registry.json');
+    const registryPath = path.join(tmpDir, '.keygate', 'marketplace', 'registry.json');
     await fs.mkdir(path.dirname(registryPath), { recursive: true });
     await fs.writeFile(registryPath, 'not valid json!!!', 'utf8');
 

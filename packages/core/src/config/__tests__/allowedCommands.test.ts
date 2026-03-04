@@ -19,8 +19,12 @@ describe('allowed command registry', () => {
   beforeEach(async () => {
     configHome = await fs.mkdtemp(path.join(os.tmpdir(), 'keygate-allowed-commands-'));
     if (process.platform === 'win32') {
-      vi.stubEnv('APPDATA', configHome);
+      vi.stubEnv('HOME', configHome);
+      vi.stubEnv('USERPROFILE', configHome);
+      vi.stubEnv('APPDATA', path.join(configHome, 'AppData', 'Roaming'));
     } else {
+      vi.stubEnv('HOME', configHome);
+      vi.stubEnv('USERPROFILE', configHome);
       vi.stubEnv('XDG_CONFIG_HOME', configHome);
     }
   });

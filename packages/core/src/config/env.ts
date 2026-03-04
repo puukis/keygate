@@ -1,7 +1,16 @@
 import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import { readFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
 import dotenv from 'dotenv';
 import type {
   BrowserDomainPolicy,
@@ -27,6 +36,14 @@ const DEFAULT_SKILLS_NODE_MANAGER: NodeManager = 'npm';
 const DEFAULT_PLUGINS_WATCH = true;
 const DEFAULT_PLUGINS_WATCH_DEBOUNCE_MS = 250;
 const DEFAULT_PLUGINS_NODE_MANAGER: NodeManager = 'npm';
+const PREFERRED_CONFIG_DIRNAME = '.keygate';
+const LEGACY_CONFIG_DIRNAME = 'keygate';
+const PREFERRED_ENV_FILENAME = '.env';
+const LEGACY_ENV_FILENAME = '.keygate';
+
+let cachedConfigDir: string | null = null;
+let cachedConfigDirKey: string | null = null;
+let loggedMigrationWarningKey: string | null = null;
 
 export function getConfigHomeDir(): string {
   if (process.platform === 'win32') {
@@ -45,8 +62,16 @@ export function getConfigHomeDir(): string {
   return path.join(os.homedir(), '.config');
 }
 
+export function getPreferredConfigDir(): string {
+  return path.join(os.homedir(), PREFERRED_CONFIG_DIRNAME);
+}
+
+export function getLegacyConfigDir(): string {
+  return path.join(getConfigHomeDir(), LEGACY_CONFIG_DIRNAME);
+}
+
 export function getConfigDir(): string {
-  return path.join(getConfigHomeDir(), 'keygate');
+  return resolveActiveConfigDir();
 }
 
 export function getDeviceId(): string {
@@ -61,8 +86,25 @@ export function getLegacyWorkspacePath(): string {
   return path.join(os.homedir(), 'keygate-workspace');
 }
 
+function getLegacyConfigWorkspacePath(): string {
+  return path.join(getLegacyConfigDir(), 'workspaces', getDeviceId());
+}
+
+export function getPreferredKeygateEnvPath(): string {
+  return path.join(getPreferredConfigDir(), PREFERRED_ENV_FILENAME);
+}
+
+export function getLegacyKeygateEnvPath(): string {
+  return path.join(getLegacyConfigDir(), LEGACY_ENV_FILENAME);
+}
+
 export function getKeygateFilePath(): string {
-  return path.join(getConfigDir(), '.keygate');
+  const configDir = getConfigDir();
+  if (isPreferredConfigDir(configDir)) {
+    return getPreferredKeygateEnvPath();
+  }
+
+  return getLegacyKeygateEnvPath();
 }
 
 export function getPersistedConfigPath(): string {
@@ -70,8 +112,10 @@ export function getPersistedConfigPath(): string {
 }
 
 export function loadEnvironment(): void {
-  dotenv.config({ path: getKeygateFilePath() });
-  dotenv.config({ path: path.resolve(process.cwd(), '.keygate') });
+  const configDir = getConfigDir();
+  dotenv.config({ path: path.join(configDir, PREFERRED_ENV_FILENAME) });
+  dotenv.config({ path: path.join(configDir, LEGACY_ENV_FILENAME) });
+  dotenv.config({ path: path.resolve(process.cwd(), LEGACY_ENV_FILENAME) });
 }
 
 export function loadConfigFromEnv(): KeygateConfig {
@@ -186,9 +230,10 @@ function resolveWorkspacePath(value: string | undefined): string {
   const expanded = expandHomePath(configured);
   const resolved = path.resolve(expanded);
   const legacy = path.resolve(getLegacyWorkspacePath());
+  const legacyConfigWorkspace = path.resolve(getLegacyConfigWorkspacePath());
 
-  // Auto-migrate historical default workspace to per-device config workspace.
-  if (resolved === legacy) {
+  // Auto-migrate historical default workspaces to the per-device config workspace.
+  if (resolved === legacy || resolved === legacyConfigWorkspace) {
     return getDefaultWorkspacePath();
   }
 
@@ -213,15 +258,21 @@ function expandHomePath(value: string): string {
 }
 
 export async function updateKeygateFile(updates: Record<string, string>): Promise<void> {
+  const configDir = getConfigDir();
   const keygatePath = getKeygateFilePath();
+  const legacyNamedPath = getLegacyNamedEnvPath(configDir);
 
   await fs.mkdir(path.dirname(keygatePath), { recursive: true });
+  await promoteLegacyEnvFileForWrite(keygatePath, legacyNamedPath);
 
   let content = '';
-  try {
-    content = await fs.readFile(keygatePath, 'utf8');
-  } catch {
-    content = '';
+  for (const candidate of uniqueStrings([keygatePath, legacyNamedPath])) {
+    try {
+      content = await fs.readFile(candidate, 'utf8');
+      break;
+    } catch {
+      // Try the next compatible filename.
+    }
   }
 
   const lines = content.length > 0 ? content.split(/\r?\n/g) : [];
@@ -255,6 +306,193 @@ export async function updateKeygateFile(updates: Record<string, string>): Promis
     .join('\n');
 
   await fs.writeFile(keygatePath, `${normalized}\n`, 'utf8');
+}
+
+function resolveActiveConfigDir(): string {
+  const cacheKey = getConfigDirCacheKey();
+  if (cachedConfigDir && cachedConfigDirKey === cacheKey) {
+    return cachedConfigDir;
+  }
+
+  const preferredDir = getPreferredConfigDir();
+  const legacyDir = getLegacyConfigDir();
+  const legacyDirExists = isDirectory(legacyDir);
+
+  if (isDirectory(preferredDir)) {
+    if (!legacyDirExists || hasPrimaryConfigState(preferredDir)) {
+      cachedConfigDir = preferredDir;
+      cachedConfigDirKey = cacheKey;
+      return preferredDir;
+    }
+
+    try {
+      syncMissingConfigEntries(legacyDir, preferredDir);
+      promoteLegacyEnvFileSync(preferredDir);
+      cachedConfigDir = preferredDir;
+      cachedConfigDirKey = cacheKey;
+      return preferredDir;
+    } catch (error) {
+      logMigrationWarningOnce(cacheKey, legacyDir, preferredDir, error);
+      cachedConfigDir = legacyDir;
+      cachedConfigDirKey = cacheKey;
+      return legacyDir;
+    }
+  }
+
+  if (!legacyDirExists) {
+    cachedConfigDir = preferredDir;
+    cachedConfigDirKey = cacheKey;
+    return preferredDir;
+  }
+
+  const preferredPathExisted = existsSync(preferredDir);
+
+  try {
+    mkdirSync(path.dirname(preferredDir), { recursive: true });
+    cpSync(legacyDir, preferredDir, { recursive: true });
+    promoteLegacyEnvFileSync(preferredDir);
+    cachedConfigDir = preferredDir;
+    cachedConfigDirKey = cacheKey;
+    return preferredDir;
+  } catch (error) {
+    if (!preferredPathExisted) {
+      try {
+        rmSync(preferredDir, { recursive: true, force: true });
+      } catch {
+        // Ignore cleanup failures and keep using the legacy path for this process.
+      }
+    }
+
+    logMigrationWarningOnce(cacheKey, legacyDir, preferredDir, error);
+    cachedConfigDir = legacyDir;
+    cachedConfigDirKey = cacheKey;
+    return legacyDir;
+  }
+}
+
+function getConfigDirCacheKey(): string {
+  return [
+    process.platform,
+    os.homedir(),
+    process.env['HOME'] ?? '',
+    process.env['USERPROFILE'] ?? '',
+    process.env['APPDATA'] ?? '',
+    process.env['XDG_CONFIG_HOME'] ?? '',
+  ].join('\0');
+}
+
+function isDirectory(targetPath: string): boolean {
+  try {
+    return statSync(targetPath).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function isPreferredConfigDir(targetPath: string): boolean {
+  return normalizeForComparison(targetPath) === normalizeForComparison(getPreferredConfigDir());
+}
+
+function normalizeForComparison(targetPath: string): string {
+  const normalized = path.resolve(targetPath);
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+function getLegacyNamedEnvPath(configDir: string): string {
+  return path.join(configDir, LEGACY_ENV_FILENAME);
+}
+
+function hasPrimaryConfigState(configDir: string): boolean {
+  return [
+    path.join(configDir, PREFERRED_ENV_FILENAME),
+    path.join(configDir, LEGACY_ENV_FILENAME),
+    path.join(configDir, 'config.json'),
+  ].some((candidate) => existsSync(candidate));
+}
+
+function syncMissingConfigEntries(sourceDir: string, targetDir: string): void {
+  mkdirSync(targetDir, { recursive: true });
+
+  for (const entryName of readdirSync(sourceDir)) {
+    const sourceEntryPath = path.join(sourceDir, entryName);
+    const targetEntryPath = path.join(targetDir, entryName);
+    const sourceEntryStat = statSync(sourceEntryPath);
+
+    if (sourceEntryStat.isDirectory()) {
+      if (isDirectory(targetEntryPath)) {
+        syncMissingConfigEntries(sourceEntryPath, targetEntryPath);
+        continue;
+      }
+
+      if (existsSync(targetEntryPath)) {
+        continue;
+      }
+
+      cpSync(sourceEntryPath, targetEntryPath, { recursive: true });
+      continue;
+    }
+
+    if (existsSync(targetEntryPath)) {
+      continue;
+    }
+
+    cpSync(sourceEntryPath, targetEntryPath);
+  }
+}
+
+function promoteLegacyEnvFileSync(configDir: string): void {
+  const preferredEnvPath = path.join(configDir, PREFERRED_ENV_FILENAME);
+  const legacyEnvPath = getLegacyNamedEnvPath(configDir);
+  if (existsSync(preferredEnvPath) || !existsSync(legacyEnvPath)) {
+    return;
+  }
+
+  try {
+    renameSync(legacyEnvPath, preferredEnvPath);
+  } catch {
+    // Keep the legacy filename in place; loadEnvironment still reads it.
+  }
+}
+
+async function promoteLegacyEnvFileForWrite(preferredPath: string, legacyPath: string): Promise<void> {
+  if (preferredPath === legacyPath) {
+    return;
+  }
+
+  try {
+    await fs.access(preferredPath);
+    return;
+  } catch {
+    // The canonical file does not exist yet.
+  }
+
+  try {
+    await fs.access(legacyPath);
+  } catch {
+    return;
+  }
+
+  try {
+    await fs.rename(legacyPath, preferredPath);
+  } catch {
+    // Keep the legacy filename in place; the fallback read path still covers it.
+  }
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values));
+}
+
+function logMigrationWarningOnce(cacheKey: string, legacyDir: string, preferredDir: string, error: unknown): void {
+  if (loggedMigrationWarningKey === cacheKey) {
+    return;
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  console.warn(
+    `Failed to migrate Keygate config from ${legacyDir} to ${preferredDir}; using the legacy path for this run. ${message}`
+  );
+  loggedMigrationWarningKey = cacheKey;
 }
 
 function normalizeProvider(value: string | undefined): KeygateConfig['llm']['provider'] {

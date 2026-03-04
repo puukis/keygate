@@ -66,7 +66,7 @@ Key settings:
 Operational notes:
 
 - structured config lives in `config.json`
-- auth state lives in `~/.config/keygate/channels/whatsapp/auth/`
+- auth state lives in `~/.keygate/channels/whatsapp/auth/`
 - restart the WhatsApp runtime after changing policy
 - use `keygate pairing approve whatsapp <code>` for DM pairing approvals
 

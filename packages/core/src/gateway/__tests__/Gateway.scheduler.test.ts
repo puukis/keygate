@@ -103,6 +103,8 @@ describe('Gateway scheduler real-flow smoke', () => {
 
   beforeEach(async () => {
     tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'keygate-gw-scheduler-'));
+    vi.stubEnv('HOME', tempRoot);
+    vi.stubEnv('USERPROFILE', tempRoot);
     vi.stubEnv('XDG_CONFIG_HOME', tempRoot);
   });
 

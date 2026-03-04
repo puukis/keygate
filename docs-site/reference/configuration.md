@@ -4,10 +4,19 @@ This page summarizes practical configuration surfaces used in Keygate.
 
 ## Primary config files
 
-- `.keygate` – local runtime configuration
+- `~/.keygate/.env` – local runtime configuration on macOS/Linux
+- `%USERPROFILE%\.keygate\.env` – local runtime configuration on Windows
 - `.keygate.example` – baseline template used for bootstrapping
-- `~/.config/keygate/config.json` – persisted structured settings such as skills and WhatsApp channel policy
-- `~/.config/keygate/channels/whatsapp/auth/` – linked-device WhatsApp auth state
+- `~/.keygate/config.json` – persisted structured settings such as skills and WhatsApp channel policy
+- `~/.keygate/channels/whatsapp/auth/` – linked-device WhatsApp auth state
+
+## Migration from the legacy config root
+
+- Keygate now uses a home dotdir config root: `~/.keygate` on macOS/Linux and `%USERPROFILE%\.keygate` on Windows.
+- Legacy installs stored config in `~/.config/keygate` (or the platform-equivalent config directory).
+- On first run, Keygate copies the legacy tree into the new root when the new root does not exist, or when it only contains bootstrap/cache files and no primary config yet.
+- The legacy `.keygate` filename is still read for compatibility, but new writes use `.env`.
+- The old directory is not deleted automatically.
 
 ## Key configuration domains
 

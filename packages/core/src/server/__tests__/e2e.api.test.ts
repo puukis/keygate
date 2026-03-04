@@ -61,6 +61,8 @@ describe('server e2e api flows', () => {
 
   beforeEach(async () => {
     configRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'keygate-e2e-config-'));
+    vi.stubEnv('HOME', configRoot);
+    vi.stubEnv('USERPROFILE', configRoot);
     vi.stubEnv('XDG_CONFIG_HOME', configRoot);
   });
 
