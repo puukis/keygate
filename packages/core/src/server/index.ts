@@ -103,6 +103,9 @@ interface WSMessage {
     | 'memory_delete'
     | 'memory_search'
     | 'memory_namespaces'
+    | 'memory_vector_search'
+    | 'memory_reindex'
+    | 'memory_status'
     | 'sessions_list'
     | 'sessions_spawn'
     | 'sessions_history'
@@ -127,7 +130,8 @@ interface WSMessage {
     | 'node_pair_reject'
     | 'node_list'
     | 'node_describe'
-    | 'node_invoke';
+    | 'node_invoke'
+    | 'list_slash_commands';
   sessionId?: string;
   content?: string;
   decision?: ConfirmationDecision;
@@ -168,6 +172,8 @@ interface WSMessage {
   parentSessionId?: string;
   label?: string;
   limit?: number;
+  maxResults?: number;
+  minScore?: number;
   action?: 'list' | 'steer' | 'kill';
   cronExpression?: string;
   prompt?: string;
@@ -1457,6 +1463,56 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
             break;
           }
 
+          case 'memory_vector_search': {
+            const query = typeof msg.query === 'string' ? msg.query : '';
+            if (!query) {
+              ws.send(JSON.stringify({ type: 'error', error: 'Search query is required' }));
+              break;
+            }
+            try {
+              const maxResults = typeof msg.maxResults === 'number' ? msg.maxResults : undefined;
+              const minScore = typeof msg.minScore === 'number' ? msg.minScore : undefined;
+              const source = typeof msg.source === 'string' ? msg.source as 'memory' | 'session' | 'all' : undefined;
+              const results = await gateway.memoryManager.search(query, { maxResults, minScore, source });
+              ws.send(JSON.stringify({
+                type: 'memory_vector_search_result',
+                results,
+              }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Vector memory search failed',
+              }));
+            }
+            break;
+          }
+
+          case 'memory_reindex': {
+            try {
+              await gateway.memoryManager.reindex();
+              ws.send(JSON.stringify({ type: 'memory_reindex_result', success: true }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Memory reindex failed',
+              }));
+            }
+            break;
+          }
+
+          case 'memory_status': {
+            try {
+              const status = gateway.memoryManager.status();
+              ws.send(JSON.stringify({ type: 'memory_status_result', ...status }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Memory status failed',
+              }));
+            }
+            break;
+          }
+
           case 'sessions_list': {
             const parentSessionId = typeof msg.parentSessionId === 'string' ? msg.parentSessionId.trim() : undefined;
             const sessions = gateway.listDelegatedSessions(parentSessionId);
@@ -1849,6 +1905,41 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
 
             const result = await nodeService.invokeNode(nodeId, capability, params);
             ws.send(JSON.stringify({ type: 'node_invoke_result', result }));
+            break;
+          }
+
+          case 'list_slash_commands': {
+            try {
+              const builtinCommands = [
+                { command: 'help', description: 'Show available commands.', source: 'builtin' as const },
+                { command: 'new', description: 'Start a fresh session.', source: 'builtin' as const },
+              ];
+
+              let skillCommands: { command: string; description: string; source: 'skill' }[] = [];
+              try {
+                const entries = await gateway.skills.listSkills(webSessionId);
+                skillCommands = entries
+                  .filter((entry) => entry.skill.userInvocable)
+                  .map((entry) => ({
+                    command: entry.skill.name.toLowerCase(),
+                    description: entry.skill.description.split('\n')[0] ?? entry.skill.description,
+                    source: 'skill' as const,
+                  }))
+                  .sort((a, b) => a.command.localeCompare(b.command));
+              } catch {
+                // Skills may not be ready yet
+              }
+
+              ws.send(JSON.stringify({
+                type: 'slash_commands_result',
+                commands: [...builtinCommands, ...skillCommands],
+              }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Failed to list slash commands',
+              }));
+            }
             break;
           }
         }

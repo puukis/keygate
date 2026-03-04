@@ -241,6 +241,19 @@ export interface KeygateConfig {
     allowFrom?: string[];
   };
   whatsapp?: WhatsAppConfig;
+  memory?: {
+    provider: 'auto' | 'openai' | 'codex' | 'gemini' | 'ollama';
+    model?: string;
+    vectorWeight: number;
+    textWeight: number;
+    maxResults: number;
+    minScore: number;
+    autoIndex: boolean;
+    indexSessions: boolean;
+    temporalDecay: boolean;
+    temporalHalfLifeDays: number;
+    mmr: boolean;
+  };
 }
 
 export interface WhatsAppGroupRule {

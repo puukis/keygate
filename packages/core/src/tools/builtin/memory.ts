@@ -1,24 +1,30 @@
 import type { Tool, ToolResult } from '../../types.js';
 import { loadConfigFromEnv } from '../../config/env.js';
-import { getMemorySnippet, searchMemoryFiles } from '../../workspace/memoryRecall.js';
+import { getMemorySnippet } from '../../workspace/memoryRecall.js';
+import { Gateway } from '../../gateway/Gateway.js';
 
 export const memorySearchTool: Tool = {
   name: 'memory_search',
-  description: 'Search MEMORY.md and memory/*.md semantically and return top snippets with path and line ranges.',
+  description: 'Semantic search across memory files (MEMORY.md, memory/*.md) and past session transcripts. Uses vector embeddings for meaning-based retrieval.',
   parameters: {
     type: 'object',
     properties: {
       query: {
         type: 'string',
-        description: 'Natural language query to search in memory files.',
+        description: 'Natural language query to search in memory.',
       },
       maxResults: {
         type: 'number',
-        description: 'Maximum number of snippets to return (default: 5, max: 20).',
+        description: 'Maximum number of snippets to return (default: 6, max: 20).',
       },
       minScore: {
         type: 'number',
-        description: 'Minimum similarity score from 0 to 1 (default: 0.08).',
+        description: 'Minimum similarity score from 0 to 1 (default: 0.35).',
+      },
+      source: {
+        type: 'string',
+        description: 'Filter by source: "memory" (workspace files), "session" (past conversations), or "all" (default).',
+        enum: ['memory', 'session', 'all'],
       },
     },
     required: ['query'],
@@ -29,23 +35,27 @@ export const memorySearchTool: Tool = {
     const query = typeof args['query'] === 'string' ? args['query'] : '';
     const maxResults = typeof args['maxResults'] === 'number' ? args['maxResults'] : undefined;
     const minScore = typeof args['minScore'] === 'number' ? args['minScore'] : undefined;
+    const source = typeof args['source'] === 'string' ? args['source'] as 'memory' | 'session' | 'all' : 'all';
 
     if (!query.trim()) {
       return { success: false, output: '', error: 'query is required' };
     }
 
     try {
-      const config = loadConfigFromEnv();
-      const result = await searchMemoryFiles({
-        workspacePath: config.security.workspacePath,
-        query,
+      const gateway = Gateway.peekInstance();
+      if (!gateway) {
+        return { success: false, output: '', error: 'Gateway not initialized' };
+      }
+
+      const results = await gateway.memoryManager.search(query, {
         maxResults,
         minScore,
+        source,
       });
 
       return {
         success: true,
-        output: JSON.stringify(result, null, 2),
+        output: JSON.stringify({ results }, null, 2),
       };
     } catch (error) {
       return {
