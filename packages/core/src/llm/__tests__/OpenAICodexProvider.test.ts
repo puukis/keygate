@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import os from 'node:os';
@@ -37,17 +37,58 @@ class FakeChildProcess extends EventEmitter {
   }
 }
 
+const originalHome = process.env['HOME'];
+const originalUserProfile = process.env['USERPROFILE'];
+const originalXdg = process.env['XDG_CONFIG_HOME'];
+let tempHome = '';
+
+beforeEach(async () => {
+  tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'keygate-codex-provider-'));
+  process.env['HOME'] = tempHome;
+  process.env['USERPROFILE'] = tempHome;
+  process.env['XDG_CONFIG_HOME'] = tempHome;
+});
+
+afterEach(async () => {
+  if (typeof originalHome === 'string') {
+    process.env['HOME'] = originalHome;
+  } else {
+    delete process.env['HOME'];
+  }
+
+  if (typeof originalUserProfile === 'string') {
+    process.env['USERPROFILE'] = originalUserProfile;
+  } else {
+    delete process.env['USERPROFILE'];
+  }
+
+  if (typeof originalXdg === 'string') {
+    process.env['XDG_CONFIG_HOME'] = originalXdg;
+  } else {
+    delete process.env['XDG_CONFIG_HOME'];
+  }
+
+  if (tempHome) {
+    await fs.rm(tempHome, { recursive: true, force: true });
+    tempHome = '';
+  }
+});
+
 async function withAllowedCommands(
   commands: string[],
   run: () => Promise<void>
 ): Promise<void> {
   const configHome = await fs.mkdtemp(path.join(os.tmpdir(), 'keygate-allowed-commands-'));
   const previousXdg = process.env['XDG_CONFIG_HOME'];
+  const previousHome = process.env['HOME'];
+  const previousUserProfile = process.env['USERPROFILE'];
 
+  process.env['HOME'] = configHome;
+  process.env['USERPROFILE'] = configHome;
   process.env['XDG_CONFIG_HOME'] = configHome;
 
   try {
-    const registryPath = path.join(configHome, 'keygate', 'allowed_commands.json');
+    const registryPath = path.join(configHome, '.keygate', 'allowed_commands.json');
     await fs.mkdir(path.dirname(registryPath), { recursive: true });
     await fs.writeFile(
       registryPath,
@@ -60,6 +101,18 @@ async function withAllowedCommands(
       process.env['XDG_CONFIG_HOME'] = previousXdg;
     } else {
       delete process.env['XDG_CONFIG_HOME'];
+    }
+
+    if (typeof previousHome === 'string') {
+      process.env['HOME'] = previousHome;
+    } else {
+      delete process.env['HOME'];
+    }
+
+    if (typeof previousUserProfile === 'string') {
+      process.env['USERPROFILE'] = previousUserProfile;
+    } else {
+      delete process.env['USERPROFILE'];
     }
     await fs.rm(configHome, { recursive: true, force: true });
   }

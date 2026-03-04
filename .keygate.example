@@ -1,5 +1,8 @@
 # Keygate Environment Variables (example)
-# Copy to ~/.config/keygate/.keygate and fill in values
+# Copy to ~/.keygate/.env and fill in values
+# Existing ~/.config/keygate installs are copied into ~/.keygate on first run
+# when the new directory is missing, or when ~/.keygate only has bootstrap/cache
+# files and no primary config yet. The old directory is left in place.
 
 # LLM Provider: 'openai', 'gemini', 'ollama', or 'openai-codex'
 LLM_PROVIDER=openai

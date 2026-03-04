@@ -1,45 +1,147 @@
+import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import dotenv from 'dotenv';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  getConfigDir,
+  getConfigHomeDir,
+  getDefaultWorkspacePath,
   getKeygateFilePath,
+  getLegacyConfigDir,
+  getLegacyKeygateEnvPath,
+  getPreferredConfigDir,
+  getPreferredKeygateEnvPath,
   loadConfigFromEnv,
   loadEnvironment,
   savePersistedConfigObject,
+  updateKeygateFile,
 } from '../env.js';
 
 describe('loadConfigFromEnv', () => {
+  let tempHome: string;
+
+  beforeEach(async () => {
+    tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'keygate-home-'));
+
+    if (process.platform === 'win32') {
+      vi.stubEnv('USERPROFILE', tempHome);
+      vi.stubEnv('APPDATA', path.join(tempHome, 'AppData', 'Roaming'));
+      return;
+    }
+
+    vi.stubEnv('HOME', tempHome);
+    vi.stubEnv('XDG_CONFIG_HOME', path.join(tempHome, '.config'));
+  });
+
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.restoreAllMocks();
   });
 
-  it('resolves the config file path to .keygate', () => {
+  it('resolves the preferred config root and env path', () => {
+    expect(getPreferredConfigDir()).toBe(path.join(tempHome, '.keygate'));
+    expect(getPreferredKeygateEnvPath()).toBe(path.join(tempHome, '.keygate', '.env'));
+    expect(getConfigDir()).toBe(getPreferredConfigDir());
+    expect(getKeygateFilePath()).toBe(getPreferredKeygateEnvPath());
+
     if (process.platform === 'win32') {
-      vi.stubEnv('APPDATA', path.join('C:\\', 'Users', 'tester', 'AppData', 'Roaming'));
-      expect(getKeygateFilePath()).toBe(path.join('C:\\', 'Users', 'tester', 'AppData', 'Roaming', 'keygate', '.keygate'));
+      expect(getConfigHomeDir()).toBe(path.join(tempHome, 'AppData', 'Roaming'));
+      expect(getLegacyConfigDir()).toBe(path.join(tempHome, 'AppData', 'Roaming', 'keygate'));
+      expect(getLegacyKeygateEnvPath()).toBe(
+        path.join(tempHome, 'AppData', 'Roaming', 'keygate', '.keygate')
+      );
       return;
     }
 
-    vi.stubEnv('XDG_CONFIG_HOME', '/tmp/keygate-xdg');
-    expect(getKeygateFilePath()).toBe('/tmp/keygate-xdg/keygate/.keygate');
+    expect(getConfigHomeDir()).toBe(path.join(tempHome, '.config'));
+    expect(getLegacyConfigDir()).toBe(path.join(tempHome, '.config', 'keygate'));
+    expect(getLegacyKeygateEnvPath()).toBe(path.join(tempHome, '.config', 'keygate', '.keygate'));
   });
 
-  it('loads only .keygate files from config dir and cwd', () => {
+  it('loads the preferred env file, the legacy filename, and cwd .keygate', () => {
     const configSpy = vi.spyOn(dotenv, 'config').mockReturnValue({} as any);
-
-    if (process.platform === 'win32') {
-      vi.stubEnv('APPDATA', path.join('C:\\', 'Users', 'tester', 'AppData', 'Roaming'));
-    } else {
-      vi.stubEnv('XDG_CONFIG_HOME', '/tmp/keygate-xdg');
-    }
 
     loadEnvironment();
 
-    expect(configSpy).toHaveBeenCalledTimes(2);
-    expect(configSpy).toHaveBeenNthCalledWith(1, { path: getKeygateFilePath() });
-    expect(configSpy).toHaveBeenNthCalledWith(2, { path: path.resolve(process.cwd(), '.keygate') });
+    expect(configSpy).toHaveBeenCalledTimes(3);
+    expect(configSpy).toHaveBeenNthCalledWith(1, { path: path.join(getConfigDir(), '.env') });
+    expect(configSpy).toHaveBeenNthCalledWith(2, { path: path.join(getConfigDir(), '.keygate') });
+    expect(configSpy).toHaveBeenNthCalledWith(3, { path: path.resolve(process.cwd(), '.keygate') });
+  });
+
+  it('migrates a legacy config tree into the preferred root', async () => {
+    const legacyDir = getLegacyConfigDir();
+    await fs.mkdir(legacyDir, { recursive: true });
+    await fs.writeFile(path.join(legacyDir, '.keygate'), 'LLM_PROVIDER=openai-codex\n', 'utf8');
+    await fs.writeFile(
+      path.join(legacyDir, 'config.json'),
+      JSON.stringify({ server: { apiToken: 'copied-token' } }, null, 2),
+      'utf8'
+    );
+
+    expect(getConfigDir()).toBe(getPreferredConfigDir());
+    await expect(fs.readFile(getPreferredKeygateEnvPath(), 'utf8')).resolves.toContain(
+      'LLM_PROVIDER=openai-codex'
+    );
+    await expect(fs.readFile(path.join(getPreferredConfigDir(), 'config.json'), 'utf8')).resolves.toContain(
+      'copied-token'
+    );
+  });
+
+  it('hydrates a partially initialized preferred root from the legacy config tree', async () => {
+    const preferredDir = getPreferredConfigDir();
+    const legacyDir = getLegacyConfigDir();
+
+    await fs.mkdir(preferredDir, { recursive: true });
+    await fs.writeFile(path.join(preferredDir, 'allowed_commands.json'), '{"version":1,"commands":[]}\n', 'utf8');
+    await fs.writeFile(path.join(preferredDir, 'codex-models-cache.json'), '[]\n', 'utf8');
+
+    await fs.mkdir(path.join(legacyDir, 'channels', 'whatsapp'), { recursive: true });
+    await fs.writeFile(path.join(legacyDir, '.keygate'), 'LLM_PROVIDER=openai-codex\n', 'utf8');
+    await fs.writeFile(
+      path.join(legacyDir, 'config.json'),
+      JSON.stringify({ server: { apiToken: 'merged-token' } }, null, 2),
+      'utf8'
+    );
+    await fs.writeFile(path.join(legacyDir, 'channels', 'whatsapp', 'meta.json'), '{"jid":"x"}\n', 'utf8');
+
+    expect(getConfigDir()).toBe(preferredDir);
+    await expect(fs.readFile(getPreferredKeygateEnvPath(), 'utf8')).resolves.toContain(
+      'LLM_PROVIDER=openai-codex'
+    );
+    await expect(fs.readFile(path.join(preferredDir, 'config.json'), 'utf8')).resolves.toContain('merged-token');
+    await expect(
+      fs.readFile(path.join(preferredDir, 'channels', 'whatsapp', 'meta.json'), 'utf8')
+    ).resolves.toContain('"jid":"x"');
+    await expect(fs.readFile(path.join(preferredDir, 'allowed_commands.json'), 'utf8')).resolves.toContain(
+      '"version":1'
+    );
+  });
+
+  it('falls back to the legacy root when migration fails', async () => {
+    const warningSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const legacyDir = getLegacyConfigDir();
+    await fs.mkdir(legacyDir, { recursive: true });
+    await fs.writeFile(path.join(getPreferredConfigDir()), 'occupied', 'utf8');
+
+    expect(getConfigDir()).toBe(legacyDir);
+    expect(getKeygateFilePath()).toBe(getLegacyKeygateEnvPath());
+    expect(warningSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('promotes a legacy-named env file in the preferred root on write', async () => {
+    const preferredDir = getPreferredConfigDir();
+    const legacyNamedEnvPath = path.join(preferredDir, '.keygate');
+    await fs.mkdir(preferredDir, { recursive: true });
+    await fs.writeFile(legacyNamedEnvPath, 'LLM_PROVIDER=openai\n', 'utf8');
+
+    await updateKeygateFile({ LLM_MODEL: 'gpt-4o' });
+
+    const content = await fs.readFile(getPreferredKeygateEnvPath(), 'utf8');
+    expect(content).toContain('LLM_PROVIDER=openai');
+    expect(content).toContain('LLM_MODEL=gpt-4o');
+    await expect(fs.access(legacyNamedEnvPath)).rejects.toThrow();
   });
 
   it('defaults spicy max obedience to false when unset', () => {
@@ -132,14 +234,7 @@ describe('loadConfigFromEnv', () => {
   });
 
   it('reads persisted skills config from config.json', async () => {
-    if (process.platform === 'win32') {
-      vi.stubEnv('APPDATA', path.join('C:\\', 'Users', 'tester', 'AppData', 'Roaming'));
-    } else {
-      const configHome = await fs.mkdtemp('/tmp/keygate-skills-config-');
-      vi.stubEnv('XDG_CONFIG_HOME', configHome);
-    }
-
-    const configDir = path.join(path.dirname(getKeygateFilePath()));
+    const configDir = path.dirname(getKeygateFilePath());
     await fs.mkdir(configDir, { recursive: true });
     await fs.writeFile(
       path.join(configDir, 'config.json'),
@@ -189,14 +284,18 @@ describe('loadConfigFromEnv', () => {
     });
   });
 
-  it('persists whatsapp config without overwriting skills config', async () => {
-    if (process.platform === 'win32') {
-      vi.stubEnv('APPDATA', path.join('C:\\', 'Users', 'tester', 'AppData', 'Roaming'));
-    } else {
-      const configHome = await fs.mkdtemp('/tmp/keygate-whatsapp-config-');
-      vi.stubEnv('XDG_CONFIG_HOME', configHome);
-    }
+  it('normalizes the legacy config-root workspace path to the new default workspace', () => {
+    vi.stubEnv(
+      'WORKSPACE_PATH',
+      path.join(getLegacyConfigDir(), 'workspaces', path.basename(getDefaultWorkspacePath()))
+    );
 
+    const config = loadConfigFromEnv();
+
+    expect(config.security.workspacePath).toBe(getDefaultWorkspacePath());
+  });
+
+  it('persists whatsapp config without overwriting skills config', async () => {
     const configDir = path.dirname(getKeygateFilePath());
     await fs.mkdir(configDir, { recursive: true });
     await fs.writeFile(

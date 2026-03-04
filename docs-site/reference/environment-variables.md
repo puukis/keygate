@@ -4,6 +4,8 @@ Use environment variables for secrets and environment-specific overrides.
 
 > Note: exact variable names may evolve with runtime changes. Keep this page aligned with `.keygate.example` and core config loaders.
 
+Keygate stores local runtime env values in `~/.keygate/.env` on macOS/Linux and `%USERPROFILE%\.keygate\.env` on Windows. Legacy `~/.config/keygate/.keygate` installs are copied forward on first run when the new root is missing, or when `~/.keygate` only has bootstrap/cache files and no primary config yet.
+
 ## Typical categories
 
 - Provider credentials/tokens
@@ -23,11 +25,11 @@ Use environment variables for secrets and environment-specific overrides.
 
 ## WhatsApp note
 
-WhatsApp does not require a new `.keygate` environment variable for login.
+WhatsApp does not require a new `.env` entry for login.
 
 - Login is done through a linked-device QR flow
-- Structured WhatsApp policy is stored in `~/.config/keygate/config.json`
-- Linked auth credentials are stored in `~/.config/keygate/channels/whatsapp/auth/`
+- Structured WhatsApp policy is stored in `~/.keygate/config.json`
+- Linked auth credentials are stored in `~/.keygate/channels/whatsapp/auth/`
 
 ## Recommended policy
 

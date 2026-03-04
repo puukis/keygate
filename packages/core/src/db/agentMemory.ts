@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import * as path from 'node:path';
-import * as os from 'node:os';
 import * as fs from 'node:fs';
+import { getConfigDir } from '../config/env.js';
 
 // ── Types ──
 
@@ -25,7 +25,7 @@ export class AgentMemoryStore {
   private db: Database.Database;
 
   constructor(dbPath?: string) {
-    const defaultPath = path.join(os.homedir(), '.config', 'keygate', 'agent-memory.db');
+    const defaultPath = path.join(getConfigDir(), 'agent-memory.db');
     const targetPath = dbPath ?? defaultPath;
 
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });

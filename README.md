@@ -181,7 +181,7 @@ keygate channels whatsapp logout
 
 WhatsApp operational notes:
 
-- `keygate channels whatsapp login` opens a linked-device QR flow. No new `.keygate` secret is required.
+- `keygate channels whatsapp login` opens a linked-device QR flow. No new `.env` entry is required.
 - Direct messages follow the same trust model as other external channels: `pairing`, `open`, or `closed`.
 - Group chats are controlled separately through `groupMode` (`closed`, `selected`, `open`) plus mention requirements.
 - After changing WhatsApp config in the web app, restart the WhatsApp runtime so the new policy is applied.
@@ -223,9 +223,12 @@ WhatsApp operational notes:
 
 ## Configuration
 
-After installation, config is stored at `~/.config/keygate/` (or the platform-equivalent config directory):
+After installation, config is stored at `~/.keygate/` on macOS/Linux and `%USERPROFILE%\.keygate` on Windows.
+Existing `~/.config/keygate/` installs are copied into the new home dotdir on first run when `~/.keygate/` is missing, or when `~/.keygate/` only contains bootstrap/cache files and no primary config yet. The old directory is left in place.
+
+Primary files:
 - `config.json` - LLM provider, model, security settings
-- `.keygate` - API keys
+- `.env` - API keys and environment overrides
 
 Startup behavior:
 - `KEYGATE_OPEN_CHAT_ON_START=true` opens chat UI automatically when `keygate` starts
@@ -237,8 +240,8 @@ DM trust + pairing:
 - `DISCORD_ALLOW_FROM=123,456,*` (optional user id allowlist)
 - `SLACK_DM_POLICY=pairing|open|closed` (default: `pairing`)
 - `SLACK_ALLOW_FROM=U123,U456,*` (optional user id allowlist)
-- WhatsApp structured channel config is stored in `~/.config/keygate/config.json` under `whatsapp`
-- WhatsApp linked-device auth is stored in `~/.config/keygate/channels/whatsapp/auth/` and must never be committed
+- WhatsApp structured channel config is stored in `~/.keygate/config.json` under `whatsapp`
+- WhatsApp linked-device auth is stored in `~/.keygate/channels/whatsapp/auth/` and must never be committed
 - Approve a pairing code from terminal: `keygate pairing approve <discord|slack|whatsapp> <code>`
 - Show pending requests: `keygate pairing pending [discord|slack|whatsapp]`
 
@@ -249,7 +252,7 @@ Diagnostics:
 Tool risk engine + approval memory:
 - High/medium-risk tool actions are risk-scored before confirmation.
 - `allow_always` decisions are persisted with TTL (default 7 days).
-- Audit trail is written to `~/.config/keygate/approvals-audit.jsonl` (or your platform config dir).
+- Audit trail is written to `~/.keygate/approvals-audit.jsonl` (or `%USERPROFILE%\.keygate\approvals-audit.jsonl` on Windows).
 - Configure TTL with `KEYGATE_APPROVAL_TTL_HOURS`.
 
 Session delegation (sub-agents):
@@ -311,7 +314,7 @@ Device node architecture (pair/list/describe/invoke stubs):
 
 `openai-codex` uses `provider/model` format in config and UI, for example `openai-codex/gpt-5.2`.
 
-On first start, Keygate also initializes continuity files in a device-specific folder under the config dir (default `~/.config/keygate/workspaces/<device-id>/`), and Safe Mode allows editing these continuity markdown files:
+On first start, Keygate also initializes continuity files in a device-specific folder under the config dir (default `~/.keygate/workspaces/<device-id>/`), and Safe Mode allows editing these continuity markdown files:
 - `SOUL.md` - behavior contract/personality
 - `USER.md` - user profile/preferences
 - `BOOTSTRAP.md` - first-chat setup guidance

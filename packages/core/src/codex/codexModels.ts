@@ -1,8 +1,8 @@
-import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import type { CodexModelEntry } from './types.js';
 import type { CodexReasoningEffort } from '../types.js';
+import { getConfigDir } from '../config/env.js';
 
 export const CODEX_PROVIDER_ID = 'openai-codex';
 const CODEX_MODEL_CACHE_FILE = 'codex-models-cache.json';
@@ -179,7 +179,7 @@ export function getFallbackCodexModels(): CodexModel[] {
 }
 
 export function getCodexModelCachePath(configDir?: string): string {
-  const baseDir = configDir ?? path.join(os.homedir(), '.config', 'keygate');
+  const baseDir = configDir ?? getConfigDir();
   return path.join(baseDir, CODEX_MODEL_CACHE_FILE);
 }
 

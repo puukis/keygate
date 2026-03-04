@@ -13,11 +13,13 @@ describe('skill discovery', () => {
   it('applies precedence workspace > global > plugin > bundled > extra', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'keygate-discovery-'));
     const xdgRoot = path.join(root, 'xdg');
+    vi.stubEnv('HOME', root);
+    vi.stubEnv('USERPROFILE', root);
     vi.stubEnv('XDG_CONFIG_HOME', xdgRoot);
 
     const workspaceRoot = path.join(root, 'workspace');
     const workspaceSkills = path.join(workspaceRoot, 'skills');
-    const globalSkills = path.join(xdgRoot, 'keygate', 'skills');
+    const globalSkills = path.join(root, '.keygate', 'skills');
     const pluginRoot = path.join(root, 'plugins');
     const pluginDir = path.join(pluginRoot, 'ops-plugin');
     const pluginSkills = path.join(pluginDir, 'skills');

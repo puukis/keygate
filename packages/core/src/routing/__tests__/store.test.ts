@@ -9,6 +9,8 @@ describe('RoutingRuleStore', () => {
 
   beforeEach(async () => {
     tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'keygate-routing-store-'));
+    vi.stubEnv('HOME', tempRoot);
+    vi.stubEnv('USERPROFILE', tempRoot);
     vi.stubEnv('XDG_CONFIG_HOME', tempRoot);
   });
 

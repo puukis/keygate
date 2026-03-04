@@ -15,6 +15,8 @@ describe('pairing', () => {
 
   beforeEach(async () => {
     tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'keygate-pairing-'));
+    vi.stubEnv('HOME', tempRoot);
+    vi.stubEnv('USERPROFILE', tempRoot);
     vi.stubEnv('XDG_CONFIG_HOME', tempRoot);
   });
 
@@ -57,7 +59,7 @@ describe('pairing', () => {
   });
 
   it('auto-migrates pairing stores that predate whatsapp support', async () => {
-    const configDir = path.join(tempRoot, 'keygate');
+    const configDir = path.join(tempRoot, '.keygate');
     await fs.mkdir(configDir, { recursive: true });
     await fs.writeFile(
       path.join(configDir, 'pairing.json'),

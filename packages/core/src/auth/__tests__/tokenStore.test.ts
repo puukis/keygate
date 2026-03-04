@@ -13,7 +13,10 @@ describe('tokenStore', () => {
   beforeEach(async () => {
     testDir = await fs.mkdtemp(path.join(os.tmpdir(), 'keygate-auth-test-'));
     vi.unstubAllEnvs();
+    vi.stubEnv('HOME', testDir);
+    vi.stubEnv('USERPROFILE', testDir);
     vi.stubEnv('XDG_CONFIG_HOME', testDir);
+    vi.stubEnv('KEYGATE_TOKEN_STORE', 'file');
     __setKeytarLoaderForTests(null);
   });
 
