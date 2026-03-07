@@ -23,6 +23,13 @@ enum ServerMessage: Decodable {
     case sessionCleared(SessionClearedPayload)
     case contextUsage(ContextUsagePayload)
     case mcpBrowserStatus(MCPBrowserStatusPayload)
+    case nodePairRequestResult(NodePairRequestResultPayload)
+    case nodePairApproveResult(NodePairApproveResultPayload)
+    case nodeRegisterResult(NodeRegisterResultPayload)
+    case nodeInvokeRequest(NodeInvokeRequestPayload)
+    case nodeStatusChanged(NodeStatusChangedPayload)
+    case debugEvents(DebugEventsPayload)
+    case debugEvent(DebugEventEnvelopePayload)
     case error(ErrorPayload)
     case unknown(String)
 
@@ -55,6 +62,13 @@ enum ServerMessage: Decodable {
         case "session_cleared":     self = .sessionCleared(try single.decode(SessionClearedPayload.self))
         case "context_usage":       self = .contextUsage(try single.decode(ContextUsagePayload.self))
         case "mcp_browser_status":  self = .mcpBrowserStatus(try single.decode(MCPBrowserStatusPayload.self))
+        case "node_pair_request_result": self = .nodePairRequestResult(try single.decode(NodePairRequestResultPayload.self))
+        case "node_pair_approve_result": self = .nodePairApproveResult(try single.decode(NodePairApproveResultPayload.self))
+        case "node_register_result": self = .nodeRegisterResult(try single.decode(NodeRegisterResultPayload.self))
+        case "node_invoke_request": self = .nodeInvokeRequest(try single.decode(NodeInvokeRequestPayload.self))
+        case "node_status_changed": self = .nodeStatusChanged(try single.decode(NodeStatusChangedPayload.self))
+        case "debug_events_result": self = .debugEvents(try single.decode(DebugEventsPayload.self))
+        case "debug_event": self = .debugEvent(try single.decode(DebugEventEnvelopePayload.self))
         case "error":               self = .error(try single.decode(ErrorPayload.self))
         default:                    self = .unknown(type)
         }
@@ -184,6 +198,41 @@ struct MCPBrowserStatusPayload: Decodable {
     let browser: BrowserConfig
 }
 
+struct NodePairRequestResultPayload: Decodable {
+    let request: NodePairRequest
+}
+
+struct NodePairApproveResultPayload: Decodable {
+    let node: NodeRecord
+}
+
+struct NodeRegisterResultPayload: Decodable {
+    let node: NodeRecord
+}
+
+struct NodeInvokeRequestPayload: Decodable {
+    let requestId: String
+    let nodeId: String
+    let capability: NodeCapability
+    let params: [String: AnyCodable]?
+}
+
+struct NodeStatusChangedPayload: Decodable {
+    let nodeId: String
+    let online: Bool
+    let lastSeenAt: String
+}
+
+struct DebugEventsPayload: Decodable {
+    let sessionId: String
+    let events: [DebugEvent]
+}
+
+struct DebugEventEnvelopePayload: Decodable {
+    let sessionId: String
+    let event: DebugEvent
+}
+
 struct ErrorPayload: Decodable {
     let error: String
 }
@@ -235,6 +284,56 @@ struct Attachment: Codable, Identifiable {
     let contentType: String
     let sizeBytes: Int
     let url: String
+}
+
+enum NodeCapability: String, Codable, CaseIterable, Identifiable {
+    case notify
+    case location
+    case camera
+    case screen
+    case shell
+    case invoke
+
+    var id: String { rawValue }
+}
+
+enum NodePermissionState: String, Codable {
+    case granted
+    case denied
+    case unknown
+}
+
+struct NodePairRequest: Codable {
+    let requestId: String
+    let name: String
+    let capabilities: [NodeCapability]
+    let pairingCode: String
+    let createdAt: String
+    let expiresAt: String
+}
+
+struct NodeRecord: Codable, Identifiable {
+    let id: String
+    let name: String
+    let capabilities: [NodeCapability]
+    let trusted: Bool
+    let authToken: String?
+    let platform: String?
+    let version: String?
+    let online: Bool?
+    let permissions: [String: NodePermissionState]?
+    let createdAt: String
+    let updatedAt: String
+    let lastSeenAt: String
+    let lastInvocationAt: String?
+}
+
+struct DebugEvent: Codable, Identifiable {
+    let id: String
+    let timestamp: String
+    let type: String
+    let message: String
+    let data: [String: AnyCodable]?
 }
 
 // MARK: - Session

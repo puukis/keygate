@@ -1,7 +1,8 @@
 import type { Tool, ToolResult } from '../../types.js';
+import path from 'node:path';
+import { promises as fs } from 'node:fs';
 import { loadConfigFromEnv } from '../../config/env.js';
 import { getMemorySnippet } from '../../workspace/memoryRecall.js';
-import { Gateway } from '../../gateway/Gateway.js';
 
 export const memorySearchTool: Tool = {
   name: 'memory_search',
@@ -42,9 +43,22 @@ export const memorySearchTool: Tool = {
     }
 
     try {
+      const { Gateway } = await import('../../gateway/Gateway.js');
       const gateway = Gateway.peekInstance();
       if (!gateway) {
-        return { success: false, output: '', error: 'Gateway not initialized' };
+        const fallbackResults = await searchMemoryFallback(
+          loadConfigFromEnv().security.workspacePath,
+          query,
+          {
+            maxResults,
+            minScore,
+            source,
+          }
+        );
+        return {
+          success: true,
+          output: JSON.stringify({ results: fallbackResults }, null, 2),
+        };
       }
 
       const results = await gateway.memoryManager.search(query, {
@@ -123,3 +137,104 @@ export const memoryGetTool: Tool = {
 };
 
 export const memoryTools: Tool[] = [memorySearchTool, memoryGetTool];
+
+async function searchMemoryFallback(
+  workspacePath: string,
+  query: string,
+  options: {
+    maxResults?: number;
+    minScore?: number;
+    source: 'memory' | 'session' | 'all';
+  }
+): Promise<Array<{
+  path: string;
+  startLine: number;
+  endLine: number;
+  score: number;
+  snippet: string;
+  source: 'memory';
+}>> {
+  if (options.source === 'session') {
+    return [];
+  }
+
+  const terms = query
+    .toLowerCase()
+    .split(/\s+/)
+    .map((term) => term.trim())
+    .filter((term) => term.length > 0);
+  if (terms.length === 0) {
+    return [];
+  }
+
+  const candidates = await listMemoryFiles(workspacePath);
+  const matches: Array<{
+    path: string;
+    startLine: number;
+    endLine: number;
+    score: number;
+    snippet: string;
+    source: 'memory';
+  }> = [];
+
+  for (const relativePath of candidates) {
+    const absolutePath = path.join(workspacePath, relativePath);
+    let raw = '';
+    try {
+      raw = await fs.readFile(absolutePath, 'utf8');
+    } catch {
+      continue;
+    }
+
+    const lines = raw.split(/\r?\n/);
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index] ?? '';
+      const normalized = line.toLowerCase();
+      const hits = terms.filter((term) => normalized.includes(term)).length;
+      if (hits === 0) {
+        continue;
+      }
+
+      const score = hits / terms.length;
+      matches.push({
+        path: relativePath,
+        startLine: index + 1,
+        endLine: index + 1,
+        score: Number(score.toFixed(4)),
+        snippet: line.slice(0, 700),
+        source: 'memory',
+      });
+    }
+  }
+
+  const minScore = options.minScore ?? 0;
+  const maxResults = Math.max(1, Math.min(20, options.maxResults ?? 6));
+  return matches
+    .filter((match) => match.score >= minScore)
+    .sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+      if (left.path !== right.path) {
+        return left.path.localeCompare(right.path);
+      }
+      return left.startLine - right.startLine;
+    })
+    .slice(0, maxResults);
+}
+
+async function listMemoryFiles(workspacePath: string): Promise<string[]> {
+  const files = ['MEMORY.md'];
+  const memoryDir = path.join(workspacePath, 'memory');
+  try {
+    const entries = await fs.readdir(memoryDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith('.md')) {
+        files.push(`memory/${entry.name}`);
+      }
+    }
+  } catch {
+    // Ignore missing memory directory in fallback mode.
+  }
+  return files;
+}

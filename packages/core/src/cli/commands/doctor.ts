@@ -6,6 +6,11 @@ import { loadConfigFromEnv, getConfigDir, getKeygateFilePath } from '../../confi
 import { SkillsManager } from '../../skills/manager.js';
 import { MCPBrowserManager } from '../../codex/mcpBrowserManager.js';
 import { hasWhatsAppLinkedAuth } from '../../whatsapp/index.js';
+import { SandboxManager } from '../../sandbox/index.js';
+import { NodeStore } from '../../nodes/index.js';
+import { GmailAutomationService } from '../../gmail/index.js';
+import { Gateway } from '../../gateway/index.js';
+import { Database } from '../../db/index.js';
 import { ensureCodexInstalled } from '../codexInstall.js';
 import { runGatewayCommand } from './gateway.js';
 import type { ParsedArgs } from '../argv.js';
@@ -17,60 +22,321 @@ export interface DoctorCheck {
   title: string;
   severity: DoctorSeverity;
   detail: string;
+  repairable?: boolean;
+  repaired?: boolean;
+}
+
+export interface DoctorReport {
+  generatedAt: string;
+  checks: DoctorCheck[];
+  repaired: string[];
+  summary: {
+    pass: number;
+    warn: number;
+    fail: number;
+  };
 }
 
 export async function runDoctorCommand(args: ParsedArgs): Promise<void> {
   const nonInteractive = Boolean(args.flags['non-interactive']);
-  const checks = await runDoctorChecks();
+  const json = Boolean(args.flags['json']);
+  const repair = Boolean(args.flags['repair']);
+  const report = await runDoctorChecks({ repair });
 
-  printDoctorReport(checks, { nonInteractive });
+  if (json) {
+    console.log(JSON.stringify(report, null, 2));
+  } else {
+    printDoctorReport(report, { nonInteractive, repair });
+  }
 
-  const hasFail = checks.some((check) => check.severity === 'fail');
-  if (hasFail) {
+  if (report.summary.fail > 0) {
     throw new Error('Doctor found failing checks.');
   }
 }
 
-export async function runDoctorChecks(): Promise<DoctorCheck[]> {
+export async function runDoctorChecks(options: { repair?: boolean } = {}): Promise<DoctorReport> {
   const checks: DoctorCheck[] = [];
+  const repaired: string[] = [];
   const config = loadConfigFromEnv();
+  const sandbox = new SandboxManager(config);
+  const nodeStore = new NodeStore();
+  const gmail = new GmailAutomationService(config);
+  const db = new Database();
 
-  // Config checks
-  checks.push({
-    id: 'config.provider',
-    title: 'LLM provider configured',
-    severity: config.llm.provider ? 'pass' : 'fail',
-    detail: config.llm.provider ? `provider=${config.llm.provider}` : 'LLM provider missing',
-  });
+  try {
+    checks.push(checkFromBoolean(
+      'config.provider',
+      'LLM provider configured',
+      Boolean(config.llm.provider),
+      config.llm.provider ? `provider=${config.llm.provider}` : 'LLM provider missing',
+    ));
+    checks.push(checkFromBoolean(
+      'config.model',
+      'LLM model configured',
+      config.llm.model.trim().length > 0,
+      config.llm.model.trim().length > 0 ? `model=${config.llm.model}` : 'LLM model is empty',
+    ));
+    checks.push(checkFromBoolean(
+      'config.workspace',
+      'Workspace path exists',
+      existsSync(config.security.workspacePath),
+      config.security.workspacePath,
+    ));
+    checks.push({
+      id: 'security.mode',
+      title: 'Security mode posture',
+      severity: config.security.mode === 'safe' ? 'pass' : 'warn',
+      detail: config.security.mode === 'safe'
+        ? 'safe mode enabled'
+        : `mode=${config.security.mode} (consider safe for stricter guardrails)`,
+    });
+    checks.push({
+      id: 'server.api_token',
+      title: 'Operator API token configured',
+      severity: config.server.apiToken.trim().length > 0 ? 'pass' : 'fail',
+      detail: config.server.apiToken.trim().length > 0
+        ? 'configured'
+        : 'server.apiToken is empty; operator-only routes are exposed without an API token',
+    });
 
-  checks.push({
-    id: 'config.model',
-    title: 'LLM model configured',
-    severity: config.llm.model.trim().length > 0 ? 'pass' : 'fail',
-    detail: config.llm.model.trim().length > 0 ? `model=${config.llm.model}` : 'LLM model is empty',
-  });
+    try {
+      const sessionCount = db.listSessions().length;
+      checks.push({
+        id: 'db.integrity',
+        title: 'SQLite session database',
+        severity: 'pass',
+        detail: `${sessionCount} persisted sessions readable`,
+      });
+    } catch (error) {
+      checks.push({
+        id: 'db.integrity',
+        title: 'SQLite session database',
+        severity: 'fail',
+        detail: error instanceof Error ? error.message : 'Database could not be opened',
+      });
+    }
 
-  checks.push({
-    id: 'config.workspace',
-    title: 'Workspace path exists',
-    severity: existsSync(config.security.workspacePath) ? 'pass' : 'fail',
-    detail: config.security.workspacePath,
-  });
+    checks.push(await runAuthCheck(config.llm.provider, config.llm.model, config.security.workspacePath));
+    checks.push(await runGatewayStatusCheck());
 
-  checks.push({
-    id: 'security.mode',
-    title: 'Security mode posture',
-    severity: config.security.mode === 'safe' ? 'pass' : 'warn',
-    detail: config.security.mode === 'safe'
-      ? 'safe mode enabled'
-      : `mode=${config.security.mode} (consider safe for stricter guardrails)`,
-  });
+    checks.push({
+      id: 'channels.discord.token',
+      title: 'Discord token configured',
+      severity: config.discord?.token?.trim() ? 'pass' : 'warn',
+      detail: config.discord?.token?.trim() ? 'configured' : 'DISCORD_TOKEN missing',
+    });
+    checks.push({
+      id: 'channels.slack.tokens',
+      title: 'Slack tokens configured',
+      severity: config.slack?.botToken?.trim() && config.slack?.appToken?.trim() ? 'pass' : 'warn',
+      detail: config.slack?.botToken?.trim() && config.slack?.appToken?.trim()
+        ? 'configured'
+        : 'SLACK_BOT_TOKEN or SLACK_APP_TOKEN missing',
+    });
 
-  // Auth checks
-  const authCheck = await runAuthCheck(config.llm.provider, config.llm.model, config.security.workspacePath);
-  checks.push(authCheck);
+    const whatsappLinked = await hasWhatsAppLinkedAuth();
+    const whatsappRuntimeRunning = isManagedChannelRunning(path.join(getConfigDir(), 'channels', 'whatsapp.json'));
+    checks.push({
+      id: 'channels.whatsapp.linked',
+      title: 'WhatsApp linked',
+      severity: whatsappLinked ? 'pass' : 'warn',
+      detail: whatsappLinked ? 'linked-device auth is present' : 'run `keygate channels whatsapp login`',
+    });
+    checks.push({
+      id: 'channels.whatsapp.runtime',
+      title: 'WhatsApp runtime',
+      severity: whatsappLinked
+        ? (whatsappRuntimeRunning ? 'pass' : 'warn')
+        : 'warn',
+      detail: whatsappLinked
+        ? (whatsappRuntimeRunning ? 'managed runtime is running' : 'linked but runtime is stopped')
+        : 'runtime disabled until the channel is linked',
+    });
 
-  // Gateway status check
+    checks.push(validateDmPolicy('discord', config.discord?.dmPolicy ?? 'pairing', config.discord?.allowFrom ?? []));
+    checks.push(validateDmPolicy('slack', config.slack?.dmPolicy ?? 'pairing', config.slack?.allowFrom ?? []));
+    checks.push(validateDmPolicy('whatsapp', config.whatsapp?.dmPolicy ?? 'pairing', config.whatsapp?.allowFrom ?? []));
+    checks.push(validateWhatsAppGroupPolicy(config));
+
+    try {
+      const mcpStatus = await new MCPBrowserManager(config).status();
+      checks.push({
+        id: 'mcp.browser',
+        title: 'MCP browser health',
+        severity: mcpStatus.healthy ? 'pass' : 'warn',
+        detail: mcpStatus.healthy
+          ? `healthy (version ${mcpStatus.configuredVersion ?? 'n/a'})`
+          : (mcpStatus.warning ?? 'not healthy'),
+      });
+    } catch (error) {
+      checks.push({
+        id: 'mcp.browser',
+        title: 'MCP browser health',
+        severity: 'warn',
+        detail: error instanceof Error ? error.message : 'MCP status check failed',
+      });
+    }
+
+    try {
+      const sandboxHealth = await sandbox.getHealth();
+      checks.push({
+        id: 'sandbox.docker',
+        title: 'Docker sandbox health',
+        severity: sandboxHealth.available ? 'pass' : 'fail',
+        detail: sandboxHealth.detail,
+      });
+
+      const persistedSessionIds = new Set(db.listSessions().map((session) => session.id));
+      const orphans = (await sandbox.list()).filter((runtime) => !persistedSessionIds.has(runtime.scopeKey));
+      if (orphans.length > 0 && options.repair) {
+        const removed = await sandbox.cleanupOrphans(persistedSessionIds);
+        if (removed.length > 0) {
+          repaired.push(`Removed ${removed.length} orphaned sandbox container(s).`);
+        }
+      }
+      checks.push({
+        id: 'sandbox.orphans',
+        title: 'Sandbox container hygiene',
+        severity: orphans.length === 0 ? 'pass' : 'warn',
+        detail: orphans.length === 0
+          ? 'no orphaned sandbox containers found'
+          : `${orphans.length} orphaned sandbox container(s) found`,
+        repairable: orphans.length > 0,
+        repaired: orphans.length > 0 && options.repair,
+      });
+    } catch (error) {
+      checks.push({
+        id: 'sandbox.docker',
+        title: 'Docker sandbox health',
+        severity: 'fail',
+        detail: error instanceof Error ? error.message : 'Docker sandbox health check failed',
+      });
+    }
+
+    try {
+      const [nodes, pending] = await Promise.all([
+        nodeStore.listNodes(),
+        nodeStore.listPendingRequests(),
+      ]);
+      const unknownPermissions = nodes.filter((node) => Object.values(node.permissions ?? {}).includes('unknown')).length;
+      checks.push({
+        id: 'nodes.store',
+        title: 'Node store integrity',
+        severity: 'pass',
+        detail: `${nodes.length} paired nodes loaded, ${pending.length} pending pairing request(s)`,
+      });
+      checks.push({
+        id: 'nodes.permissions',
+        title: 'Node permission drift',
+        severity: unknownPermissions === 0 ? 'pass' : 'warn',
+        detail: unknownPermissions === 0
+          ? 'all node permissions are explicitly known'
+          : `${unknownPermissions} node(s) still report unknown capability permissions`,
+      });
+    } catch (error) {
+      checks.push({
+        id: 'nodes.store',
+        title: 'Node store integrity',
+        severity: 'warn',
+        detail: error instanceof Error ? error.message : 'Node store could not be read',
+      });
+    }
+
+    try {
+      const gateway = Gateway.getInstance(config);
+      const hookFailures = gateway.plugins.getHookFailures();
+      checks.push({
+        id: 'plugins.hooks',
+        title: 'Plugin hook runtime',
+        severity: hookFailures.length === 0 ? 'pass' : 'warn',
+        detail: hookFailures.length === 0
+          ? 'no plugin hook failures recorded'
+          : `${hookFailures.length} plugin hook failures recorded`,
+      });
+      Gateway.reset();
+    } catch (error) {
+      checks.push({
+        id: 'plugins.hooks',
+        title: 'Plugin hook runtime',
+        severity: 'warn',
+        detail: error instanceof Error ? error.message : 'Plugin hook check failed',
+      });
+    }
+
+    let manager: SkillsManager | null = null;
+    try {
+      manager = new SkillsManager({ config });
+      await manager.ensureReady();
+      const report = await manager.getDoctorReport('doctor');
+      checks.push({
+        id: 'skills.discovery',
+        title: 'Skills discovery diagnostics',
+        severity: report.diagnostics.length === 0 ? 'pass' : 'warn',
+        detail: report.diagnostics.length === 0
+          ? `${report.records.length} skills discovered`
+          : `${report.diagnostics.length} diagnostics across ${report.records.length} skills`,
+      });
+    } catch (error) {
+      checks.push({
+        id: 'skills.discovery',
+        title: 'Skills discovery diagnostics',
+        severity: 'warn',
+        detail: error instanceof Error ? error.message : 'Skills doctor check failed',
+      });
+    } finally {
+      manager?.stop();
+    }
+
+    const gmailHealth = await gmail.getHealth();
+    checks.push({
+      id: 'gmail.oauth',
+      title: 'Gmail OAuth client config',
+      severity: config.gmail?.clientId?.trim() ? 'pass' : 'warn',
+      detail: config.gmail?.clientId?.trim()
+        ? 'gmail.clientId configured'
+        : 'KEYGATE_GMAIL_CLIENT_ID or gmail.clientId is not configured',
+    });
+    checks.push({
+      id: 'gmail.pubsub',
+      title: 'Gmail Pub/Sub routing config',
+      severity: config.gmail?.defaults.pubsubTopic?.trim() && config.gmail?.defaults.pushBaseUrl?.trim() ? 'pass' : 'warn',
+      detail: config.gmail?.defaults.pubsubTopic?.trim() && config.gmail?.defaults.pushBaseUrl?.trim()
+        ? `topic=${config.gmail.defaults.pubsubTopic}`
+        : 'gmail.defaults.pubsubTopic or gmail.defaults.pushBaseUrl missing',
+    });
+    checks.push({
+      id: 'gmail.health',
+      title: 'Gmail account/watch health',
+      severity: gmailHealth.expiredWatches > 0 ? 'warn' : 'pass',
+      detail: `${gmailHealth.accounts} account(s), ${gmailHealth.watches} watch(es), ${gmailHealth.dueForRenewal} due for renewal`,
+      repairable: gmailHealth.dueForRenewal > 0,
+    });
+    if (options.repair && gmailHealth.dueForRenewal > 0) {
+      const renewed = await gmail.renewDueWatches();
+      repaired.push(`Renewed Gmail watches for ${renewed} account(s).`);
+    }
+
+    checks.push({
+      id: 'config.file',
+      title: '.keygate file found',
+      severity: existsSync(getKeygateFilePath()) ? 'pass' : 'warn',
+      detail: getKeygateFilePath(),
+    });
+  } finally {
+    gmail.stop();
+    db.close();
+  }
+
+  const summary = summarizeChecks(checks);
+  return {
+    generatedAt: new Date().toISOString(),
+    checks,
+    repaired,
+    summary,
+  };
+}
+
+async function runGatewayStatusCheck(): Promise<DoctorCheck> {
   const gatewayLogs: string[] = [];
   try {
     await runGatewayCommand(
@@ -80,117 +346,20 @@ export async function runDoctorChecks(): Promise<DoctorCheck[]> {
 
     const statusLine = gatewayLogs.find((line) => line.startsWith('Gateway status:'));
     if (statusLine?.includes('running')) {
-      checks.push({ id: 'gateway.status', title: 'Gateway service', severity: 'pass', detail: statusLine });
-    } else if (statusLine?.includes('stopped')) {
-      checks.push({ id: 'gateway.status', title: 'Gateway service', severity: 'warn', detail: statusLine });
-    } else {
-      checks.push({ id: 'gateway.status', title: 'Gateway service', severity: 'warn', detail: statusLine ?? 'Unknown gateway status' });
+      return { id: 'gateway.status', title: 'Gateway service', severity: 'pass', detail: statusLine };
     }
+    if (statusLine?.includes('stopped')) {
+      return { id: 'gateway.status', title: 'Gateway service', severity: 'warn', detail: statusLine };
+    }
+    return { id: 'gateway.status', title: 'Gateway service', severity: 'warn', detail: statusLine ?? 'Unknown gateway status' };
   } catch (error) {
-    checks.push({
+    return {
       id: 'gateway.status',
       title: 'Gateway service',
       severity: 'warn',
       detail: error instanceof Error ? error.message : 'Gateway status check failed',
-    });
+    };
   }
-
-  // Channel config checks
-  checks.push({
-    id: 'channels.discord.token',
-    title: 'Discord token configured',
-    severity: config.discord?.token?.trim() ? 'pass' : 'warn',
-    detail: config.discord?.token?.trim() ? 'configured' : 'DISCORD_TOKEN missing',
-  });
-
-  checks.push({
-    id: 'channels.slack.tokens',
-    title: 'Slack tokens configured',
-    severity: config.slack?.botToken?.trim() && config.slack?.appToken?.trim() ? 'pass' : 'warn',
-    detail: config.slack?.botToken?.trim() && config.slack?.appToken?.trim()
-      ? 'configured'
-      : 'SLACK_BOT_TOKEN or SLACK_APP_TOKEN missing',
-  });
-
-  const whatsappLinked = await hasWhatsAppLinkedAuth();
-  const whatsappRuntimeRunning = isManagedChannelRunning(path.join(getConfigDir(), 'channels', 'whatsapp.json'));
-  checks.push({
-    id: 'channels.whatsapp.linked',
-    title: 'WhatsApp linked',
-    severity: whatsappLinked ? 'pass' : 'warn',
-    detail: whatsappLinked ? 'linked-device auth is present' : 'run `keygate channels whatsapp login`',
-  });
-  checks.push({
-    id: 'channels.whatsapp.runtime',
-    title: 'WhatsApp runtime',
-    severity: whatsappLinked
-      ? (whatsappRuntimeRunning ? 'pass' : 'warn')
-      : 'warn',
-    detail: whatsappLinked
-      ? (whatsappRuntimeRunning ? 'managed runtime is running' : 'linked but runtime is stopped')
-      : 'runtime disabled until the channel is linked',
-  });
-
-  // Routing/trust checks
-  checks.push(validateDmPolicy('discord', config.discord?.dmPolicy ?? 'pairing', config.discord?.allowFrom ?? []));
-  checks.push(validateDmPolicy('slack', config.slack?.dmPolicy ?? 'pairing', config.slack?.allowFrom ?? []));
-  checks.push(validateDmPolicy('whatsapp', config.whatsapp?.dmPolicy ?? 'pairing', config.whatsapp?.allowFrom ?? []));
-  checks.push(validateWhatsAppGroupPolicy(config));
-
-  // MCP/browser health
-  try {
-    const mcpStatus = await new MCPBrowserManager(config).status();
-    checks.push({
-      id: 'mcp.browser',
-      title: 'MCP browser health',
-      severity: mcpStatus.healthy ? 'pass' : 'warn',
-      detail: mcpStatus.healthy
-        ? `healthy (version ${mcpStatus.configuredVersion ?? 'n/a'})`
-        : (mcpStatus.warning ?? 'not healthy'),
-    });
-  } catch (error) {
-    checks.push({
-      id: 'mcp.browser',
-      title: 'MCP browser health',
-      severity: 'warn',
-      detail: error instanceof Error ? error.message : 'MCP status check failed',
-    });
-  }
-
-  // Skills diagnostics
-  let manager: SkillsManager | null = null;
-  try {
-    manager = new SkillsManager({ config });
-    await manager.ensureReady();
-    const report = await manager.getDoctorReport('doctor');
-    checks.push({
-      id: 'skills.discovery',
-      title: 'Skills discovery diagnostics',
-      severity: report.diagnostics.length === 0 ? 'pass' : 'warn',
-      detail: report.diagnostics.length === 0
-        ? `${report.records.length} skills discovered`
-        : `${report.diagnostics.length} diagnostics across ${report.records.length} skills`,
-    });
-  } catch (error) {
-    checks.push({
-      id: 'skills.discovery',
-      title: 'Skills discovery diagnostics',
-      severity: 'warn',
-      detail: error instanceof Error ? error.message : 'Skills doctor check failed',
-    });
-  } finally {
-    manager?.stop();
-  }
-
-  // Presence/config file checks
-  checks.push({
-    id: 'config.file',
-    title: '.keygate file found',
-    severity: existsSync(getKeygateFilePath()) ? 'pass' : 'warn',
-    detail: getKeygateFilePath(),
-  });
-
-  return checks;
 }
 
 async function runAuthCheck(provider: string, model: string, workspacePath: string): Promise<DoctorCheck> {
@@ -289,7 +458,7 @@ function validateWhatsAppGroupPolicy(config: ReturnType<typeof loadConfigFromEnv
   if (config.whatsapp?.groupMode === 'open' && config.whatsapp.groupRequireMentionDefault === false) {
     return {
       id: 'routing.whatsapp.groupPolicy',
-      title: 'whatsapp group routing policy',
+      title: 'WhatsApp group routing policy',
       severity: 'warn',
       detail: 'open group mode without mention gating will process all group messages',
     };
@@ -297,7 +466,7 @@ function validateWhatsAppGroupPolicy(config: ReturnType<typeof loadConfigFromEnv
 
   return {
     id: 'routing.whatsapp.groupPolicy',
-    title: 'whatsapp group routing policy',
+    title: 'WhatsApp group routing policy',
     severity: 'pass',
     detail: `${config.whatsapp?.groupMode ?? 'closed'} (${Object.keys(config.whatsapp?.groups ?? {}).length} explicit group rules)`,
   };
@@ -321,17 +490,44 @@ function isManagedChannelRunning(statePath: string): boolean {
   }
 }
 
-function printDoctorReport(checks: DoctorCheck[], options: { nonInteractive: boolean }): void {
-  const pass = checks.filter((check) => check.severity === 'pass').length;
-  const warn = checks.filter((check) => check.severity === 'warn').length;
-  const fail = checks.filter((check) => check.severity === 'fail').length;
+function checkFromBoolean(id: string, title: string, ok: boolean, detail: string): DoctorCheck {
+  return {
+    id,
+    title,
+    severity: ok ? 'pass' : 'fail',
+    detail,
+  };
+}
 
+function summarizeChecks(checks: DoctorCheck[]): DoctorReport['summary'] {
+  return {
+    pass: checks.filter((check) => check.severity === 'pass').length,
+    warn: checks.filter((check) => check.severity === 'warn').length,
+    fail: checks.filter((check) => check.severity === 'fail').length,
+  };
+}
+
+function printDoctorReport(
+  report: DoctorReport,
+  options: { nonInteractive: boolean; repair: boolean }
+): void {
   const mode = options.nonInteractive ? 'non-interactive' : 'interactive';
   console.log(`Keygate doctor report (${mode})`);
-  console.log(`Summary: pass=${pass} warn=${warn} fail=${fail}`);
+  console.log(`Summary: pass=${report.summary.pass} warn=${report.summary.warn} fail=${report.summary.fail}`);
+  if (options.repair) {
+    console.log(`Repair mode: ${report.repaired.length > 0 ? 'applied' : 'no repairs needed'}`);
+  }
 
-  for (const check of checks) {
+  for (const check of report.checks) {
     const icon = check.severity === 'pass' ? '✅' : check.severity === 'warn' ? '⚠️' : '❌';
-    console.log(`${icon} ${check.title}: ${check.detail}`);
+    const repairSuffix = check.repaired ? ' [repaired]' : check.repairable ? ' [repairable]' : '';
+    console.log(`${icon} ${check.title}${repairSuffix}: ${check.detail}`);
+  }
+
+  if (report.repaired.length > 0) {
+    console.log('\nRepairs applied:');
+    for (const entry of report.repaired) {
+      console.log(`- ${entry}`);
+    }
   }
 }

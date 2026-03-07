@@ -6,15 +6,20 @@ import type {
   CodexReasoningEffort,
   KeygateConfig,
   KeygateEvents,
+  LLMUsageSnapshot,
   NormalizedMessage,
   ProviderModelOption,
   SecurityMode,
+  SessionDebugEvent,
+  SessionModelOverride,
   SessionCancelReason,
   Session,
+  SessionUsageAggregate,
   ToolExecutionContext,
   Channel,
 } from '../types.js';
 import { LaneQueue } from './LaneQueue.js';
+import { CommandRouter } from './CommandRouter.js';
 import { Brain } from '../brain/Brain.js';
 import { formatCapabilitiesAndLimitsForReadability } from '../brain/assistantOutputFormatter.js';
 import { ToolExecutor } from '../tools/ToolExecutor.js';
@@ -23,6 +28,8 @@ import { AgentMemoryStore } from '../db/agentMemory.js';
 import { MemoryManager } from '../memory/manager.js';
 import type { MemoryConfig } from '../memory/embedding/types.js';
 import { createLLMProvider } from '../llm/index.js';
+import { UsageService } from '../usage/index.js';
+import { SandboxManager } from '../sandbox/index.js';
 import { SkillsManager } from '../skills/index.js';
 import { PluginRuntimeManager } from '../plugins/index.js';
 import { allBuiltinTools } from '../tools/builtin/index.js';
@@ -30,6 +37,7 @@ import { GitService } from '../git/index.js';
 import { SchedulerService, SchedulerStore, type ScheduledJob, type ScheduledJobCreateInput, type ScheduledJobUpdateInput } from '../scheduler/index.js';
 
 const CANCEL_HARD_STOP_TIMEOUT_MS = 2_000;
+const MAX_DEBUG_EVENTS_PER_SESSION = 200;
 
 interface ActiveSessionRun {
   sessionId: string;
@@ -65,9 +73,11 @@ export class Gateway extends EventEmitter<KeygateEvents> {
   private activeRuns = new Map<string, ActiveSessionRun>();
   private delegatedSessions = new Map<string, DelegatedSessionRecord>();
   private sessionWorkspacePaths = new Map<string, string>();
+  private sessionDebugEvents = new Map<string, SessionDebugEvent[]>();
   private securityMode: SecurityMode = 'safe';
 
   public readonly brain: Brain;
+  public readonly commandRouter: CommandRouter;
   public readonly toolExecutor: ToolExecutor;
   public readonly db: Database;
   public readonly memory: AgentMemoryStore;
@@ -78,6 +88,8 @@ export class Gateway extends EventEmitter<KeygateEvents> {
   public readonly schedulerService: SchedulerService;
   public readonly memoryManager: MemoryManager;
   public readonly git: GitService;
+  public readonly usage: UsageService;
+  public readonly sandbox: SandboxManager;
 
   private constructor(config: KeygateConfig) {
     super();
@@ -90,6 +102,7 @@ export class Gateway extends EventEmitter<KeygateEvents> {
     // Initialize database
     this.db = new Database();
     this.memory = new AgentMemoryStore();
+    this.sandbox = new SandboxManager(config);
 
     // Initialize tool executor with security settings
     this.toolExecutor = new ToolExecutor(
@@ -121,9 +134,11 @@ export class Gateway extends EventEmitter<KeygateEvents> {
 
     // Initialize git service
     this.git = new GitService();
+    this.usage = new UsageService(this.db, config);
 
     // Initialize brain with LLM provider
     this.brain = new Brain(config, this.toolExecutor, this, this.memory, this.memoryManager);
+    this.commandRouter = new CommandRouter(this);
     this.skills = new SkillsManager({ config });
     this.plugins = new PluginRuntimeManager(this);
     this.schedulerStore = new SchedulerStore();
@@ -133,6 +148,11 @@ export class Gateway extends EventEmitter<KeygateEvents> {
 
     void this.skills.ensureReady();
     void this.plugins.start();
+    void this.plugins.runHook('gateway_start', {
+      mode: this.securityMode,
+      provider: this.config.llm.provider,
+      model: this.config.llm.model,
+    });
     this.schedulerService.start();
 
     // Initialize vector memory (non-blocking)
@@ -173,10 +193,16 @@ export class Gateway extends EventEmitter<KeygateEvents> {
    */
   static reset(): void {
     if (Gateway.instance) {
-      Gateway.instance.skills.stop();
-      Gateway.instance.plugins.stop();
-      Gateway.instance.schedulerService.stop();
-      Gateway.instance.memoryManager.shutdown();
+      void Gateway.instance.plugins.runHook('gateway_stop', {
+        mode: Gateway.instance.securityMode,
+        provider: Gateway.instance.config.llm.provider,
+        model: Gateway.instance.config.llm.model,
+      });
+      Gateway.instance.brain?.dispose?.();
+      Gateway.instance.skills?.stop?.();
+      Gateway.instance.plugins?.stop?.();
+      Gateway.instance.schedulerService?.stop?.();
+      Gateway.instance.memoryManager?.shutdown?.();
       for (const sessionId of Gateway.instance.activeRuns.keys()) {
         Gateway.instance.cancelSessionRun(sessionId, 'disconnect');
       }
@@ -198,11 +224,32 @@ export class Gateway extends EventEmitter<KeygateEvents> {
     const queue = this.getOrCreateQueue(message.sessionId);
     
     await queue.enqueue(async () => {
+      const incomingHook = await this.plugins.runHook('message_received', {
+        sessionId: message.sessionId,
+        channelType: message.channelType,
+        userId: message.userId,
+        content: message.content,
+        attachments: message.attachments ?? [],
+      });
+      const effectiveMessage: NormalizedMessage = {
+        ...message,
+        content: typeof incomingHook.content === 'string' ? incomingHook.content : message.content,
+        attachments: Array.isArray(incomingHook.attachments)
+          ? incomingHook.attachments as NormalizedMessage['attachments']
+          : message.attachments,
+      };
+
       // Get or create session
-      const session = this.getOrCreateSession(message);
-      const slashResolution = isReservedTerminalSlashCommand(message.content, message.channelType)
+      const session = this.getOrCreateSession(effectiveMessage);
+      if (await this.commandRouter.maybeHandle(session, effectiveMessage.channel, effectiveMessage.content)) {
+        this.appendDebugEvent(effectiveMessage.sessionId, 'command.handled', 'Handled operator command.', {
+          content: effectiveMessage.content,
+        });
+        return;
+      }
+      const slashResolution = isReservedTerminalSlashCommand(effectiveMessage.content, effectiveMessage.channelType)
         ? { kind: 'none' as const }
-        : await this.skills.resolveSlashCommand(message.sessionId, message.content);
+        : await this.skills.resolveSlashCommand(effectiveMessage.sessionId, effectiveMessage.content);
       const explicitSkillInvocation = slashResolution.kind === 'prompt'
         ? slashResolution.invocation
         : undefined;
@@ -210,23 +257,27 @@ export class Gateway extends EventEmitter<KeygateEvents> {
       // Add user message to history
       session.messages.push({
         role: 'user',
-        content: message.content,
-        attachments: message.attachments,
+        content: effectiveMessage.content,
+        attachments: effectiveMessage.attachments,
       });
       session.updatedAt = new Date();
       this.emit('message:user', {
-        sessionId: message.sessionId,
-        channelType: message.channelType,
-        content: message.content,
-        attachments: message.attachments,
+        sessionId: effectiveMessage.sessionId,
+        channelType: effectiveMessage.channelType,
+        content: effectiveMessage.content,
+        attachments: effectiveMessage.attachments,
+      });
+      this.appendDebugEvent(effectiveMessage.sessionId, 'message.user', 'Queued user message.', {
+        channelType: effectiveMessage.channelType,
+        contentLength: effectiveMessage.content.length,
       });
       this.persistSessionSnapshot(session, {
         role: 'user',
-        content: message.content,
-        attachments: message.attachments,
+        content: effectiveMessage.content,
+        attachments: effectiveMessage.attachments,
       });
 
-      const run = this.startSessionRun(message.sessionId);
+      const run = this.startSessionRun(effectiveMessage.sessionId);
       const runContext: ToolExecutionContext = {
         signal: run.controller.signal,
         registerAbortCleanup: (cleanup) => {
@@ -241,19 +292,20 @@ export class Gateway extends EventEmitter<KeygateEvents> {
 
       // Emit start event
       this.emit('message:start', {
-        sessionId: message.sessionId,
-        messageId: message.id,
+        sessionId: effectiveMessage.sessionId,
+        messageId: effectiveMessage.id,
       });
+      this.appendDebugEvent(effectiveMessage.sessionId, 'message.start', 'Started assistant turn.');
 
       try {
         if (slashResolution.kind === 'dispatch') {
-          await this.handleSlashToolDispatch(message, session, slashResolution, runContext);
+          await this.handleSlashToolDispatch(effectiveMessage, session, slashResolution, runContext);
           return;
         }
 
         // Stream response back to the channel while accumulating final text.
         let response = '';
-        const stream = this.brain.runStream(session, message.channel, {
+        const stream = this.brain.runStream(session, effectiveMessage.channel, {
           explicitSkillInvocation,
           runContext,
         });
@@ -263,14 +315,14 @@ export class Gateway extends EventEmitter<KeygateEvents> {
           for await (const chunk of stream) {
             response += chunk;
             gateway.emit('message:chunk', {
-              sessionId: message.sessionId,
+              sessionId: effectiveMessage.sessionId,
               content: chunk,
             });
             yield chunk;
           }
         };
 
-        await message.channel.sendStream(captureStream());
+        await effectiveMessage.channel.sendStream(captureStream());
         if (runContext.signal.aborted) {
           return;
         }
@@ -289,7 +341,15 @@ export class Gateway extends EventEmitter<KeygateEvents> {
 
         // Emit end event
         this.emit('message:end', {
-          sessionId: message.sessionId,
+          sessionId: effectiveMessage.sessionId,
+          content: finalResponse,
+        });
+        this.appendDebugEvent(effectiveMessage.sessionId, 'message.end', 'Assistant turn completed.', {
+          contentLength: finalResponse.length,
+        });
+        await this.plugins.runHook('message_sent', {
+          sessionId: effectiveMessage.sessionId,
+          channelType: effectiveMessage.channelType,
           content: finalResponse,
         });
       } catch (error) {
@@ -300,7 +360,7 @@ export class Gateway extends EventEmitter<KeygateEvents> {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         const errorResponse = `Error: ${errorMessage}`;
 
-        await message.channel.send(errorResponse);
+        await effectiveMessage.channel.send(errorResponse);
 
         session.messages.push({
           role: 'assistant',
@@ -313,17 +373,170 @@ export class Gateway extends EventEmitter<KeygateEvents> {
         });
 
         this.emit('message:end', {
-          sessionId: message.sessionId,
+          sessionId: effectiveMessage.sessionId,
           content: errorResponse,
         });
+        this.appendDebugEvent(effectiveMessage.sessionId, 'message.error', 'Assistant turn failed.', {
+          error: errorMessage,
+        });
       } finally {
-        this.finishSessionRun(message.sessionId, run);
+        this.finishSessionRun(effectiveMessage.sessionId, run);
       }
     });
   }
 
   getSkillsStatus(sessionId = 'default'): { loadedCount: number; eligibleCount: number; snapshotVersion: string } {
     return this.skills.getStatusSync(sessionId);
+  }
+
+  recordTurnUsage(sessionId: string, usage: LLMUsageSnapshot): SessionUsageAggregate {
+    const aggregate = this.usage.recordTurnUsage(sessionId, usage);
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.usage = aggregate;
+      session.updatedAt = new Date();
+    }
+    this.emit('usage:snapshot', { sessionId, usage, aggregate });
+    return aggregate;
+  }
+
+  async publishAssistantMessage(
+    session: Session,
+    content: string,
+    options: {
+      debugType?: string;
+      debugMessage?: string;
+      debugData?: Record<string, unknown>;
+    } = {},
+  ): Promise<void> {
+    session.messages.push({
+      role: 'assistant',
+      content,
+    });
+    session.updatedAt = new Date();
+    this.persistSessionSnapshot(session, {
+      role: 'assistant',
+      content,
+    });
+
+    this.emit('message:end', {
+      sessionId: session.id,
+      content,
+    });
+
+    this.appendDebugEvent(
+      session.id,
+      options.debugType ?? 'message.end',
+      options.debugMessage ?? 'Assistant turn completed.',
+      options.debugData ?? { contentLength: content.length },
+    );
+
+    await this.plugins.runHook('message_sent', {
+      sessionId: session.id,
+      channelType: session.channelType,
+      content,
+    });
+  }
+
+  setSessionModelOverride(sessionId: string, override: SessionModelOverride | null): void {
+    const session = this.getSession(sessionId);
+    if (!session) {
+      return;
+    }
+
+    session.modelOverride = override ?? undefined;
+    session.updatedAt = new Date();
+    this.db.updateSessionState(sessionId, { modelOverride: override });
+  }
+
+  setSessionDebugMode(sessionId: string, enabled: boolean): void {
+    const session = this.getSession(sessionId);
+    if (!session) {
+      return;
+    }
+
+    session.debugMode = enabled;
+    session.updatedAt = new Date();
+    this.db.updateSessionState(sessionId, { debugMode: enabled });
+    this.appendDebugEvent(sessionId, 'debug.mode', enabled ? 'Debug mode enabled.' : 'Debug mode disabled.', {
+      enabled,
+    });
+  }
+
+  getSessionDebugMode(sessionId: string): boolean {
+    return this.getSession(sessionId)?.debugMode === true;
+  }
+
+  getSessionDebugEvents(sessionId: string): SessionDebugEvent[] {
+    return [...(this.sessionDebugEvents.get(sessionId) ?? [])];
+  }
+
+  async compactSession(sessionId: string): Promise<{ ref: string; summary: string }> {
+    const session = this.getSession(sessionId);
+    if (!session) {
+      throw new Error(`Session not found: ${sessionId}`);
+    }
+
+    const beforePayload = await this.plugins.runHook('before_compaction', {
+      sessionId,
+      messageCount: session.messages.length,
+      messages: session.messages.map((message) => ({ ...message })),
+    });
+    const effectiveSession: Session = beforePayload.messages
+      ? {
+        ...session,
+        messages: beforePayload.messages as Session['messages'],
+      }
+      : session;
+
+    const summary = await this.brain.compactSessionHistory(effectiveSession);
+    const ref = this.db.saveSessionCompaction(sessionId, summary, session.messages.length);
+    session.compactionSummaryRef = ref;
+    session.updatedAt = new Date();
+    this.db.updateSessionState(sessionId, { compactionSummaryRef: ref });
+    await this.plugins.runHook('after_compaction', {
+      sessionId,
+      compactionSummaryRef: ref,
+      summary,
+      sourceMessageCount: session.messages.length,
+    });
+    this.appendDebugEvent(sessionId, 'session.compacted', 'Session compaction completed.', {
+      ref,
+      sourceMessageCount: session.messages.length,
+    });
+    this.emit('session:compacted', {
+      sessionId,
+      compactionSummaryRef: ref,
+      summary,
+    });
+    return { ref, summary };
+  }
+
+  appendDebugEvent(
+    sessionId: string,
+    type: string,
+    message: string,
+    data?: Record<string, unknown>
+  ): void {
+    const session = this.getSession(sessionId);
+    if (!session?.debugMode) {
+      return;
+    }
+
+    const event: SessionDebugEvent = {
+      id: randomUUID(),
+      timestamp: new Date().toISOString(),
+      type,
+      message,
+      data,
+    };
+    const entries = this.sessionDebugEvents.get(sessionId) ?? [];
+    entries.push(event);
+    while (entries.length > MAX_DEBUG_EVENTS_PER_SESSION) {
+      entries.shift();
+    }
+    this.sessionDebugEvents.set(sessionId, entries);
+    this.emit('debug:event', { sessionId, event });
   }
 
   cancelSessionRun(sessionId: string, reason: SessionCancelReason): void {
@@ -421,6 +634,9 @@ export class Gateway extends EventEmitter<KeygateEvents> {
       content: finalResponse,
     });
     session.updatedAt = new Date();
+    this.appendDebugEvent(message.sessionId, 'slash.dispatch', 'Slash command dispatched to tool.', {
+      toolName: slashResolution.toolName,
+    });
     this.persistSessionSnapshot(session, {
       role: 'assistant',
       content: finalResponse,
@@ -450,14 +666,31 @@ export class Gateway extends EventEmitter<KeygateEvents> {
   private getOrCreateSession(message: NormalizedMessage): Session {
     let session = this.sessions.get(message.sessionId);
     if (!session) {
-      session = this.db.getSession(message.sessionId) ?? {
+      const persisted = this.db.getSession(message.sessionId);
+      session = persisted ?? {
         id: message.sessionId,
         channelType: message.channelType,
         messages: [],
+        debugMode: false,
+        usage: {
+          turnCount: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          cachedTokens: 0,
+          totalTokens: 0,
+          costUsd: 0,
+        },
         createdAt: new Date(),
         updatedAt: new Date(),
       };
       this.sessions.set(message.sessionId, session);
+      if (!persisted) {
+        void this.plugins.runHook('session_start', {
+          sessionId: message.sessionId,
+          channelType: message.channelType,
+          delegated: false,
+        });
+      }
     }
     return session;
   }
@@ -470,12 +703,26 @@ export class Gateway extends EventEmitter<KeygateEvents> {
       id: `web:${randomUUID()}`,
       channelType: 'web',
       messages: [],
+      debugMode: false,
+      usage: {
+        turnCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedTokens: 0,
+        totalTokens: 0,
+        costUsd: 0,
+      },
       createdAt: new Date(),
       updatedAt: new Date(),
     };
     this.sessions.set(session.id, session);
     this.sessionWorkspacePaths.set(session.id, this.config.security.workspacePath);
     this.persistSessionSnapshot(session);
+    void this.plugins.runHook('session_start', {
+      sessionId: session.id,
+      channelType: session.channelType,
+      delegated: false,
+    });
     return session;
   }
 
@@ -541,12 +788,26 @@ export class Gateway extends EventEmitter<KeygateEvents> {
 
   spawnDelegatedSession(parentSessionId: string, label?: string): DelegatedSessionRecord {
     const parent = this.getSession(parentSessionId);
+    void this.plugins.runHook('subagent_spawning', {
+      parentSessionId,
+      requestedLabel: label?.trim() || '',
+      channelType: parent?.channelType ?? 'web',
+    });
     const now = new Date().toISOString();
     const session: Session = {
       id: `sub:${randomUUID()}`,
       channelType: parent?.channelType ?? 'web',
       title: label?.trim() || `Sub-agent for ${parentSessionId}`,
       messages: [],
+      debugMode: false,
+      usage: {
+        turnCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedTokens: 0,
+        totalTokens: 0,
+        costUsd: 0,
+      },
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -564,6 +825,18 @@ export class Gateway extends EventEmitter<KeygateEvents> {
       status: 'idle',
     };
     this.delegatedSessions.set(session.id, record);
+    void this.plugins.runHook('session_start', {
+      sessionId: session.id,
+      channelType: session.channelType,
+      delegated: true,
+      parentSessionId,
+    });
+    void this.plugins.runHook('subagent_spawned', {
+      parentSessionId,
+      sessionId: session.id,
+      label: record.label,
+      channelType: session.channelType,
+    });
     return { ...record };
   }
 
@@ -627,6 +900,11 @@ export class Gateway extends EventEmitter<KeygateEvents> {
     if (record) {
       record.status = 'cancelled';
       record.updatedAt = new Date().toISOString();
+      void this.plugins.runHook('subagent_ended', {
+        parentSessionId: record.parentSessionId,
+        sessionId,
+        reason,
+      });
     }
   }
 
@@ -668,15 +946,16 @@ export class Gateway extends EventEmitter<KeygateEvents> {
     return this.config.security.spicyMaxObedienceEnabled === true;
   }
 
-  getLLMState(): {
+  getLLMState(sessionId?: string): {
     provider: KeygateConfig['llm']['provider'];
     model: string;
     reasoningEffort?: CodexReasoningEffort;
   } {
+    const override = sessionId ? this.getSession(sessionId)?.modelOverride : undefined;
     return {
-      provider: this.config.llm.provider,
-      model: this.brain.getLLMModel(),
-      reasoningEffort: this.config.llm.reasoningEffort,
+      provider: override?.provider ?? this.config.llm.provider,
+      model: override?.model ?? this.brain.getLLMModel(),
+      reasoningEffort: override?.reasoningEffort ?? this.config.llm.reasoningEffort,
     };
   }
 
@@ -794,6 +1073,11 @@ export class Gateway extends EventEmitter<KeygateEvents> {
 
     try {
       this.db.clearSession(sessionId);
+      this.sessionDebugEvents.delete(sessionId);
+      void this.plugins.runHook('session_end', {
+        sessionId,
+        reason: 'cleared',
+      });
     } catch (error) {
       console.error('Failed to clear persisted session messages:', error);
     }
@@ -820,6 +1104,7 @@ export class Gateway extends EventEmitter<KeygateEvents> {
     this.sessions.delete(resolvedSessionId);
     this.laneQueues.delete(resolvedSessionId);
     this.sessionWorkspacePaths.delete(resolvedSessionId);
+    this.sessionDebugEvents.delete(resolvedSessionId);
     this.delegatedSessions.delete(resolvedSessionId);
     for (const [delegatedSessionId, record] of this.delegatedSessions.entries()) {
       if (record.parentSessionId === resolvedSessionId) {
@@ -830,6 +1115,10 @@ export class Gateway extends EventEmitter<KeygateEvents> {
 
     try {
       this.db.deleteSession(resolvedSessionId);
+      void this.plugins.runHook('session_end', {
+        sessionId: resolvedSessionId,
+        reason: 'deleted',
+      });
     } catch (error) {
       console.error('Failed to delete persisted session:', error);
     }

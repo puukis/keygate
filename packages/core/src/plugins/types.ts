@@ -15,6 +15,25 @@ export type PluginSourceKind = 'explicit' | 'legacy' | 'workspace' | 'global';
 export type PluginStatus = 'active' | 'disabled' | 'unhealthy' | 'available';
 export type PluginHttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 export type PluginHttpAuth = 'public' | 'operator';
+export type PluginHookName =
+  | 'before_model_resolve'
+  | 'before_prompt_build'
+  | 'message_received'
+  | 'message_sent'
+  | 'before_tool_call'
+  | 'after_tool_call'
+  | 'before_compaction'
+  | 'after_compaction'
+  | 'session_start'
+  | 'session_end'
+  | 'subagent_spawning'
+  | 'subagent_spawned'
+  | 'subagent_ended'
+  | 'gateway_start'
+  | 'gateway_stop';
+
+export type PluginHookHandler<TPayload = unknown> =
+  (payload: TPayload) => Promise<Partial<TPayload> | void> | Partial<TPayload> | void;
 
 export interface PluginManifestCommandReservation {
   name: string;
@@ -210,6 +229,7 @@ export interface PluginSetupApi {
   sendMessageToSession(sessionId: string, content: string, source?: string): Promise<void>;
   listSessions(): Array<{ id: string; channelType: string; title?: string; updatedAt: string }>;
   getSessionHistory(sessionId: string, limit?: number): Array<{ role: string; content: string }>;
+  registerHook(name: PluginHookName, handler: PluginHookHandler, options?: { priority?: number }): void;
   registerTool(definition: PluginToolDefinition): void;
   registerRpcMethod(name: string, handler: PluginRpcHandler): void;
   registerHttpRoute(definition: PluginHttpRouteDefinition): void;
@@ -224,6 +244,11 @@ export interface KeygateRuntimePlugin {
 export interface PluginStage {
   tools: Tool[];
   toolNames: string[];
+  hooks: Array<{
+    name: PluginHookName;
+    priority: number;
+    handler: PluginHookHandler;
+  }>;
   rpcMethods: Map<string, PluginRpcHandler>;
   httpRoutes: PluginHttpRouteDefinition[];
   cliCommands: PluginCliCommandDefinition[];

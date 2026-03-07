@@ -94,16 +94,16 @@ describe('server e2e api flows', () => {
     const webSessionId = `web:${connected.sessionId}`;
 
     ws.send(JSON.stringify({ type: 'message', content: 'bootstrap session' }));
-    await waitForType(ws, 'message_received');
     await waitForType(ws, 'session_user_message');
+    await waitForType(ws, 'message_received');
 
     ws.send(JSON.stringify({ type: 'routing_create', scope: 'web', chatId: connected.sessionId, agentKey: 'ops' }));
     const routingCreated = await waitForType(ws, 'routing_create_result');
     expect(routingCreated.rule.agentKey).toBe('ops');
 
     ws.send(JSON.stringify({ type: 'message', content: 'normal routed message probe' }));
-    await waitForType(ws, 'message_received');
     const routedProbe = await waitForType(ws, 'session_user_message');
+    await waitForType(ws, 'message_received');
     expect(String(routedProbe.sessionId ?? '')).toContain('web:ops:');
     const routedSessionId = String(routedProbe.sessionId);
 
@@ -126,12 +126,35 @@ describe('server e2e api flows', () => {
     ws.send(JSON.stringify({ type: 'node_pair_approve', requestId: pairReq.request.requestId, pairingCode: pairReq.request.pairingCode }));
     const pairApproved = await waitForType(ws, 'node_pair_approve_result');
     const nodeId = pairApproved.node.id;
+    const authToken = pairApproved.node.authToken;
+
+    ws.send(JSON.stringify({
+      type: 'node_register',
+      nodeId,
+      authToken,
+      platform: 'darwin',
+      version: '1.0.0',
+      permissions: { screen: 'granted', notify: 'granted' },
+    }));
+    const registered = await waitForType(ws, 'node_register_result');
+    expect(registered.node.id).toBe(nodeId);
 
     ws.send(JSON.stringify({ type: 'node_invoke', nodeId, capability: 'screen' }));
     const denied = await waitForType(ws, 'node_invoke_result');
     expect(denied.result.ok).toBe(false);
 
     ws.send(JSON.stringify({ type: 'node_invoke', nodeId, capability: 'screen', highRiskAck: true }));
+    const invokeRequest = await waitForType(ws, 'node_invoke_request');
+    expect(invokeRequest.capability).toBe('screen');
+    ws.send(JSON.stringify({
+      type: 'node_invoke_response',
+      requestId: invokeRequest.requestId,
+      nodeId,
+      capability: 'screen',
+      ok: true,
+      message: 'captured',
+      payload: { imageAttachmentId: 'attachment-demo' },
+    }));
     const allowed = await waitForType(ws, 'node_invoke_result');
     expect(allowed.result.ok).toBe(true);
 
@@ -154,8 +177,8 @@ describe('server e2e api flows', () => {
     const connected = await waitForType(ws, 'connected');
 
     ws.send(JSON.stringify({ type: 'message', content: 'bootstrap session' }));
-    await waitForType(ws, 'message_received');
     const bootstrapMsg = await waitForType(ws, 'session_user_message');
+    await waitForType(ws, 'message_received');
     const activeSessionId = String(bootstrapMsg.sessionId);
 
     ws.send(JSON.stringify({ type: 'webhook_create', name: 'github', sessionId: activeSessionId, promptPrefix: '[E2EHOOK]' }));
@@ -176,6 +199,28 @@ describe('server e2e api flows', () => {
     const userMsg = await waitForType(ws, 'session_user_message');
     expect(String(userMsg.content ?? '')).toContain('[E2EHOOK]');
     expect(String(userMsg.content ?? '')).toContain('push');
+
+    ws.close();
+    await fs.rm(workspace, { recursive: true, force: true });
+  }, 20_000);
+
+  it('renders operator command responses through session events', async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'keygate-e2e-command-'));
+    const port = 19150 + Math.floor(Math.random() * 200);
+
+    let listeningResolve: (() => void) | null = null;
+    const listeningPromise = new Promise<void>((resolve) => { listeningResolve = resolve; });
+
+    const handle = startWebServer(createConfig(workspace, port), { onListening: () => listeningResolve?.() });
+    handles.push(handle);
+    await listeningPromise;
+
+    const ws = await connectWs(`ws://127.0.0.1:${port}`);
+    await waitForType(ws, 'connected');
+
+    ws.send(JSON.stringify({ type: 'message', content: '/status' }));
+    const response = await waitForType(ws, 'session_message_end');
+    expect(String(response.content ?? '')).toContain('Session status:');
 
     ws.close();
     await fs.rm(workspace, { recursive: true, force: true });

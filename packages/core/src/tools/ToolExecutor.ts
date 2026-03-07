@@ -118,41 +118,84 @@ export class ToolExecutor {
     context: ToolExecutionContext = DEFAULT_EXECUTION_CONTEXT,
   ): Promise<ToolResult> {
     throwIfAborted(context.signal);
-    const tool = this.toolRegistry.get(call.name);
+    let effectiveCall = { ...call, arguments: { ...call.arguments } };
+    let effectiveEnvOverlay = { ...envOverlay };
+    const toolHookPayload = await this.gateway.plugins?.runHook?.('before_tool_call', {
+      sessionId,
+      toolName: call.name,
+      arguments: { ...call.arguments },
+      envOverlay: effectiveEnvOverlay,
+    }) ?? {
+      sessionId,
+      toolName: call.name,
+      arguments: { ...call.arguments },
+      envOverlay: effectiveEnvOverlay,
+    };
+    if (toolHookPayload.arguments && typeof toolHookPayload.arguments === 'object' && !Array.isArray(toolHookPayload.arguments)) {
+      effectiveCall = {
+        ...effectiveCall,
+        arguments: toolHookPayload.arguments as Record<string, unknown>,
+      };
+    }
+    if (toolHookPayload.envOverlay && typeof toolHookPayload.envOverlay === 'object' && !Array.isArray(toolHookPayload.envOverlay)) {
+      effectiveEnvOverlay = toolHookPayload.envOverlay as Record<string, string>;
+    }
+
+    const tool = this.toolRegistry.get(effectiveCall.name);
     
     if (!tool) {
       return {
         success: false,
         output: '',
-        error: `Unknown tool: ${call.name}`,
+        error: `Unknown tool: ${effectiveCall.name}`,
       };
     }
 
     // Emit tool:start event
-    this.gateway.emit('tool:start', {
+    this.gateway.emit?.('tool:start', {
       sessionId,
-      tool: call.name,
-      args: call.arguments,
+      tool: effectiveCall.name,
+      args: effectiveCall.arguments,
+    });
+    this.gateway.appendDebugEvent?.(sessionId, 'tool.start', `Starting tool ${effectiveCall.name}.`, {
+      tool: effectiveCall.name,
     });
 
     try {
       // Normalize filesystem path arguments before validation and execution.
-      this.normalizeFilesystemCallPath(tool, call, sessionId);
-      this.normalizeShellCallWorkingDirectory(tool, call, sessionId);
+      this.normalizeFilesystemCallPath(tool, effectiveCall, sessionId);
+      this.normalizeShellCallWorkingDirectory(tool, effectiveCall, sessionId);
 
       // Apply security checks in Safe Mode
       if (this.mode === 'safe') {
-        await this.applySafetyChecks(tool, call, channel, sessionId);
+        await this.applySafetyChecks(tool, effectiveCall, channel, sessionId);
       }
 
-      // Execute the tool with turn-scoped env overlay (no global env mutation).
-      const result = await withEnvOverlay(envOverlay, () => tool.handler(call.arguments, context));
+      const sandboxExecutor = this.gateway.sandbox?.executeTool?.bind(this.gateway.sandbox);
+      const result = this.mode === 'safe' && isDockerSandboxedTool(tool) && sandboxExecutor
+        ? await sandboxExecutor(
+            tool,
+            effectiveCall,
+            sessionId,
+            this.getWorkspacePathForSession(sessionId)
+          )
+        : await withEnvOverlay(effectiveEnvOverlay, () => tool.handler(effectiveCall.arguments, context));
       throwIfAborted(context.signal);
 
       // Emit tool:end event
-      this.gateway.emit('tool:end', {
+      this.gateway.emit?.('tool:end', {
         sessionId,
-        tool: call.name,
+        tool: effectiveCall.name,
+        result,
+      });
+      this.gateway.appendDebugEvent?.(sessionId, 'tool.end', `Completed tool ${effectiveCall.name}.`, {
+        tool: effectiveCall.name,
+        success: result.success,
+      });
+      await this.gateway.plugins?.runHook?.('after_tool_call', {
+        sessionId,
+        toolName: effectiveCall.name,
+        arguments: { ...effectiveCall.arguments },
         result,
       });
 
@@ -168,9 +211,19 @@ export class ToolExecutor {
         error: errorMessage,
       };
 
-      this.gateway.emit('tool:end', {
+      this.gateway.emit?.('tool:end', {
         sessionId,
-        tool: call.name,
+        tool: effectiveCall.name,
+        result,
+      });
+      this.gateway.appendDebugEvent?.(sessionId, 'tool.error', `Tool ${effectiveCall.name} failed.`, {
+        tool: effectiveCall.name,
+        error: errorMessage,
+      });
+      await this.gateway.plugins?.runHook?.('after_tool_call', {
+        sessionId,
+        toolName: effectiveCall.name,
+        arguments: { ...effectiveCall.arguments },
         result,
       });
 
@@ -669,4 +722,8 @@ function createAbortError(): Error {
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
+}
+
+function isDockerSandboxedTool(tool: Tool): boolean {
+  return tool.type === 'filesystem' || tool.type === 'shell' || tool.type === 'sandbox';
 }

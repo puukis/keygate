@@ -17,6 +17,12 @@ enum ClientMessage {
     case setSpicyObedience(enabled: Bool)
     case getModels(provider: String? = nil)
     case setModel(provider: String?, model: String, reasoningEffort: String? = nil)
+    case nodePairRequest(nodeName: String, capabilities: [NodeCapability])
+    case nodePairApprove(requestId: String, pairingCode: String)
+    case nodeRegister(nodeId: String, authToken: String, platform: String, version: String, permissions: [String: String])
+    case nodeHeartbeat(nodeId: String, authToken: String, platform: String, version: String, permissions: [String: String])
+    case nodeInvokeResponse(requestId: String, nodeId: String, capability: NodeCapability, ok: Bool, message: String, payload: [String: Any]? = nil)
+    case debugEvents(sessionId: String)
 
     var json: [String: Any] {
         switch self {
@@ -60,6 +66,52 @@ enum ClientMessage {
             if let provider { dict["provider"] = provider }
             if let reasoningEffort { dict["reasoningEffort"] = reasoningEffort }
             return dict
+        case .nodePairRequest(let nodeName, let capabilities):
+            return [
+                "type": "node_pair_request",
+                "nodeName": nodeName,
+                "capabilities": capabilities.map(\.rawValue),
+            ]
+        case .nodePairApprove(let requestId, let pairingCode):
+            return [
+                "type": "node_pair_approve",
+                "requestId": requestId,
+                "pairingCode": pairingCode,
+            ]
+        case .nodeRegister(let nodeId, let authToken, let platform, let version, let permissions):
+            return [
+                "type": "node_register",
+                "nodeId": nodeId,
+                "authToken": authToken,
+                "platform": platform,
+                "version": version,
+                "permissions": permissions,
+            ]
+        case .nodeHeartbeat(let nodeId, let authToken, let platform, let version, let permissions):
+            return [
+                "type": "node_heartbeat",
+                "nodeId": nodeId,
+                "authToken": authToken,
+                "platform": platform,
+                "version": version,
+                "permissions": permissions,
+            ]
+        case .nodeInvokeResponse(let requestId, let nodeId, let capability, let ok, let message, let payload):
+            var dict: [String: Any] = [
+                "type": "node_invoke_response",
+                "requestId": requestId,
+                "nodeId": nodeId,
+                "capability": capability.rawValue,
+                "ok": ok,
+                "message": message,
+            ]
+            if let payload { dict["payload"] = payload }
+            return dict
+        case .debugEvents(let sessionId):
+            return [
+                "type": "debug_events",
+                "sessionId": sessionId,
+            ]
         }
     }
 

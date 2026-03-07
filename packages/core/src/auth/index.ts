@@ -12,6 +12,7 @@ export {
   getValidAccessToken,
   refreshAccessToken,
   type StoredTokens,
+  type TokenStoreLocation,
 } from './tokenStore.js';
 export {
   buildAuthorizeUrl,

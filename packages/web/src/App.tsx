@@ -110,6 +110,97 @@ interface ScheduledJobView {
   nextRunAt: string | null;
 }
 
+interface WebhookRouteView {
+  id: string;
+  name: string;
+  sessionId: string;
+  secret: string;
+  enabled: boolean;
+  promptPrefix: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface GmailAccountView {
+  id: string;
+  email: string;
+  tokenFilePath: string;
+  createdAt: string;
+  updatedAt: string;
+  lastHistoryId?: string;
+  lastValidatedAt?: string;
+  lastError?: string;
+}
+
+interface GmailWatchView {
+  id: string;
+  accountId: string;
+  targetSessionId: string;
+  labelIds: string[];
+  promptPrefix: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+  lastHistoryId?: string;
+  expirationAt?: string;
+  lastRenewedAt?: string;
+  lastProcessedAt?: string;
+  lastError?: string;
+}
+
+interface DebugEventView {
+  id: string;
+  timestamp: string;
+  type: string;
+  message: string;
+  data?: Record<string, unknown>;
+}
+
+interface SandboxRuntimeView {
+  scopeKey: string;
+  containerName: string;
+  running: boolean;
+  image: string;
+  workspacePath: string;
+}
+
+interface NodeRecordView {
+  id: string;
+  name: string;
+  capabilities: string[];
+  trusted: boolean;
+  platform?: string;
+  version?: string;
+  online?: boolean;
+  permissions?: Record<string, string>;
+  createdAt: string;
+  updatedAt: string;
+  lastSeenAt: string;
+  lastInvocationAt?: string;
+}
+
+type UsageWindow = '24h' | '7d' | '30d' | 'all';
+
+interface UsageBucketView {
+  key: string;
+  turns: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  totalTokens: number;
+  costUsd: number;
+}
+
+interface UsageSummaryView {
+  window: UsageWindow;
+  generatedAt: string;
+  total: UsageBucketView;
+  byProvider: UsageBucketView[];
+  byModel: UsageBucketView[];
+  bySession: UsageBucketView[];
+  byDay: UsageBucketView[];
+}
+
 export interface ProviderModelOption {
   id: string;
   provider: LLMProviderId;
@@ -166,6 +257,33 @@ export interface StreamActivity {
 
 type StreamActivityDraft = Omit<StreamActivity, 'id' | 'timestamp'>;
 
+function renderUsageBuckets(buckets: UsageBucketView[] | undefined) {
+  if (!buckets || buckets.length === 0) {
+    return <p className="usage-empty">No usage recorded for this window.</p>;
+  }
+
+  return (
+    <div className="usage-bucket-list">
+      {buckets.slice(0, 12).map((bucket) => (
+        <div key={bucket.key} className="usage-bucket-row">
+          <div>
+            <strong>{bucket.key}</strong>
+            <span>{bucket.turns} turns</span>
+          </div>
+          <div>
+            <strong>{formatNumber(bucket.totalTokens)}</strong>
+            <span>${bucket.costUsd.toFixed(6)}</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function formatNumber(value: number): string {
+  return new Intl.NumberFormat().format(value);
+}
+
 function getWebSocketUrl(): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${protocol}//${window.location.host}/ws`;
@@ -207,7 +325,8 @@ const ACTIVE_SCREEN_LABELS: Record<SidebarTabId, string> = {
   channels: 'Channels',
   instances: 'Instances',
   sessions: 'Sessions',
-  automations: 'Cron Jobs',
+  automations: 'Automations',
+  // renamed in UI copy, key unchanged
   config: 'Config',
   usage: 'Usage',
   agents: 'Agents',
@@ -566,6 +685,143 @@ function parseScheduledJobs(value: unknown): ScheduledJobView[] {
       nextRunAt: firstString(entry['nextRunAt']) ?? null,
     }))
     .filter((entry) => entry.id.length > 0 && entry.sessionId.length > 0);
+}
+
+function parseWebhookRoutes(value: unknown): WebhookRouteView[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+    .map((entry) => ({
+      id: String(entry['id'] ?? ''),
+      name: String(entry['name'] ?? ''),
+      sessionId: String(entry['sessionId'] ?? ''),
+      secret: String(entry['secret'] ?? ''),
+      enabled: entry['enabled'] !== false,
+      promptPrefix: String(entry['promptPrefix'] ?? ''),
+      createdAt: String(entry['createdAt'] ?? ''),
+      updatedAt: String(entry['updatedAt'] ?? ''),
+    }))
+    .filter((entry) => entry.id.length > 0 && entry.name.length > 0);
+}
+
+function parseGmailAccounts(value: unknown): GmailAccountView[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+    .map((entry) => ({
+      id: String(entry['id'] ?? ''),
+      email: String(entry['email'] ?? ''),
+      tokenFilePath: String(entry['tokenFilePath'] ?? ''),
+      createdAt: String(entry['createdAt'] ?? ''),
+      updatedAt: String(entry['updatedAt'] ?? ''),
+      lastHistoryId: firstString(entry['lastHistoryId']),
+      lastValidatedAt: firstString(entry['lastValidatedAt']),
+      lastError: firstString(entry['lastError']),
+    }))
+    .filter((entry) => entry.id.length > 0 && entry.email.length > 0);
+}
+
+function parseGmailWatches(value: unknown): GmailWatchView[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+    .map((entry) => ({
+      id: String(entry['id'] ?? ''),
+      accountId: String(entry['accountId'] ?? ''),
+      targetSessionId: String(entry['targetSessionId'] ?? ''),
+      labelIds: Array.isArray(entry['labelIds'])
+        ? (entry['labelIds'] as unknown[]).filter((value): value is string => typeof value === 'string')
+        : [],
+      promptPrefix: String(entry['promptPrefix'] ?? ''),
+      enabled: entry['enabled'] !== false,
+      createdAt: String(entry['createdAt'] ?? ''),
+      updatedAt: String(entry['updatedAt'] ?? ''),
+      lastHistoryId: firstString(entry['lastHistoryId']),
+      expirationAt: firstString(entry['expirationAt']),
+      lastRenewedAt: firstString(entry['lastRenewedAt']),
+      lastProcessedAt: firstString(entry['lastProcessedAt']),
+      lastError: firstString(entry['lastError']),
+    }))
+    .filter((entry) => entry.id.length > 0 && entry.accountId.length > 0);
+}
+
+function parseDebugEvents(value: unknown): DebugEventView[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+    .map((entry) => ({
+      id: String(entry['id'] ?? ''),
+      timestamp: String(entry['timestamp'] ?? ''),
+      type: String(entry['type'] ?? ''),
+      message: String(entry['message'] ?? ''),
+      data: asRecord(entry['data']),
+    }))
+    .filter((entry) => entry.id.length > 0 && entry.type.length > 0);
+}
+
+function parseSandboxRuntimes(value: unknown): SandboxRuntimeView[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+    .map((entry) => ({
+      scopeKey: String(entry['scopeKey'] ?? ''),
+      containerName: String(entry['containerName'] ?? ''),
+      running: entry['running'] !== false,
+      image: String(entry['image'] ?? ''),
+      workspacePath: String(entry['workspacePath'] ?? ''),
+    }))
+    .filter((entry) => entry.scopeKey.length > 0);
+}
+
+function parseNodeRecords(value: unknown): NodeRecordView[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+    .map((entry) => ({
+      id: String(entry['id'] ?? ''),
+      name: String(entry['name'] ?? ''),
+      capabilities: Array.isArray(entry['capabilities'])
+        ? (entry['capabilities'] as unknown[]).filter((value): value is string => typeof value === 'string')
+        : [],
+      trusted: entry['trusted'] !== false,
+      platform: firstString(entry['platform']),
+      version: firstString(entry['version']),
+      online: typeof entry['online'] === 'boolean' ? entry['online'] : undefined,
+      permissions: asRecord(entry['permissions'])
+        ? Object.fromEntries(
+            Object.entries(asRecord(entry['permissions']) ?? {}).map(([key, value]) => [key, String(value)])
+          )
+        : undefined,
+      createdAt: String(entry['createdAt'] ?? ''),
+      updatedAt: String(entry['updatedAt'] ?? ''),
+      lastSeenAt: String(entry['lastSeenAt'] ?? ''),
+      lastInvocationAt: firstString(entry['lastInvocationAt']),
+    }))
+    .filter((entry) => entry.id.length > 0);
 }
 
 function formatMaybeTimestamp(value: string | null | undefined): string {
@@ -972,6 +1228,8 @@ function App() {
   const [mainSessionId, setMainSessionId] = useState<string | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [contextUsageBySession, setContextUsageBySession] = useState<Record<string, { usedTokens: number; limitTokens: number; percent: number }>>({});
+  const [usageWindow, setUsageWindow] = useState<UsageWindow>('30d');
+  const [usageSummary, setUsageSummary] = useState<UsageSummaryView | null>(null);
 
   const [mode, setMode] = useState<SecurityMode>('safe');
   const [spicyEnabled, setSpicyEnabled] = useState(false);
@@ -1054,6 +1312,23 @@ function App() {
   const [schedulerPromptDraft, setSchedulerPromptDraft] = useState('');
   const [schedulerEnabledDraft, setSchedulerEnabledDraft] = useState(true);
   const [schedulerEditingJobId, setSchedulerEditingJobId] = useState<string | null>(null);
+  const [webhookRoutes, setWebhookRoutes] = useState<WebhookRouteView[]>([]);
+  const [webhookNameDraft, setWebhookNameDraft] = useState('');
+  const [webhookSessionDraft, setWebhookSessionDraft] = useState('');
+  const [webhookPromptPrefixDraft, setWebhookPromptPrefixDraft] = useState('[WEBHOOK EVENT]');
+  const [webhookEnabledDraft, setWebhookEnabledDraft] = useState(true);
+  const [webhookEditingRouteId, setWebhookEditingRouteId] = useState<string | null>(null);
+  const [gmailAccounts, setGmailAccounts] = useState<GmailAccountView[]>([]);
+  const [gmailWatches, setGmailWatches] = useState<GmailWatchView[]>([]);
+  const [gmailAccountDraft, setGmailAccountDraft] = useState('');
+  const [gmailSessionDraft, setGmailSessionDraft] = useState('');
+  const [gmailLabelsDraft, setGmailLabelsDraft] = useState('');
+  const [gmailPromptPrefixDraft, setGmailPromptPrefixDraft] = useState('[GMAIL WATCH EVENT]');
+  const [gmailEnabledDraft, setGmailEnabledDraft] = useState(true);
+  const [gmailEditingWatchId, setGmailEditingWatchId] = useState<string | null>(null);
+  const [debugEventsBySession, setDebugEventsBySession] = useState<Record<string, DebugEventView[]>>({});
+  const [sandboxRuntimes, setSandboxRuntimes] = useState<SandboxRuntimeView[]>([]);
+  const [knownNodes, setKnownNodes] = useState<NodeRecordView[]>([]);
 
   const [latestScreenshot, setLatestScreenshot] = useState<LatestScreenshotPreview | null>(null);
 
@@ -1071,6 +1346,7 @@ function App() {
   const activeLatestScreenshot = latestScreenshot && activeSessionId === latestScreenshot.sessionId
     ? latestScreenshot
     : null;
+  const activeDebugEvents = activeSessionId ? debugEventsBySession[activeSessionId] ?? [] : [];
 
   const sessionOptions = useMemo(
     () => buildSessionOptions(mainSessionId, sessionState.metaBySession),
@@ -1794,6 +2070,16 @@ function App() {
         break;
       }
 
+      case 'usage_summary_result': {
+        const summary = data['summary'] as UsageSummaryView | null;
+        setUsageSummary(summary);
+        break;
+      }
+
+      case 'usage_snapshot': {
+        break;
+      }
+
       case 'marketplace_search_result': {
         const entries = Array.isArray(data['entries']) ? data['entries'] as MarketplaceEntryView[] : [];
         const total = typeof data['total'] === 'number' ? data['total'] : entries.length;
@@ -1974,6 +2260,159 @@ function App() {
         break;
       }
 
+      case 'webhook_list_result': {
+        setWebhookRoutes(parseWebhookRoutes(data['routes']));
+        break;
+      }
+
+      case 'webhook_create_result':
+      case 'webhook_update_result':
+      case 'webhook_rotate_secret_result': {
+        const route = asRecord(data['route']);
+        if (route) {
+          const parsed = parseWebhookRoutes([route]);
+          if (parsed.length > 0) {
+            const next = parsed[0]!;
+            setWebhookRoutes((prev) => {
+              const filtered = prev.filter((entry) => entry.id !== next.id);
+              return [...filtered, next].sort((a, b) => a.name.localeCompare(b.name));
+            });
+          }
+        }
+        if (type === 'webhook_create_result' || type === 'webhook_update_result') {
+          setWebhookEditingRouteId(null);
+          setWebhookNameDraft('');
+          setWebhookSessionDraft('');
+          setWebhookPromptPrefixDraft('[WEBHOOK EVENT]');
+          setWebhookEnabledDraft(true);
+        }
+        break;
+      }
+
+      case 'webhook_delete_result': {
+        const routeId = firstString(data['routeId']);
+        if (routeId && data['deleted'] === true) {
+          setWebhookRoutes((prev) => prev.filter((route) => route.id !== routeId));
+          if (webhookEditingRouteId === routeId) {
+            setWebhookEditingRouteId(null);
+          }
+        }
+        break;
+      }
+
+      case 'gmail_watch_list_result': {
+        setGmailAccounts(parseGmailAccounts(data['accounts']));
+        setGmailWatches(parseGmailWatches(data['watches']));
+        break;
+      }
+
+      case 'gmail_watch_create_result':
+      case 'gmail_watch_update_result': {
+        const watch = asRecord(data['watch']);
+        if (watch) {
+          const parsed = parseGmailWatches([watch]);
+          if (parsed.length > 0) {
+            const next = parsed[0]!;
+            setGmailWatches((prev) => {
+              const filtered = prev.filter((entry) => entry.id !== next.id);
+              return [...filtered, next].sort((a, b) => a.targetSessionId.localeCompare(b.targetSessionId));
+            });
+          }
+        }
+        setGmailEditingWatchId(null);
+        setGmailSessionDraft('');
+        setGmailLabelsDraft('');
+        setGmailPromptPrefixDraft('[GMAIL WATCH EVENT]');
+        setGmailEnabledDraft(true);
+        break;
+      }
+
+      case 'gmail_watch_delete_result': {
+        const watchId = firstString(data['watchId']);
+        if (watchId && data['deleted'] === true) {
+          setGmailWatches((prev) => prev.filter((watch) => watch.id !== watchId));
+          if (gmailEditingWatchId === watchId) {
+            setGmailEditingWatchId(null);
+          }
+        }
+        break;
+      }
+
+      case 'gmail_watch_test_result': {
+        const result = asRecord(data['result']);
+        if (result?.['message']) {
+          window.alert(String(result['message']));
+        }
+        break;
+      }
+
+      case 'debug_events_result': {
+        const sessionId = firstString(data['sessionId']);
+        if (!sessionId) {
+          break;
+        }
+        setDebugEventsBySession((prev) => ({
+          ...prev,
+          [sessionId]: parseDebugEvents(data['events']),
+        }));
+        break;
+      }
+
+      case 'debug_event': {
+        const sessionId = firstString(data['sessionId']);
+        const event = parseDebugEvents([data['event']]);
+        if (!sessionId || event.length === 0) {
+          break;
+        }
+        setDebugEventsBySession((prev) => {
+          const entries = [...(prev[sessionId] ?? []), event[0]!];
+          return {
+            ...prev,
+            [sessionId]: entries.slice(-200),
+          };
+        });
+        break;
+      }
+
+      case 'sandbox_list_result': {
+        setSandboxRuntimes(parseSandboxRuntimes(data['sandboxes']));
+        break;
+      }
+
+      case 'sandbox_recreate_result': {
+        const sandbox = parseSandboxRuntimes([data['sandbox']]);
+        if (sandbox.length > 0) {
+          const next = sandbox[0]!;
+          setSandboxRuntimes((prev) => {
+            const filtered = prev.filter((entry) => entry.scopeKey !== next.scopeKey);
+            return [...filtered, next].sort((a, b) => a.scopeKey.localeCompare(b.scopeKey));
+          });
+        }
+        break;
+      }
+
+      case 'node_list_result': {
+        setKnownNodes(parseNodeRecords(data['nodes']));
+        break;
+      }
+
+      case 'node_status_changed': {
+        const nodeId = firstString(data['nodeId']);
+        if (!nodeId) {
+          break;
+        }
+        setKnownNodes((prev) => prev.map((node) => (
+          node.id === nodeId
+            ? {
+                ...node,
+                online: data['online'] === true,
+                lastSeenAt: firstString(data['lastSeenAt']) ?? node.lastSeenAt,
+              }
+            : node
+        )));
+        break;
+      }
+
       case 'error': {
         setDiscordSaving(false);
         setSlackSaving(false);
@@ -2044,6 +2483,8 @@ function App() {
     clearStreamActivities,
     mainSessionId,
     pendingProviderSwitch,
+    webhookEditingRouteId,
+    gmailEditingWatchId,
     schedulerEditingJobId,
     selectedSessionId,
   ]);
@@ -2058,6 +2499,47 @@ function App() {
     send({ type: 'plugins_list' });
     send({ type: 'list_slash_commands' });
   }, [connected, send]);
+
+  useEffect(() => {
+    if (!connected || activeScreen !== 'usage') {
+      return;
+    }
+
+    send({
+      type: 'usage_summary',
+      window: usageWindow,
+    });
+  }, [activeScreen, connected, send, usageWindow]);
+
+  useEffect(() => {
+    if (!connected || activeScreen !== 'automations') {
+      return;
+    }
+
+    send({ type: 'scheduler_list' });
+    send({ type: 'webhook_list' });
+    send({ type: 'gmail_watch_list' });
+  }, [activeScreen, connected, send]);
+
+  useEffect(() => {
+    if (!connected || activeScreen !== 'instances') {
+      return;
+    }
+
+    send({ type: 'sandbox_list' });
+    send({ type: 'node_list' });
+  }, [activeScreen, connected, send]);
+
+  useEffect(() => {
+    if (!connected || activeScreen !== 'debug' || !activeSessionId) {
+      return;
+    }
+
+    send({
+      type: 'debug_events',
+      sessionId: activeSessionId,
+    });
+  }, [activeScreen, activeSessionId, connected, send]);
 
   useEffect(() => {
     if (!connected) {
@@ -2105,19 +2587,33 @@ function App() {
     const requestSchedulerJobs = () => {
       send({ type: 'scheduler_list' });
     };
+    const requestAutomationState = () => {
+      send({ type: 'webhook_list' });
+      send({ type: 'gmail_watch_list' });
+    };
+    const requestInstancesState = () => {
+      send({ type: 'sandbox_list' });
+      send({ type: 'node_list' });
+    };
 
     requestSnapshot();
     requestBrowserStatus();
     requestSchedulerJobs();
+    requestAutomationState();
+    requestInstancesState();
 
     const snapshotIntervalId = window.setInterval(requestSnapshot, 2500);
     const browserIntervalId = window.setInterval(requestBrowserStatus, 8000);
     const schedulerIntervalId = window.setInterval(requestSchedulerJobs, 10000);
+    const automationIntervalId = window.setInterval(requestAutomationState, 20000);
+    const instancesIntervalId = window.setInterval(requestInstancesState, 15000);
 
     return () => {
       window.clearInterval(snapshotIntervalId);
       window.clearInterval(browserIntervalId);
       window.clearInterval(schedulerIntervalId);
+      window.clearInterval(automationIntervalId);
+      window.clearInterval(instancesIntervalId);
     };
   }, [connected, send]);
 
@@ -2662,6 +3158,164 @@ function App() {
     send({ type: 'scheduler_delete', jobId });
   }, [send]);
 
+  const handleWebhookCreateOrUpdate = useCallback(() => {
+    const name = webhookNameDraft.trim();
+    const sessionId = webhookSessionDraft.trim() || activeSessionId || mainSessionId || '';
+    const promptPrefix = webhookPromptPrefixDraft.trim() || '[WEBHOOK EVENT]';
+
+    if (!name) {
+      alert('Webhook name is required.');
+      return;
+    }
+
+    if (!sessionId) {
+      alert('Webhook target session is required.');
+      return;
+    }
+
+    if (webhookEditingRouteId) {
+      send({
+        type: 'webhook_update',
+        routeId: webhookEditingRouteId,
+        sessionId,
+        promptPrefix,
+        enabled: webhookEnabledDraft,
+      });
+      return;
+    }
+
+    send({
+      type: 'webhook_create',
+      name,
+      sessionId,
+      promptPrefix,
+      enabled: webhookEnabledDraft,
+    });
+  }, [
+    activeSessionId,
+    mainSessionId,
+    webhookEditingRouteId,
+    webhookEnabledDraft,
+    webhookNameDraft,
+    webhookPromptPrefixDraft,
+    webhookSessionDraft,
+    send,
+  ]);
+
+  const handleWebhookEdit = useCallback((route: WebhookRouteView) => {
+    setWebhookEditingRouteId(route.id);
+    setWebhookNameDraft(route.name);
+    setWebhookSessionDraft(route.sessionId);
+    setWebhookPromptPrefixDraft(route.promptPrefix);
+    setWebhookEnabledDraft(route.enabled);
+  }, []);
+
+  const handleWebhookCancelEdit = useCallback(() => {
+    setWebhookEditingRouteId(null);
+    setWebhookNameDraft('');
+    setWebhookSessionDraft('');
+    setWebhookPromptPrefixDraft('[WEBHOOK EVENT]');
+    setWebhookEnabledDraft(true);
+  }, []);
+
+  const handleWebhookToggle = useCallback((route: WebhookRouteView, enabled: boolean) => {
+    send({ type: 'webhook_update', routeId: route.id, enabled });
+  }, [send]);
+
+  const handleWebhookDelete = useCallback((routeId: string) => {
+    send({ type: 'webhook_delete', routeId });
+  }, [send]);
+
+  const handleWebhookRotateSecret = useCallback((routeId: string) => {
+    send({ type: 'webhook_rotate_secret', routeId });
+  }, [send]);
+
+  const handleGmailCreateOrUpdate = useCallback(() => {
+    const accountId = gmailAccountDraft.trim() || gmailAccounts[0]?.id || '';
+    const sessionId = gmailSessionDraft.trim() || activeSessionId || mainSessionId || '';
+    const promptPrefix = gmailPromptPrefixDraft.trim() || '[GMAIL WATCH EVENT]';
+    const labelIds = gmailLabelsDraft
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0);
+
+    if (!accountId) {
+      alert('A Gmail account is required. Run `keygate gmail login` first.');
+      return;
+    }
+
+    if (!sessionId) {
+      alert('A target session is required.');
+      return;
+    }
+
+    if (gmailEditingWatchId) {
+      send({
+        type: 'gmail_watch_update',
+        watchId: gmailEditingWatchId,
+        sessionId,
+        labelIds,
+        promptPrefix,
+        enabled: gmailEnabledDraft,
+      });
+      return;
+    }
+
+    send({
+      type: 'gmail_watch_create',
+      accountId,
+      sessionId,
+      labelIds,
+      promptPrefix,
+      enabled: gmailEnabledDraft,
+    });
+  }, [
+    activeSessionId,
+    gmailAccountDraft,
+    gmailAccounts,
+    gmailEditingWatchId,
+    gmailEnabledDraft,
+    gmailLabelsDraft,
+    gmailPromptPrefixDraft,
+    gmailSessionDraft,
+    mainSessionId,
+    send,
+  ]);
+
+  const handleGmailEdit = useCallback((watch: GmailWatchView) => {
+    setGmailEditingWatchId(watch.id);
+    setGmailAccountDraft(watch.accountId);
+    setGmailSessionDraft(watch.targetSessionId);
+    setGmailLabelsDraft(watch.labelIds.join(', '));
+    setGmailPromptPrefixDraft(watch.promptPrefix);
+    setGmailEnabledDraft(watch.enabled);
+  }, []);
+
+  const handleGmailCancelEdit = useCallback(() => {
+    setGmailEditingWatchId(null);
+    setGmailAccountDraft('');
+    setGmailSessionDraft('');
+    setGmailLabelsDraft('');
+    setGmailPromptPrefixDraft('[GMAIL WATCH EVENT]');
+    setGmailEnabledDraft(true);
+  }, []);
+
+  const handleGmailToggle = useCallback((watch: GmailWatchView, enabled: boolean) => {
+    send({ type: 'gmail_watch_update', watchId: watch.id, enabled });
+  }, [send]);
+
+  const handleGmailDelete = useCallback((watchId: string) => {
+    send({ type: 'gmail_watch_delete', watchId });
+  }, [send]);
+
+  const handleGmailTest = useCallback((watchId: string) => {
+    send({ type: 'gmail_watch_test', watchId });
+  }, [send]);
+
+  const handleSandboxRecreate = useCallback((scopeKey: string) => {
+    send({ type: 'sandbox_recreate', scope: scopeKey });
+  }, [send]);
+
   const applyCronPreset = useCallback((preset: string) => {
     setSchedulerCronDraft(preset);
   }, []);
@@ -2736,6 +3390,67 @@ function App() {
       <div className="placeholder-card">
         <h3>Coming Soon</h3>
         <p>{description}</p>
+      </div>
+    </div>
+  );
+
+  const renderUsageScreen = () => (
+    <div className="usage-screen">
+      <div className="usage-screen-header">
+        <div>
+          <h2>Usage</h2>
+          <p>Turn-level token and cost reporting across the gateway.</p>
+        </div>
+        <div className="usage-window-toggle">
+          {(['24h', '7d', '30d', 'all'] as UsageWindow[]).map((window) => (
+            <button
+              key={window}
+              type="button"
+              className={window === usageWindow ? 'usage-window-button usage-window-button-active' : 'usage-window-button'}
+              onClick={() => setUsageWindow(window)}
+            >
+              {window}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="usage-metric-grid">
+        <div className="usage-metric-card">
+          <span>Turns</span>
+          <strong>{usageSummary?.total.turns ?? 0}</strong>
+        </div>
+        <div className="usage-metric-card">
+          <span>Input tokens</span>
+          <strong>{formatNumber(usageSummary?.total.inputTokens ?? 0)}</strong>
+        </div>
+        <div className="usage-metric-card">
+          <span>Output tokens</span>
+          <strong>{formatNumber(usageSummary?.total.outputTokens ?? 0)}</strong>
+        </div>
+        <div className="usage-metric-card">
+          <span>Total cost</span>
+          <strong>${(usageSummary?.total.costUsd ?? 0).toFixed(6)}</strong>
+        </div>
+      </div>
+
+      <div className="usage-panels">
+        <section className="usage-panel">
+          <h3>By provider</h3>
+          {renderUsageBuckets(usageSummary?.byProvider)}
+        </section>
+        <section className="usage-panel">
+          <h3>By model</h3>
+          {renderUsageBuckets(usageSummary?.byModel)}
+        </section>
+        <section className="usage-panel">
+          <h3>By session</h3>
+          {renderUsageBuckets(usageSummary?.bySession)}
+        </section>
+        <section className="usage-panel">
+          <h3>By day</h3>
+          {renderUsageBuckets(usageSummary?.byDay)}
+        </section>
       </div>
     </div>
   );
@@ -2860,10 +3575,64 @@ function App() {
           {activeScreen === 'instances' && (
             <div className="automations-screen">
               <h2>Instances</h2>
+              <p className="config-note">Live runtime state for Docker sandboxes and paired device nodes.</p>
               <div className="scheduler-job-list">
                 <div className="scheduler-job-item"><strong>Active session</strong><div className="config-note">{activeSessionId ?? 'None'}</div></div>
                 <div className="scheduler-job-item"><strong>Live tool events</strong><div className="config-note">{activeToolEvents.length}</div></div>
                 <div className="scheduler-job-item"><strong>Streaming</strong><div className="config-note">{activeIsStreaming ? 'Yes' : 'No'}</div></div>
+              </div>
+
+              <h3>Sandboxes</h3>
+              <div className="scheduler-actions">
+                <button className="btn-secondary" onClick={() => send({ type: 'sandbox_list' })} disabled={!connected}>Refresh sandboxes</button>
+                {activeSessionId && (
+                  <button className="btn-secondary" onClick={() => handleSandboxRecreate(activeSessionId)} disabled={!connected}>Recreate active sandbox</button>
+                )}
+              </div>
+              <div className="scheduler-list" role="region" aria-label="Sandbox instances">
+                {sandboxRuntimes.length === 0 ? (
+                  <p className="config-note">No active Docker sandboxes.</p>
+                ) : (
+                  <ul className="scheduler-job-list">
+                    {sandboxRuntimes.map((sandbox) => (
+                      <li key={sandbox.scopeKey} className="scheduler-job-item">
+                        <div>
+                          <strong>{sandbox.running ? 'Running' : 'Stopped'} · {sandbox.scopeKey}</strong>
+                          <div className="config-note">Container: {sandbox.containerName}</div>
+                          <div className="config-note">Image: {sandbox.image}</div>
+                          <div className="config-note">Workspace: {sandbox.workspacePath}</div>
+                        </div>
+                        <div className="scheduler-job-actions">
+                          <button className="btn-secondary" onClick={() => handleSandboxRecreate(sandbox.scopeKey)} disabled={!connected}>Recreate</button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              <h3>Nodes</h3>
+              <div className="scheduler-actions">
+                <button className="btn-secondary" onClick={() => send({ type: 'node_list' })} disabled={!connected}>Refresh nodes</button>
+              </div>
+              <div className="scheduler-list" role="region" aria-label="Paired nodes">
+                {knownNodes.length === 0 ? (
+                  <p className="config-note">No paired nodes.</p>
+                ) : (
+                  <ul className="scheduler-job-list">
+                    {knownNodes.map((node) => (
+                      <li key={node.id} className="scheduler-job-item">
+                        <div>
+                          <strong>{node.online ? 'Online' : 'Offline'} · {node.name}</strong>
+                          <div className="config-note">Platform: {node.platform ?? 'unknown'} {node.version ? `· ${node.version}` : ''}</div>
+                          <div className="config-note">Capabilities: {node.capabilities.join(', ')}</div>
+                          <div className="config-note">Last seen: {formatMaybeTimestamp(node.lastSeenAt)}</div>
+                          <div className="config-note">Last invocation: {formatMaybeTimestamp(node.lastInvocationAt)}</div>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
             </div>
           )}
@@ -2917,9 +3686,10 @@ function App() {
 
           {activeScreen === 'automations' && (
             <div className="automations-screen">
-              <h2>Automations & Scheduler</h2>
-              <p className="config-note">Create and manage scheduled automations for any session.</p>
+              <h2>Automations</h2>
+              <p className="config-note">Manage scheduler jobs, signed webhooks, and Gmail watch delivery for any session.</p>
 
+              <h3>Scheduler</h3>
               <div className="scheduler-controls">
                 <label className="llm-control config-control">
                   <span>Target Session</span>
@@ -3017,6 +3787,237 @@ function App() {
                           </div>
                         </li>
                       ))}
+                  </ul>
+                )}
+              </div>
+
+              <h3>Webhooks</h3>
+              <p className="config-note">Create signed inbound routes that deliver JSON payloads into a target session.</p>
+
+              <div className="scheduler-controls">
+                <label className="llm-control config-control">
+                  <span>Name</span>
+                  <input
+                    className="config-text-input"
+                    type="text"
+                    value={webhookNameDraft}
+                    onChange={(event) => setWebhookNameDraft(event.target.value)}
+                    placeholder="Build monitor"
+                    disabled={!connected || activeIsStreaming}
+                  />
+                </label>
+
+                <label className="llm-control config-control">
+                  <span>Target Session</span>
+                  <select
+                    className="llm-select"
+                    value={webhookSessionDraft || activeSessionId || ''}
+                    onChange={(event) => setWebhookSessionDraft(event.target.value)}
+                    disabled={!connected || activeIsStreaming}
+                  >
+                    <option value="">Current active session</option>
+                    {sessionOptions.map((option) => (
+                      <option key={option.sessionId} value={option.sessionId}>
+                        {option.label} ({option.sessionId})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="llm-control config-control">
+                  <span>Prompt Prefix</span>
+                  <input
+                    className="config-text-input"
+                    type="text"
+                    value={webhookPromptPrefixDraft}
+                    onChange={(event) => setWebhookPromptPrefixDraft(event.target.value)}
+                    placeholder="[WEBHOOK EVENT]"
+                    disabled={!connected || activeIsStreaming}
+                  />
+                </label>
+
+                <label className="config-switch-row">
+                  <span className="config-switch-copy">
+                    <strong>Enabled</strong>
+                    <small>Disabled routes reject inbound delivery.</small>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={webhookEnabledDraft}
+                    onChange={(event) => setWebhookEnabledDraft(event.target.checked)}
+                    disabled={!connected || activeIsStreaming}
+                  />
+                </label>
+
+                <div className="scheduler-actions">
+                  <button className="btn-secondary" onClick={() => send({ type: 'webhook_list' })} disabled={!connected || activeIsStreaming}>Refresh routes</button>
+                  <button className="btn-secondary" onClick={handleWebhookCreateOrUpdate} disabled={!connected || activeIsStreaming}>
+                    {webhookEditingRouteId ? 'Update route' : 'Create route'}
+                  </button>
+                  {webhookEditingRouteId && (
+                    <button className="btn-secondary" onClick={handleWebhookCancelEdit} disabled={!connected || activeIsStreaming}>Cancel edit</button>
+                  )}
+                </div>
+              </div>
+
+              <div className="scheduler-list" role="region" aria-label="Webhook routes">
+                {webhookRoutes.length === 0 ? (
+                  <p className="config-note">No webhook routes yet.</p>
+                ) : (
+                  <ul className="scheduler-job-list">
+                    {webhookRoutes.map((route) => (
+                      <li key={route.id} className="scheduler-job-item">
+                        <div>
+                          <strong>{route.enabled ? 'Enabled' : 'Disabled'} · {route.name}</strong>
+                          <div className="config-note">Session: {route.sessionId}</div>
+                          <div className="config-note">Secret: <code>{route.secret}</code></div>
+                          <div className="config-note">Endpoint: <code>/api/webhooks/{route.id}</code></div>
+                          <div className="config-note">Prompt Prefix: {route.promptPrefix}</div>
+                        </div>
+                        <div className="scheduler-job-actions">
+                          <button className="btn-secondary" onClick={() => handleWebhookEdit(route)} disabled={!connected || activeIsStreaming}>Edit</button>
+                          <button className="btn-secondary" onClick={() => handleWebhookToggle(route, !route.enabled)} disabled={!connected || activeIsStreaming}>{route.enabled ? 'Disable' : 'Enable'}</button>
+                          <button className="btn-secondary" onClick={() => handleWebhookRotateSecret(route.id)} disabled={!connected || activeIsStreaming}>Rotate secret</button>
+                          <button className="btn-secondary" onClick={() => handleWebhookDelete(route.id)} disabled={!connected || activeIsStreaming}>Delete</button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              <h3>Gmail</h3>
+              <p className="config-note">Accounts are added from the CLI with <code>keygate gmail login</code>. Watches fan Gmail events into normal session threads.</p>
+
+              <div className="scheduler-job-list">
+                {gmailAccounts.length === 0 ? (
+                  <div className="scheduler-job-item">
+                    <strong>No Gmail accounts connected</strong>
+                    <div className="config-note">Run <code>keygate gmail login</code> in the terminal, then refresh this screen.</div>
+                  </div>
+                ) : (
+                  gmailAccounts.map((account) => (
+                    <div key={account.id} className="scheduler-job-item">
+                      <strong>{account.email}</strong>
+                      <div className="config-note">Account ID: {account.id}</div>
+                      <div className="config-note">Last validated: {formatMaybeTimestamp(account.lastValidatedAt)}</div>
+                      {account.lastError && <div className="config-note">Last error: {account.lastError}</div>}
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <div className="scheduler-controls">
+                <label className="llm-control config-control">
+                  <span>Account</span>
+                  <select
+                    className="llm-select"
+                    value={gmailAccountDraft || gmailAccounts[0]?.id || ''}
+                    onChange={(event) => setGmailAccountDraft(event.target.value)}
+                    disabled={!connected || activeIsStreaming || gmailAccounts.length === 0}
+                  >
+                    {gmailAccounts.length === 0 ? (
+                      <option value="">No Gmail accounts</option>
+                    ) : gmailAccounts.map((account) => (
+                      <option key={account.id} value={account.id}>
+                        {account.email}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="llm-control config-control">
+                  <span>Target Session</span>
+                  <select
+                    className="llm-select"
+                    value={gmailSessionDraft || activeSessionId || ''}
+                    onChange={(event) => setGmailSessionDraft(event.target.value)}
+                    disabled={!connected || activeIsStreaming}
+                  >
+                    <option value="">Current active session</option>
+                    {sessionOptions.map((option) => (
+                      <option key={option.sessionId} value={option.sessionId}>
+                        {option.label} ({option.sessionId})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="llm-control config-control">
+                  <span>Label Filters</span>
+                  <input
+                    className="config-text-input"
+                    type="text"
+                    value={gmailLabelsDraft}
+                    onChange={(event) => setGmailLabelsDraft(event.target.value)}
+                    placeholder="INBOX, IMPORTANT"
+                    disabled={!connected || activeIsStreaming}
+                  />
+                </label>
+
+                <label className="llm-control config-control">
+                  <span>Prompt Prefix</span>
+                  <input
+                    className="config-text-input"
+                    type="text"
+                    value={gmailPromptPrefixDraft}
+                    onChange={(event) => setGmailPromptPrefixDraft(event.target.value)}
+                    placeholder="[GMAIL WATCH EVENT]"
+                    disabled={!connected || activeIsStreaming}
+                  />
+                </label>
+
+                <label className="config-switch-row">
+                  <span className="config-switch-copy">
+                    <strong>Enabled</strong>
+                    <small>Disabled watches stay configured but do not receive events.</small>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={gmailEnabledDraft}
+                    onChange={(event) => setGmailEnabledDraft(event.target.checked)}
+                    disabled={!connected || activeIsStreaming}
+                  />
+                </label>
+
+                <div className="scheduler-actions">
+                  <button className="btn-secondary" onClick={() => send({ type: 'gmail_watch_list' })} disabled={!connected || activeIsStreaming}>Refresh Gmail</button>
+                  <button className="btn-secondary" onClick={handleGmailCreateOrUpdate} disabled={!connected || activeIsStreaming || gmailAccounts.length === 0}>
+                    {gmailEditingWatchId ? 'Update watch' : 'Create watch'}
+                  </button>
+                  {gmailEditingWatchId && (
+                    <button className="btn-secondary" onClick={handleGmailCancelEdit} disabled={!connected || activeIsStreaming}>Cancel edit</button>
+                  )}
+                </div>
+              </div>
+
+              <div className="scheduler-list" role="region" aria-label="Gmail watches">
+                {gmailWatches.length === 0 ? (
+                  <p className="config-note">No Gmail watches yet.</p>
+                ) : (
+                  <ul className="scheduler-job-list">
+                    {gmailWatches.map((watch) => {
+                      const account = gmailAccounts.find((entry) => entry.id === watch.accountId);
+                      return (
+                        <li key={watch.id} className="scheduler-job-item">
+                          <div>
+                            <strong>{watch.enabled ? 'Enabled' : 'Disabled'} · {account?.email ?? watch.accountId}</strong>
+                            <div className="config-note">Session: {watch.targetSessionId}</div>
+                            <div className="config-note">Labels: {watch.labelIds.length > 0 ? watch.labelIds.join(', ') : '(all)'}</div>
+                            <div className="config-note">Last renewed: {formatMaybeTimestamp(watch.lastRenewedAt)}</div>
+                            <div className="config-note">Expires: {formatMaybeTimestamp(watch.expirationAt)}</div>
+                            <div className="config-note">Last delivered: {formatMaybeTimestamp(watch.lastProcessedAt)}</div>
+                            {watch.lastError && <div className="config-note">Last error: {watch.lastError}</div>}
+                          </div>
+                          <div className="scheduler-job-actions">
+                            <button className="btn-secondary" onClick={() => handleGmailEdit(watch)} disabled={!connected || activeIsStreaming}>Edit</button>
+                            <button className="btn-secondary" onClick={() => handleGmailToggle(watch, !watch.enabled)} disabled={!connected || activeIsStreaming}>{watch.enabled ? 'Disable' : 'Enable'}</button>
+                            <button className="btn-secondary" onClick={() => handleGmailTest(watch.id)} disabled={!connected || activeIsStreaming}>Test</button>
+                            <button className="btn-secondary" onClick={() => handleGmailDelete(watch.id)} disabled={!connected || activeIsStreaming}>Delete</button>
+                          </div>
+                        </li>
+                      );
+                    })}
                   </ul>
                 )}
               </div>
@@ -3701,19 +4702,49 @@ function App() {
             </div>
           )}
 
-          {activeScreen === 'usage' && renderComingSoonScreen(
-            'Usage',
-            'Usage analytics and performance summaries will be available here once the metrics dashboard ships.',
-          )}
+          {activeScreen === 'usage' && renderUsageScreen()}
 
           {activeScreen === 'agents' && renderComingSoonScreen(
             'Agents',
             'Agent management is planned for a later release. This area will host agent definitions and lifecycle controls.',
           )}
 
-          {activeScreen === 'debug' && renderComingSoonScreen(
-            'Debug',
-            'Debug tooling is coming soon. Detailed diagnostics and troubleshooting controls will appear here.',
+          {activeScreen === 'debug' && (
+            <div className="automations-screen">
+              <h2>Debug</h2>
+              <p className="config-note">Session-scoped debug buffer. Use <code>/debug on</code> in the active session to record events.</p>
+
+              <div className="scheduler-actions">
+                <button
+                  className="btn-secondary"
+                  onClick={() => activeSessionId && send({ type: 'debug_events', sessionId: activeSessionId })}
+                  disabled={!connected || !activeSessionId}
+                >
+                  Refresh buffer
+                </button>
+              </div>
+
+              {!activeSessionId ? (
+                <p className="config-note">Select a session to inspect debug events.</p>
+              ) : activeDebugEvents.length === 0 ? (
+                <p className="config-note">No debug events recorded for {activeSessionId}.</p>
+              ) : (
+                <ul className="scheduler-job-list">
+                  {activeDebugEvents.slice().reverse().map((event) => (
+                    <li key={event.id} className="scheduler-job-item">
+                      <div>
+                        <strong>{event.type}</strong>
+                        <div className="config-note">{formatMaybeTimestamp(event.timestamp)}</div>
+                        <div className="config-note">{event.message}</div>
+                        {event.data && (
+                          <pre className="config-note">{JSON.stringify(event.data, null, 2)}</pre>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           )}
 
           {activeScreen === 'logs' && renderComingSoonScreen(

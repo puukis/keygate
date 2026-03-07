@@ -33,17 +33,22 @@ When GitHub Pages is enabled for this repository, `.github/workflows/deploy-docs
 ## Features
 
 - **Multi-Channel**: Connect via Web UI (`localhost:18790`), Discord, Slack, or WhatsApp
+- **Shared Operator Commands**: `/help`, `/status`, `/model`, `/compact`, `/debug`, `/stop`, `/new`, and `/reset` across chat surfaces, with native Discord slash commands and Slack `/agent*` commands
 - **WhatsApp Linked-Device Channel**: QR-based login, DM pairing, group allowlists, mention gating, and screenshot follow-up delivery
 - **DM Pairing Trust Model**: Unknown Slack/Discord/WhatsApp DMs are gated by pairing codes (configurable open/closed/pairing)
 - **Long-term File Memory Recall**: `memory_search` + `memory_get` tools over `MEMORY.md` and `memory/*.md` with path+line snippets
+- **Usage, Token, and Cost Accounting**: turn-level usage persisted in SQLite and exposed through `/status`, the web app, REST, websocket, and CLI
 - **ReAct Agent Loop**: Iterative reasoning with tool calling
 - **OpenAI Codex OAuth**: Sign in with ChatGPT through Codex CLI/app-server (no API key paste)
 - **File-Based Agent Identity**: First-chat bootstrap with persistent `SOUL.md`, `USER.md`, `BOOTSTRAP.md`, and `IDENTITY.md`
 - **Security Modes**:
-  - 🟢 **Safe Mode** (default): Sandboxed workspace, command allowlist, human approval required
+  - 🟢 **Safe Mode** (default): Docker-backed sandbox for filesystem/shell/code tools, command allowlist, human approval required
   - 🔴 **Spicy Mode**: Full host access, unrestricted execution (requires explicit opt-in)
   - 🌶️ **Spicy Max Obedience (optional toggle)**: Spicy-only, best-effort reduction of avoidable refusals
 - **Built-in Tools**: Filesystem, Shell, Code Sandbox (JS/Python), Web Search, Browser Automation
+- **Brokered Device Nodes**: Paired macOS nodes for `notify`, `location`, `camera`, `screen`, and `shell`, with permission reporting and on-device approval for high-risk actions
+- **Gmail Automations**: OAuth login, multiple watches, Pub/Sub push intake, renewal, dedupe, and delivery into normal sessions
+- **Deep Runtime Plugin Hooks**: Plugins can hook model resolution, prompt building, tool calls, compaction, session lifecycle, subagents, and gateway startup/shutdown
 - **Companion Chat Widget** (macOS): Floating always-on-top mini chat window — keeps the AI assistant visible while you work
 
 ## Quick Start
@@ -146,6 +151,7 @@ Local plugin directories must include a `keygate.plugin.json` manifest and the b
 Plugin capabilities in this release:
 
 - runtime-loaded tool, RPC, HTTP, CLI, and background service extensions
+- ordered runtime hooks for model/tool/session/subagent/gateway lifecycle interception
 - JSON Schema validated plugin config
 - hot reload with rollback on failure
 - full plugin management in the web app Plugins panel
@@ -185,6 +191,59 @@ WhatsApp operational notes:
 - Direct messages follow the same trust model as other external channels: `pairing`, `open`, or `closed`.
 - Group chats are controlled separately through `groupMode` (`closed`, `selected`, `open`) plus mention requirements.
 - After changing WhatsApp config in the web app, restart the WhatsApp runtime so the new policy is applied.
+
+Native operator commands:
+
+- Discord registers `/help`, `/status`, `/model`, `/compact`, `/debug`, `/stop`, `/new`, and `/reset`
+- Slack exposes `/agenthelp`, `/agentstatus`, `/agentmodel`, `/agentcompact`, `/agentdebug`, `/agentstop`, `/agentnew`, and `/agentreset`
+- text slash commands continue to work in the web app, TUI, macOS, and other chat surfaces
+
+### Status, Usage, and Debug
+
+```bash
+keygate status
+keygate status --session web:ops --json
+keygate usage --window 7d
+keygate usage --session discord:1234567890 --window all
+keygate doctor --json
+keygate doctor --repair
+```
+
+These surfaces now report:
+
+- provider/model and reasoning state
+- session-scoped model overrides
+- debug mode state
+- turn/token/cost aggregates
+- Docker sandbox health
+- node online/offline counts
+- Gmail watch health
+
+### Docker Sandboxes
+
+```bash
+keygate sandbox list
+keygate sandbox explain --scope web:ops
+keygate sandbox recreate --scope web:ops
+```
+
+Safe mode uses Docker for `filesystem`, `shell`, and `sandbox` tool execution. If Docker is missing, Keygate still starts, but safe-mode sandboxed tools fail fast and diagnostics report a degraded posture.
+
+### Gmail Automations
+
+```bash
+keygate gmail login
+keygate gmail list
+keygate gmail watch --account you@example.com --session web:ops --labels INBOX,IMPORTANT
+keygate gmail test <watch-id>
+keygate gmail renew
+```
+
+The web app **Automations** screen now includes:
+
+- scheduler jobs
+- signed webhooks
+- Gmail accounts and watches
 
 ## Architecture
 
@@ -246,8 +305,10 @@ DM trust + pairing:
 - Show pending requests: `keygate pairing pending [discord|slack|whatsapp]`
 
 Diagnostics:
-- Run comprehensive environment + auth + gateway + routing checks: `keygate doctor`
+- Run comprehensive environment + auth + gateway + routing + sandbox + node + Gmail + plugin checks: `keygate doctor`
 - CI-friendly mode (non-zero exit on failures): `keygate doctor --non-interactive`
+- Machine-readable diagnostics: `keygate doctor --json`
+- Safe automatic repairs: `keygate doctor --repair`
 
 Tool risk engine + approval memory:
 - High/medium-risk tool actions are risk-scored before confirmation.
@@ -296,7 +357,7 @@ Multi-agent/channel routing rules:
   - `routing_delete` (`ruleId`)
 - Discord/Slack ingress now resolves routing before message processing.
 
-Device node architecture (pair/list/describe/invoke stubs):
+Device node architecture:
 - Node pair workflow:
   - `node_pair_request` (`nodeName`, `capabilities[]`)
   - `node_pair_pending`
@@ -310,7 +371,12 @@ Device node architecture (pair/list/describe/invoke stubs):
 - Capability-aware permission behavior:
   - invocation denied if node untrusted or capability not granted
   - high-risk capabilities (`shell`, `screen`, `camera`) require explicit `highRiskAck=true`
-- Current implementation intentionally uses **stub execution mode** (permission checks + accepted/denied responses), ready for transport-specific executors.
+- Current implementation includes a real brokered macOS node runtime inside the companion app:
+  - node credentials are paired and persisted locally
+  - nodes register and heartbeat over the existing gateway websocket
+  - `notify`, `location`, `camera`, `screen`, and `shell` are executed on-device
+  - `camera` and `screen` can upload attachments back into the originating session
+  - `camera`, `screen`, and `shell` require explicit on-device confirmation before execution
 
 `openai-codex` uses `provider/model` format in config and UI, for example `openai-codex/gpt-5.2`.
 

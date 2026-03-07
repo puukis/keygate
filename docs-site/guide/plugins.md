@@ -1,10 +1,11 @@
 # Plugins
 
-Keygate includes a first-class runtime plugin platform. Plugins are loaded in-process and can extend the gateway with tools, WebSocket RPC methods, HTTP routes, top-level CLI commands, background services, and bundled skills.
+Keygate includes a first-class runtime plugin platform. Plugins are loaded in-process and can extend the gateway with tools, runtime hooks, WebSocket RPC methods, HTTP routes, top-level CLI commands, background services, and bundled skills.
 
 ## What plugins can add
 
 - namespaced tools exposed to the model as `pluginId.toolName`
+- typed runtime hooks around model resolution, prompt building, tool calls, compaction, session lifecycle, subagents, and gateway startup/shutdown
 - WebSocket RPC handlers invoked through `plugin_invoke`
 - HTTP routes under `/api/plugins/<pluginId>/...`
 - top-level CLI commands reserved in the plugin manifest
@@ -12,6 +13,20 @@ Keygate includes a first-class runtime plugin platform. Plugins are loaded in-pr
 - `skillsDirs` that flow into the existing skills discovery system
 
 This feature does **not** include plugin-defined messaging channels or plugin-injected frontend bundles.
+
+## Runtime hooks
+
+Plugins can now register ordered hooks with `registerHook(...)`.
+
+That makes it possible to:
+
+- override the model for one subset of sessions
+- inject prompt context before the Brain builds the final prompt
+- normalize or redact inbound content
+- rewrite tool arguments before execution
+- observe compaction, subagent, and gateway lifecycle events
+
+See the full hook list and payload shape notes in the [Plugin SDK Reference](/reference/plugin-sdk).
 
 ## Install sources
 
@@ -98,7 +113,7 @@ Plugins run inside the Keygate process. Treat them as trusted code:
 - review plugin source before installing it
 - prefer local or pinned sources
 - use `server.apiToken` before exposing operator-only plugin routes
-- remember that plugin services and tools run with the same host privileges as the Keygate runtime
+- remember that plugin services, hooks, and tools run with the same host privileges as the Keygate runtime
 
 ## Further reading
 

@@ -5,6 +5,7 @@ import type {
   LLMChunk,
   LLMProvider,
   LLMResponse,
+  LLMUsageSnapshot,
   Message,
   ToolCall,
   ToolDefinition,
@@ -48,6 +49,7 @@ export class OpenAIProvider implements LLMProvider {
       content: choice.message.content ?? '',
       toolCalls,
       finishReason: this.mapFinishReason(choice.finish_reason),
+      usage: mapOpenAIUsage(this.model, response.usage),
     };
   }
 
@@ -60,6 +62,9 @@ export class OpenAIProvider implements LLMProvider {
       temperature: options?.temperature ?? 0.7,
       max_tokens: options?.maxTokens,
       stream: true,
+      stream_options: {
+        include_usage: true,
+      },
     });
 
     const toolCallsAccumulator: Map<number, { id: string; name: string; arguments: string }> = new Map();
@@ -88,6 +93,7 @@ export class OpenAIProvider implements LLMProvider {
 
       yield {
         content: delta.content ?? undefined,
+        usage: chunk.usage ? mapOpenAIUsage(this.model, chunk.usage) : undefined,
         done: chunk.choices[0]?.finish_reason !== null,
       };
     }
@@ -195,4 +201,37 @@ export class OpenAIProvider implements LLMProvider {
       default: return 'stop';
     }
   }
+}
+
+function mapOpenAIUsage(
+  model: string,
+  usage:
+    | OpenAI.Completions.CompletionUsage
+    | { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; prompt_tokens_details?: { cached_tokens?: number | null } }
+    | null
+    | undefined
+): LLMUsageSnapshot | undefined {
+  if (!usage) {
+    return undefined;
+  }
+
+  const cachedTokens = (usage as {
+    prompt_tokens_details?: { cached_tokens?: number | null };
+  }).prompt_tokens_details?.cached_tokens ?? 0;
+
+  return {
+    provider: 'openai',
+    model,
+    inputTokens: usage.prompt_tokens ?? 0,
+    outputTokens: usage.completion_tokens ?? 0,
+    cachedTokens,
+    totalTokens: usage.total_tokens ?? ((usage.prompt_tokens ?? 0) + (usage.completion_tokens ?? 0)),
+    source: 'native',
+    raw: {
+      promptTokens: usage.prompt_tokens ?? 0,
+      completionTokens: usage.completion_tokens ?? 0,
+      totalTokens: usage.total_tokens ?? null,
+      cachedTokens,
+    },
+  };
 }

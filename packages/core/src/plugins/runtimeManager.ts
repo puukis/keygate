@@ -26,6 +26,7 @@ import type {
   PluginCatalogSnapshot,
   PluginCliCommandDefinition,
   PluginDiagnostic,
+  PluginHookName,
   PluginHttpRequestContext,
   PluginHttpResult,
   PluginInfo,
@@ -49,6 +50,7 @@ function createEmptyStage(): PluginStage {
   return {
     tools: [],
     toolNames: [],
+    hooks: [],
     rpcMethods: new Map(),
     httpRoutes: [],
     cliCommands: [],
@@ -64,6 +66,7 @@ export class PluginRuntimeManager {
   private readonly active = new Map<string, RuntimePluginInstance>();
   private readonly failed = new Map<string, { manifest: ResolvedPluginManifest; error: string; configSchema: Record<string, unknown> | null }>();
   private readonly reloadTimers = new Map<string, NodeJS.Timeout>();
+  private readonly hookFailures: Array<{ pluginId: string; hook: PluginHookName; error: string; at: string }> = [];
   private refreshPromise: Promise<void> | null = null;
 
   constructor(private readonly gateway: Gateway) {}
@@ -89,6 +92,41 @@ export class PluginRuntimeManager {
 
   getRegistries(): PluginRegistries {
     return this.registries;
+  }
+
+  getHookFailures(): Array<{ pluginId: string; hook: PluginHookName; error: string; at: string }> {
+    return [...this.hookFailures];
+  }
+
+  async runHook<TPayload extends Record<string, unknown>>(name: PluginHookName, payload: TPayload): Promise<TPayload> {
+    const hooks = this.collectHooks(name);
+    let current = payload;
+
+    for (const hook of hooks) {
+      try {
+        const result = await hook.handler(current);
+        if (result && typeof result === 'object' && !Array.isArray(result) && isMutatingHook(name)) {
+          current = {
+            ...current,
+            ...result,
+          };
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.hookFailures.push({
+          pluginId: hook.pluginId,
+          hook: name,
+          error: message,
+          at: new Date().toISOString(),
+        });
+      }
+    }
+
+    while (this.hookFailures.length > 200) {
+      this.hookFailures.shift();
+    }
+
+    return current;
   }
 
   async refresh(): Promise<void> {
@@ -378,6 +416,29 @@ export class PluginRuntimeManager {
     return true;
   }
 
+  private collectHooks(name: PluginHookName): Array<{
+    pluginId: string;
+    handler: NonNullable<PluginStage['hooks']>[number]['handler'];
+    priority: number;
+  }> {
+    return Array.from(this.active.entries())
+      .flatMap(([pluginId, instance]) => (
+        instance.stage.hooks
+          .filter((hook) => hook.name === name)
+          .map((hook) => ({
+            pluginId,
+            handler: hook.handler,
+            priority: hook.priority,
+          }))
+      ))
+      .sort((left, right) => {
+        if (left.priority !== right.priority) {
+          return right.priority - left.priority;
+        }
+        return left.pluginId.localeCompare(right.pluginId);
+      });
+  }
+
   private async refreshInternal(): Promise<void> {
     this.catalog = await discoverPluginCatalog(this.gateway.config);
     const runtimeManifests = this.catalog.manifests.filter((manifest) => manifest.runtimeCapable && manifest.id);
@@ -457,6 +518,13 @@ export class PluginRuntimeManager {
             content: message.content,
           }))
         ),
+        registerHook: (name, handler, options) => {
+          stage.hooks.push({
+            name,
+            priority: typeof options?.priority === 'number' ? options.priority : 0,
+            handler,
+          });
+        },
         registerTool: (definition: import('./types.js').PluginToolDefinition) => {
           const fullName = `${pluginId}.${definition.name}`;
           stage.tools.push({
@@ -836,6 +904,14 @@ function createPluginLogger(pluginId: string) {
       console.debug(prefix, message, meta ?? '');
     },
   };
+}
+
+function isMutatingHook(name: PluginHookName): boolean {
+  return name === 'before_model_resolve'
+    || name === 'before_prompt_build'
+    || name === 'message_received'
+    || name === 'before_tool_call'
+    || name === 'before_compaction';
 }
 
 function normalizeRoutePath(value: string): string {

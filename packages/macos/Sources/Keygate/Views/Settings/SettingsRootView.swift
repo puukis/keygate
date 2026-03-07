@@ -413,6 +413,88 @@ struct IntegrationsSettingsTab: View {
 
     var body: some View {
         Form {
+            Section("Device Node") {
+                if let node = gateway.nodeRecord {
+                    LabeledContent("Node") {
+                        Text(node.name).foregroundStyle(.secondary)
+                    }
+                    LabeledContent("Status") {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill((node.online ?? false) ? .green : .orange)
+                                .frame(width: 7, height: 7)
+                            Text((node.online ?? false) ? "Online" : "Offline")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    LabeledContent("Capabilities") {
+                        Text(node.capabilities.map(\.rawValue).joined(separator: ", "))
+                            .foregroundStyle(.secondary)
+                    }
+                    LabeledContent("Last Seen") {
+                        Text(node.lastSeenAt.isEmpty ? "—" : node.lastSeenAt)
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text("Not paired").foregroundStyle(.tertiary)
+                }
+
+                ForEach(NodeCapability.allCases.filter { $0 != .invoke }) { capability in
+                    Toggle(capability.rawValue.capitalized, isOn: Binding(
+                        get: { gateway.nodeCapabilitySelection.contains(capability) },
+                        set: { gateway.setNodeCapabilityEnabled(capability, enabled: $0) }
+                    ))
+                }
+
+                HStack {
+                    Button("Start Pairing") {
+                        gateway.requestNodePairing()
+                    }
+                    .disabled(gateway.connectionState.isConnected == false)
+
+                    if gateway.nodePairRequest != nil {
+                        Button("Approve Pairing") {
+                            gateway.approveNodePairing()
+                        }
+                        .disabled(gateway.connectionState.isConnected == false)
+                    }
+
+                    if gateway.nodeRecord != nil {
+                        Button("Forget Node") {
+                            gateway.forgetPairedNode()
+                        }
+                    }
+                }
+
+                if let request = gateway.nodePairRequest {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Pairing Code: \(request.pairingCode)")
+                            .font(.system(.body, design: .monospaced))
+                        Text("Expires: \(request.expiresAt)")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if !gateway.nodePermissions.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(gateway.nodePermissions.keys.sorted(), id: \.self) { key in
+                            HStack {
+                                Text(key.capitalized)
+                                Spacer()
+                                Text(gateway.nodePermissions[key] ?? "unknown")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+
+                if !gateway.nodeLastInvocationStatus.isEmpty {
+                    Text(gateway.nodeLastInvocationStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section("Discord") {
                 if let discord = gateway.discordConfig {
                     LabeledContent("Configured") {

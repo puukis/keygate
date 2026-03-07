@@ -3,6 +3,7 @@ import {
   Events,
   GatewayIntentBits,
   Partials,
+  type ChatInputCommandInteraction,
   type Message as DiscordMessage,
 } from 'discord.js';
 import {
@@ -269,6 +270,61 @@ class DiscordChannel extends BaseChannel {
   }
 }
 
+class DiscordInteractionChannel extends BaseChannel {
+  type = 'discord' as const;
+  private lastUpdateAt = 0;
+
+  constructor(private readonly interaction: ChatInputCommandInteraction) {
+    super();
+  }
+
+  async send(content: string): Promise<void> {
+    const chunks = splitDiscordMessage(content);
+    if (!this.interaction.deferred && !this.interaction.replied) {
+      await this.interaction.reply(chunks[0] ?? '(No response)');
+      for (const chunk of chunks.slice(1)) {
+        await this.interaction.followUp(chunk);
+      }
+      return;
+    }
+
+    if (chunks.length > 0) {
+      await this.interaction.editReply(chunks[0] ?? '(No response)');
+      for (const chunk of chunks.slice(1)) {
+        await this.interaction.followUp(chunk);
+      }
+    }
+  }
+
+  async sendStream(stream: AsyncIterable<string>): Promise<void> {
+    if (!this.interaction.deferred && !this.interaction.replied) {
+      await this.interaction.deferReply();
+    }
+
+    let buffer = '';
+    for await (const chunk of stream) {
+      buffer += chunk;
+      const now = Date.now();
+      if (now - this.lastUpdateAt > 1000) {
+        await this.interaction.editReply(truncateDiscordReply(buffer));
+        this.lastUpdateAt = now;
+      }
+    }
+
+    await this.interaction.editReply(truncateDiscordReply(buffer || '(No response)'));
+  }
+
+  async requestConfirmation(prompt: string): Promise<'cancel'> {
+    const message = `${prompt}\n\nThis action requires interactive confirmation and cannot be approved from a Discord slash command.`;
+    if (!this.interaction.deferred && !this.interaction.replied) {
+      await this.interaction.reply({ content: truncateDiscordReply(message), ephemeral: true });
+    } else {
+      await this.interaction.followUp({ content: truncateDiscordReply(message), ephemeral: true });
+    }
+    return 'cancel';
+  }
+}
+
 /**
  * Start the Discord bot
  */
@@ -303,6 +359,7 @@ export async function startDiscordBot(config: KeygateConfig): Promise<Client> {
     const mode = gateway.getSecurityMode();
     const status = mode === 'spicy' ? '🔴 SPICY MODE' : '🟢 Safe Mode';
     c.user.setActivity(status);
+    void registerDiscordSlashCommands(c);
   });
 
   // Listen for mode changes to update status
@@ -380,6 +437,66 @@ export async function startDiscordBot(config: KeygateConfig): Promise<Client> {
     } catch (error) {
       console.error('Error processing Discord message:', error);
       await message.reply('❌ An error occurred while processing your request.');
+    }
+  });
+
+  client.on(Events.InteractionCreate, async (interaction) => {
+    if (!interaction.isChatInputCommand()) {
+      return;
+    }
+
+    const content = buildDiscordSlashCommand(interaction);
+    if (!content) {
+      return;
+    }
+
+    const isDirectMessage = interaction.channel?.isDMBased?.() === true;
+    try {
+      if (isDirectMessage) {
+        const policy = config.discord?.dmPolicy ?? 'pairing';
+        const allowFrom = config.discord?.allowFrom ?? [];
+        const paired = await isUserPaired('discord', interaction.user.id);
+        const allowed = isDmAllowedByPolicy({ policy, userId: interaction.user.id, allowFrom, paired });
+
+        if (!allowed) {
+          const request = await createOrGetPairingCode('discord', interaction.user.id);
+          await interaction.reply({
+            content:
+              `🔐 DM pairing required. Your code: ${request.code}\n` +
+              `Ask the owner to run: keygate pairing approve discord ${request.code}`,
+            ephemeral: true,
+          });
+          return;
+        }
+      }
+
+      const route = await router.resolve({
+        channel: 'discord',
+        accountId: interaction.guildId ?? undefined,
+        chatId: interaction.channelId,
+        userId: interaction.user.id,
+      });
+      const sessionId = route.sessionId;
+      gateway.setSessionWorkspace(sessionId, route.workspacePath);
+
+      const channel = new DiscordInteractionChannel(interaction);
+      const normalized = normalizeDiscordMessage(
+        interaction.id,
+        interaction.channelId,
+        interaction.user.id,
+        content,
+        channel,
+        undefined,
+        sessionId,
+      );
+      await gateway.processMessage(normalized);
+    } catch (error) {
+      console.error('Error processing Discord slash command:', error);
+      if (!interaction.deferred && !interaction.replied) {
+        await interaction.reply({ content: '❌ An error occurred while processing your request.', ephemeral: true }).catch(() => {});
+      } else {
+        await interaction.followUp({ content: '❌ An error occurred while processing your request.', ephemeral: true }).catch(() => {});
+      }
     }
   });
 
@@ -479,4 +596,152 @@ function findMatchedPrefix(content: string, prefixes: string[]): string | null {
   }
 
   return null;
+}
+
+async function registerDiscordSlashCommands(client: Client<true> | Client): Promise<void> {
+  if (!client.application) {
+    return;
+  }
+
+  await client.application.commands.set([
+    {
+      name: 'help',
+      description: 'Show available Keygate operator commands.',
+    },
+    {
+      name: 'status',
+      description: 'Show current model, tokens, and runtime health.',
+    },
+    {
+      name: 'model',
+      description: 'Show or update the session model override.',
+      options: [
+        {
+          name: 'provider',
+          description: 'Provider override',
+          type: 3,
+          required: false,
+          choices: [
+            { name: 'OpenAI', value: 'openai' },
+            { name: 'OpenAI Codex', value: 'openai-codex' },
+            { name: 'Gemini', value: 'gemini' },
+            { name: 'Ollama', value: 'ollama' },
+          ],
+        },
+        {
+          name: 'model',
+          description: 'Model id',
+          type: 3,
+          required: false,
+        },
+        {
+          name: 'reasoning',
+          description: 'Reasoning effort for Codex models',
+          type: 3,
+          required: false,
+          choices: [
+            { name: 'Low', value: 'low' },
+            { name: 'Medium', value: 'medium' },
+            { name: 'High', value: 'high' },
+            { name: 'Extra High', value: 'xhigh' },
+          ],
+        },
+      ],
+    },
+    {
+      name: 'compact',
+      description: 'Summarize the session and keep a short recent tail.',
+    },
+    {
+      name: 'debug',
+      description: 'Show or toggle the session debug buffer.',
+      options: [
+        {
+          name: 'state',
+          description: 'Turn debug logging on or off',
+          type: 3,
+          required: false,
+          choices: [
+            { name: 'On', value: 'on' },
+            { name: 'Off', value: 'off' },
+          ],
+        },
+      ],
+    },
+    {
+      name: 'stop',
+      description: 'Cancel the active run for this session.',
+    },
+    {
+      name: 'new',
+      description: 'Start a fresh session in the current thread.',
+    },
+    {
+      name: 'reset',
+      description: 'Reset the session history and local overrides.',
+    },
+  ]);
+}
+
+function buildDiscordSlashCommand(interaction: ChatInputCommandInteraction): string | null {
+  switch (interaction.commandName) {
+    case 'help':
+    case 'status':
+    case 'compact':
+    case 'stop':
+    case 'new':
+    case 'reset':
+      return `/${interaction.commandName}`;
+    case 'debug': {
+      const state = interaction.options.getString('state');
+      return state ? `/debug ${state}` : '/debug';
+    }
+    case 'model': {
+      const provider = interaction.options.getString('provider');
+      const model = interaction.options.getString('model');
+      const reasoning = interaction.options.getString('reasoning');
+      const parts = ['/model'];
+      if (provider) {
+        parts.push(provider);
+      }
+      if (model) {
+        parts.push(model);
+      }
+      if (reasoning) {
+        parts.push(reasoning);
+      }
+      return parts.join(' ');
+    }
+    default:
+      return null;
+  }
+}
+
+function splitDiscordMessage(content: string, maxLength = 1900): string[] {
+  const chunks: string[] = [];
+  let remaining = content;
+
+  while (remaining.length > 0) {
+    if (remaining.length <= maxLength) {
+      chunks.push(remaining);
+      break;
+    }
+
+    let breakPoint = remaining.lastIndexOf('\n', maxLength);
+    if (breakPoint === -1 || breakPoint < maxLength / 2) {
+      breakPoint = remaining.lastIndexOf(' ', maxLength);
+    }
+    if (breakPoint === -1 || breakPoint < maxLength / 2) {
+      breakPoint = maxLength;
+    }
+
+    chunks.push(remaining.slice(0, breakPoint));
+    remaining = remaining.slice(breakPoint).trimStart();
+  }
+
+  return chunks;
+}
+
+function truncateDiscordReply(content: string): string {
+  return content.length > 1900 ? `${content.slice(0, 1900)}...(truncated)` : content;
 }

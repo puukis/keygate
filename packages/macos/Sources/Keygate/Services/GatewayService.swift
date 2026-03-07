@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 import os
@@ -63,13 +64,41 @@ final class GatewayService: ObservableObject {
 
     // Context usage
     @Published var contextUsage: ContextUsagePayload?
+    @Published var nodePairRequest: NodePairRequest?
+    @Published var nodeRecord: NodeRecord?
+    @Published var nodeCapabilitySelection: Set<NodeCapability> = Set(NodeCapability.allCases.filter { $0 != .invoke })
+    @Published var nodePermissions: [String: String] = [:]
+    @Published var nodeLastInvocationStatus: String = ""
+    @Published var sessionDebugEvents: [DebugEvent] = []
 
     let host: String
     let port: Int
+    private let nodeRuntime = MacNodeRuntime()
+    private var nodeHeartbeatTask: Task<Void, Never>?
 
     private init() {
         self.host = ProcessInfo.processInfo.environment["KEYGATE_HOST"] ?? "127.0.0.1"
         self.port = Int(ProcessInfo.processInfo.environment["KEYGATE_PORT"] ?? "18790") ?? 18790
+        if let saved = LocalNodeStore.loadCapabilitySelection() {
+            self.nodeCapabilitySelection = saved
+        }
+        if let credentials = LocalNodeStore.loadCredentials() {
+            self.nodeRecord = NodeRecord(
+                id: credentials.nodeId,
+                name: credentials.name,
+                capabilities: credentials.capabilities,
+                trusted: true,
+                authToken: credentials.authToken,
+                platform: credentials.platform,
+                version: credentials.version,
+                online: false,
+                permissions: nil,
+                createdAt: "",
+                updatedAt: "",
+                lastSeenAt: "",
+                lastInvocationAt: nil
+            )
+        }
     }
 
     var baseURL: URL {
@@ -89,11 +118,30 @@ final class GatewayService: ObservableObject {
         ws.onConnect = { [weak self] in
             self?.connectionState = .connected
             self?.logger.info("Gateway connected")
+            Task { await self?.refreshNodeRegistration(forceHeartbeat: false) }
         }
 
         ws.onDisconnect = { [weak self] in
             self?.connectionState = .disconnected
             self?.logger.info("Gateway disconnected — will retry")
+            self?.nodeHeartbeatTask?.cancel()
+            if let current = self?.nodeRecord {
+                self?.nodeRecord = NodeRecord(
+                    id: current.id,
+                    name: current.name,
+                    capabilities: current.capabilities,
+                    trusted: current.trusted,
+                    authToken: current.authToken,
+                    platform: current.platform,
+                    version: current.version,
+                    online: false,
+                    permissions: current.permissions,
+                    createdAt: current.createdAt,
+                    updatedAt: current.updatedAt,
+                    lastSeenAt: current.lastSeenAt,
+                    lastInvocationAt: current.lastInvocationAt
+                )
+            }
         }
 
         ws.onMessage = { [weak self] message in
@@ -105,6 +153,7 @@ final class GatewayService: ObservableObject {
     }
 
     func disconnect() {
+        nodeHeartbeatTask?.cancel()
         client?.disconnect()
         client = nil
         connectionState = .disconnected
@@ -216,6 +265,39 @@ final class GatewayService: ObservableObject {
         send(.getModels(provider: provider))
     }
 
+    func requestNodePairing() {
+        let name = Host.current().localizedName ?? "Keygate Mac"
+        let capabilities = Array(nodeCapabilitySelection).sorted { $0.rawValue < $1.rawValue }
+        send(.nodePairRequest(nodeName: name, capabilities: capabilities))
+    }
+
+    func approveNodePairing() {
+        guard let request = nodePairRequest else { return }
+        send(.nodePairApprove(requestId: request.requestId, pairingCode: request.pairingCode))
+    }
+
+    func forgetPairedNode() {
+        LocalNodeStore.clearCredentials()
+        nodeRecord = nil
+        nodePermissions = [:]
+        nodePairRequest = nil
+        nodeHeartbeatTask?.cancel()
+    }
+
+    func setNodeCapabilityEnabled(_ capability: NodeCapability, enabled: Bool) {
+        if enabled {
+            nodeCapabilitySelection.insert(capability)
+        } else {
+            nodeCapabilitySelection.remove(capability)
+        }
+        LocalNodeStore.saveCapabilitySelection(nodeCapabilitySelection)
+    }
+
+    func refreshDebugEvents() {
+        guard let activeSession = SessionStore.shared.activeSessionId ?? sessionId else { return }
+        send(.debugEvents(sessionId: normalizeSessionId(activeSession)))
+    }
+
     // MARK: - Message handling
 
     /// Canonicalize session IDs so web sessions always use the "web:" prefix.
@@ -242,6 +324,7 @@ final class GatewayService: ObservableObject {
             browserConfig = payload.browser
             skillsConfig = payload.skills
             requestModels(provider: payload.llm.provider)
+            Task { await refreshNodeRegistration(forceHeartbeat: false) }
 
         case .sessionSnapshot(let payload):
             SessionStore.shared.updateSessions(payload.sessions)
@@ -371,6 +454,69 @@ final class GatewayService: ObservableObject {
         case .mcpBrowserStatus(let payload):
             browserConfig = payload.browser
 
+        case .nodePairRequestResult(let payload):
+            nodePairRequest = payload.request
+            nodeLastInvocationStatus = "Pairing code ready."
+
+        case .nodePairApproveResult(let payload):
+            nodePairRequest = nil
+            nodeRecord = payload.node
+            if let authToken = payload.node.authToken {
+                LocalNodeStore.saveCredentials(.init(
+                    nodeId: payload.node.id,
+                    authToken: authToken,
+                    name: payload.node.name,
+                    capabilities: payload.node.capabilities,
+                    platform: "macOS",
+                    version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+                ))
+            }
+            Task { await refreshNodeRegistration(forceHeartbeat: false) }
+
+        case .nodeRegisterResult(let payload):
+            nodeRecord = payload.node
+            if let permissions = payload.node.permissions {
+                nodePermissions = permissions.mapValues(\.rawValue)
+            }
+            startNodeHeartbeat()
+
+        case .nodeInvokeRequest(let payload):
+            Task { await handleNodeInvokeRequest(payload) }
+
+        case .nodeStatusChanged(let payload):
+            guard payload.nodeId == nodeRecord?.id else { break }
+            if let current = nodeRecord {
+                nodeRecord = NodeRecord(
+                    id: current.id,
+                    name: current.name,
+                    capabilities: current.capabilities,
+                    trusted: current.trusted,
+                    authToken: current.authToken,
+                    platform: current.platform,
+                    version: current.version,
+                    online: payload.online,
+                    permissions: current.permissions,
+                    createdAt: current.createdAt,
+                    updatedAt: current.updatedAt,
+                    lastSeenAt: payload.lastSeenAt,
+                    lastInvocationAt: current.lastInvocationAt
+                )
+            }
+
+        case .debugEvents(let payload):
+            let normalized = normalizeSessionId(payload.sessionId)
+            if normalized == SessionStore.shared.activeSessionId || normalized == sessionId {
+                sessionDebugEvents = payload.events
+            }
+
+        case .debugEvent(let payload):
+            let normalized = normalizeSessionId(payload.sessionId)
+            guard normalized == SessionStore.shared.activeSessionId || normalized == sessionId else { break }
+            sessionDebugEvents.append(payload.event)
+            if sessionDebugEvents.count > 200 {
+                sessionDebugEvents.removeFirst(sessionDebugEvents.count - 200)
+            }
+
         case .error(let payload):
             logger.error("Server error: \(payload.error)")
 
@@ -395,5 +541,163 @@ final class GatewayService: ObservableObject {
             return preferred
         }
         return "application/octet-stream"
+    }
+
+    private func refreshNodeRegistration(forceHeartbeat: Bool) async {
+        guard connectionState.isConnected, let credentials = LocalNodeStore.loadCredentials() else {
+            return
+        }
+
+        let permissions = await nodeRuntime.currentPermissions()
+        nodePermissions = permissions
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? credentials.version
+
+        if forceHeartbeat {
+            send(.nodeHeartbeat(
+                nodeId: credentials.nodeId,
+                authToken: credentials.authToken,
+                platform: "macOS",
+                version: version,
+                permissions: permissions
+            ))
+        } else {
+            send(.nodeRegister(
+                nodeId: credentials.nodeId,
+                authToken: credentials.authToken,
+                platform: "macOS",
+                version: version,
+                permissions: permissions
+            ))
+        }
+    }
+
+    private func startNodeHeartbeat() {
+        nodeHeartbeatTask?.cancel()
+        nodeHeartbeatTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(15))
+                guard let self, !Task.isCancelled else { return }
+                await self.refreshNodeRegistration(forceHeartbeat: true)
+            }
+        }
+    }
+
+    private func handleNodeInvokeRequest(_ payload: NodeInvokeRequestPayload) async {
+        guard payload.nodeId == nodeRecord?.id || payload.nodeId == LocalNodeStore.loadCredentials()?.nodeId else {
+            return
+        }
+
+        let params = payload.params ?? [:]
+        if ["camera", "screen", "shell"].contains(payload.capability.rawValue) {
+            let approved = requestHighRiskNodeApproval(for: payload)
+            if !approved {
+                send(.nodeInvokeResponse(
+                    requestId: payload.requestId,
+                    nodeId: payload.nodeId,
+                    capability: payload.capability,
+                    ok: false,
+                    message: "User denied high-risk node action."
+                ))
+                nodeLastInvocationStatus = "Denied \(payload.capability.rawValue) request."
+                return
+            }
+        }
+
+        do {
+            let result = try await nodeRuntime.execute(
+                capability: payload.capability,
+                params: params
+            ) { [weak self] fileURL, sessionId in
+                guard let self else {
+                    throw NSError(domain: "GatewayService", code: 99, userInfo: [NSLocalizedDescriptionKey: "Gateway service unavailable during upload."])
+                }
+                return try await self.uploadImageAttachment(fileURL: fileURL, sessionId: self.normalizeSessionId(sessionId))
+            }
+            send(.nodeInvokeResponse(
+                requestId: payload.requestId,
+                nodeId: payload.nodeId,
+                capability: payload.capability,
+                ok: true,
+                message: result.message,
+                payload: result.payload
+            ))
+            nodeLastInvocationStatus = "\(payload.capability.rawValue) succeeded at \(Date().formatted(date: .omitted, time: .standard))"
+            await refreshNodeRegistration(forceHeartbeat: true)
+        } catch {
+            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            send(.nodeInvokeResponse(
+                requestId: payload.requestId,
+                nodeId: payload.nodeId,
+                capability: payload.capability,
+                ok: false,
+                message: message
+            ))
+            nodeLastInvocationStatus = "\(payload.capability.rawValue) failed: \(message)"
+        }
+    }
+
+    private func requestHighRiskNodeApproval(for payload: NodeInvokeRequestPayload) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Allow Keygate node action?"
+        alert.informativeText = highRiskNodeSummary(for: payload)
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Allow")
+        alert.addButton(withTitle: "Deny")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func highRiskNodeSummary(for payload: NodeInvokeRequestPayload) -> String {
+        switch payload.capability {
+        case .shell:
+            if let command = payload.params?["command"]?.value as? String {
+                return "Shell command:\n\(command)"
+            }
+        case .camera:
+            return "Capture a still image from the Mac camera."
+        case .screen:
+            return "Capture the current screen contents."
+        default:
+            break
+        }
+        return "Capability: \(payload.capability.rawValue)"
+    }
+}
+
+private struct LocalNodeCredentials: Codable {
+    let nodeId: String
+    let authToken: String
+    let name: String
+    let capabilities: [NodeCapability]
+    let platform: String
+    let version: String
+}
+
+private enum LocalNodeStore {
+    private static let credentialsKey = "keygate.localNodeCredentials"
+    private static let capabilitySelectionKey = "keygate.localNodeCapabilitySelection"
+
+    static func loadCredentials() -> LocalNodeCredentials? {
+        guard let data = UserDefaults.standard.data(forKey: credentialsKey) else { return nil }
+        return try? JSONDecoder().decode(LocalNodeCredentials.self, from: data)
+    }
+
+    static func saveCredentials(_ credentials: LocalNodeCredentials) {
+        if let data = try? JSONEncoder().encode(credentials) {
+            UserDefaults.standard.set(data, forKey: credentialsKey)
+        }
+    }
+
+    static func clearCredentials() {
+        UserDefaults.standard.removeObject(forKey: credentialsKey)
+    }
+
+    static func loadCapabilitySelection() -> Set<NodeCapability>? {
+        guard let raw = UserDefaults.standard.array(forKey: capabilitySelectionKey) as? [String] else { return nil }
+        let values = raw.compactMap(NodeCapability.init(rawValue:))
+        return Set(values)
+    }
+
+    static func saveCapabilitySelection(_ selection: Set<NodeCapability>) {
+        UserDefaults.standard.set(selection.map(\.rawValue).sorted(), forKey: capabilitySelectionKey)
     }
 }
