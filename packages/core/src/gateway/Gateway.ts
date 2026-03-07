@@ -26,6 +26,7 @@ import { createLLMProvider } from '../llm/index.js';
 import { SkillsManager } from '../skills/index.js';
 import { PluginRuntimeManager } from '../plugins/index.js';
 import { allBuiltinTools } from '../tools/builtin/index.js';
+import { GitService } from '../git/index.js';
 import { SchedulerService, SchedulerStore, type ScheduledJob, type ScheduledJobCreateInput, type ScheduledJobUpdateInput } from '../scheduler/index.js';
 
 const CANCEL_HARD_STOP_TIMEOUT_MS = 2_000;
@@ -76,6 +77,7 @@ export class Gateway extends EventEmitter<KeygateEvents> {
   public readonly schedulerStore: SchedulerStore;
   public readonly schedulerService: SchedulerService;
   public readonly memoryManager: MemoryManager;
+  public readonly git: GitService;
 
   private constructor(config: KeygateConfig) {
     super();
@@ -116,6 +118,9 @@ export class Gateway extends EventEmitter<KeygateEvents> {
       mmr: false,
     };
     this.memoryManager = new MemoryManager(config, memoryConfig);
+
+    // Initialize git service
+    this.git = new GitService();
 
     // Initialize brain with LLM provider
     this.brain = new Brain(config, this.toolExecutor, this, this.memory, this.memoryManager);
