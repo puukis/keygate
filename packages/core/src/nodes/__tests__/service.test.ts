@@ -23,6 +23,25 @@ describe('NodeService', () => {
     const service = new NodeService();
     const req = await service.requestPairing('MacBook Node', ['screen', 'notify']);
     const node = await service.approvePairing(req.requestId, req.pairingCode);
+    await service.registerNode(
+      node.id,
+      node.authToken!,
+      {
+        platform: 'darwin',
+        version: '1.0.0',
+        permissions: { screen: 'granted', notify: 'granted' },
+      },
+      {
+        invoke: async ({ nodeId, capability, params }) => ({
+          ok: true,
+          nodeId,
+          capability,
+          mode: 'brokered',
+          message: 'captured',
+          params,
+        }),
+      }
+    );
 
     const denied = await service.invokeNode(node.id, 'screen', {});
     expect(denied.ok).toBe(false);
@@ -30,7 +49,7 @@ describe('NodeService', () => {
 
     const allowed = await service.invokeNode(node.id, 'screen', { highRiskAck: true, note: 'capture now' });
     expect(allowed.ok).toBe(true);
-    expect(allowed.mode).toBe('stub');
+    expect(allowed.mode).toBe('brokered');
   });
 
   it('denies capability not granted', async () => {

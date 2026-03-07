@@ -1,90 +1,110 @@
 # Web App
 
-The Keygate web app is your main operations cockpit.
+The web app is the primary operator console for a running Keygate gateway.
 
-## Sidebar navigation
+## Main areas
 
-- Chat
-- Overview
-- Channels
-- Instances
-- Sessions
-- Automations
+### Chat
 
-## Chat
+Use **Chat** for:
 
-Use Chat for live model interaction.
+- live conversations
+- text slash commands such as `/status`, `/model`, `/compact`, and `/debug`
+- attachments
+- mirrored read-only sessions from external channels
 
-Capabilities:
+### Overview
 
-- streaming responses
-- attachment support
-- read-only hints for mirrored channel sessions
-- live stream activity timeline
-- context usage meter
+The **Overview** tab is the high-level runtime health screen. It summarizes:
 
-## Overview
-
-Operational summary view for:
-
-- connection state
-- security mode
-- current provider/model
+- websocket connection state
+- current security mode
+- selected provider/model
+- browser and channel readiness
+- recent usage totals
 - high-level runtime status
 
-## Channels
+### Instances
 
-Channel readiness snapshot and fast path to channel config in the settings drawer.
+**Instances** is the runtime inventory view.
 
-## Instances
+It shows:
 
-Quick visibility into active runtime/session metrics and stream state.
+- active Docker sandboxes
+- sandbox scope and image
+- paired device nodes
+- node online/offline state
+- node platform/version
+- last seen and last invocation timestamps
 
-## Sessions
+Use it when safe-mode execution or device-node routing looks suspicious.
 
-Sessions tab is the canonical place to:
+### Sessions
 
-- create new sessions
-- switch/open sessions
-- rename web sessions
-- delete web sessions
+The **Sessions** tab manages web sessions:
 
-## Automations
+- create
+- rename
+- switch
+- delete
 
-Create scheduler jobs with:
+Session compaction and debug mode are session-scoped, so the selected session matters across Chat, Usage, and Debug.
 
-- cron expression
-- target session
-- prompt instruction
-- enabled/disabled state
+### Automations
 
-Recommended pattern:
+The **Automations** tab now has three sections:
 
-- Keep automations narrowly scoped to dedicated sessions
-- Name sessions after project/goal for easier auditing
+- **Scheduler** for cron-driven prompts
+- **Webhooks** for signed HTTP routes
+- **Gmail** for Gmail account/watch routing
 
-## Configuration drawer
+All three automation types deliver into normal Keygate sessions instead of bypassing the session pipeline.
 
-Includes:
+### Usage
 
-- Theme preferences
-- Security mode toggles
-- Provider/model selection and reasoning effort
-- Plugin management (install, reload, enable/disable, config editing)
-- Browser MCP management and policy settings
-- Discord/Slack config
-- Session controls
-- Marketplace and memory utilities
+The **Usage** tab is no longer a placeholder. It shows:
 
-## Plugins panel
+- total turns, tokens, and cost
+- 24h / 7d / 30d / all windows
+- provider breakdowns
+- model breakdowns
+- session breakdowns
+- daily aggregates
 
-The Plugins panel is now the operator surface for the runtime plugin system.
+### Debug
 
-It supports:
+The **Debug** tab shows the bounded debug event buffer for the active session.
 
-- install from npm, git, local directories, or `.tgz`
-- inspect plugin tools, routes, commands, and services
-- enable, disable, reload, update, remove, or purge plugins
-- validate plugin config
-- schema-driven config forms for supported JSON Schema shapes
-- raw JSON editing fallback for complex schemas
+Enable it from chat:
+
+```text
+/debug on
+```
+
+Disable it with:
+
+```text
+/debug off
+```
+
+## Configuration surfaces
+
+The configuration area includes:
+
+- appearance and theme
+- safe/spicy mode controls
+- provider/model selection
+- browser MCP policy
+- Discord, Slack, and WhatsApp settings
+- plugin management
+
+## Operational notes
+
+- **Usage**, **Debug**, and `/status` all read from the same persisted runtime state.
+- **Instances** is the best first stop for Docker sandbox and device-node inspection.
+- **Automations** can create Gmail watches after the Gmail account has already been linked through the CLI.
+
+## Current limits
+
+- Gmail OAuth login is still completed through `keygate gmail login`, not directly in the browser.
+- Discord and Slack native slash command registration happens inside their channel runtimes, not in the web app itself.

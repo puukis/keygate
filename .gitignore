@@ -48,3 +48,5 @@ test-results/
 
 # Release scripts
 scripts/bump-release.sh
+
+.playwright-cli/

@@ -3,9 +3,11 @@ import type {
   CodexReasoningEffort,
   KeygateConfig,
   LLMProvider,
+  LLMUsageSnapshot,
   Message,
   ProviderModelOption,
   Session,
+  SessionModelOverride,
   ToolCall,
   ToolExecutionContext,
 } from '../types.js';
@@ -109,7 +111,8 @@ export class ConcurrencyLimiter {
  * Continues calling tools until LLM generates a final response
  */
 export class Brain {
-  private llm: LLMProvider;
+  private defaultProviderKey: string;
+  private providerCache = new Map<string, LLMProvider>();
   private config: KeygateConfig;
   private toolExecutor: ToolExecutor;
   private gateway: Gateway;
@@ -120,11 +123,126 @@ export class Brain {
 
   constructor(config: KeygateConfig, toolExecutor: ToolExecutor, gateway: Gateway, memoryStore?: AgentMemoryStore, memoryManager?: MemoryManager) {
     this.config = config;
-    this.llm = createLLMProvider(config);
+    this.defaultProviderKey = this.buildProviderKey({
+      provider: config.llm.provider,
+      model: config.llm.model,
+      reasoningEffort: config.llm.reasoningEffort,
+    });
+    this.providerCache.set(this.defaultProviderKey, createLLMProvider(config));
     this.toolExecutor = toolExecutor;
     this.gateway = gateway;
     this.memoryStore = memoryStore ?? null;
     this.memoryManager = memoryManager ?? null;
+  }
+
+  dispose(): void {
+    for (const provider of this.providerCache.values()) {
+      void provider.dispose?.();
+    }
+    this.providerCache.clear();
+  }
+
+  private buildProviderKey(selection: SessionModelOverride): string {
+    return `${selection.provider}\u0000${selection.model}\u0000${selection.reasoningEffort ?? ''}`;
+  }
+
+  private getDefaultSelection(): SessionModelOverride {
+    return {
+      provider: this.config.llm.provider,
+      model: this.config.llm.model,
+      reasoningEffort: this.config.llm.reasoningEffort,
+    };
+  }
+
+  private getSelectionForSession(session: Session): SessionModelOverride {
+    return session.modelOverride ?? this.getDefaultSelection();
+  }
+
+  private getProviderForSelection(selection: SessionModelOverride): LLMProvider {
+    const key = this.buildProviderKey(selection);
+    const existing = this.providerCache.get(key);
+    if (existing) {
+      return existing;
+    }
+
+    const provider = createLLMProvider({
+      ...this.config,
+      llm: {
+        ...this.config.llm,
+        provider: selection.provider,
+        model: selection.model,
+        reasoningEffort: selection.reasoningEffort,
+      },
+    });
+    this.providerCache.set(key, provider);
+    return provider;
+  }
+
+  async compactSessionHistory(session: Session): Promise<string> {
+    const selection = this.getSelectionForSession(session);
+    const llm = this.getProviderForSelection(selection);
+    const transcript = session.messages
+      .filter((message) => message.role === 'user' || message.role === 'assistant')
+      .slice(-60)
+      .map((message) => `${message.role.toUpperCase()}: ${message.content}`)
+      .join('\n\n');
+
+    if (transcript.trim().length === 0) {
+      return 'No transcript content was available to summarize.';
+    }
+
+    try {
+      const response = await llm.chat([
+        {
+          role: 'system',
+          content: 'Summarize the conversation for future continuation. Preserve goals, decisions, constraints, open questions, files, and promised follow-ups. Use concise prose.',
+        },
+        {
+          role: 'user',
+          content: transcript,
+        },
+      ], {
+        maxTokens: 600,
+        sessionId: `compact:${session.id}`,
+      });
+
+      const summary = response.content.trim();
+      if (summary.length > 0) {
+        return summary;
+      }
+    } catch {
+      // Fall back to a deterministic summary below.
+    }
+
+    const lastUser = getLatestUserMessageContent(session.messages);
+    const lastAssistant = [...session.messages].reverse().find((message) => message.role === 'assistant')?.content ?? '';
+    return [
+      'Conversation summary:',
+      lastUser ? `Latest user request: ${lastUser}` : 'Latest user request: unavailable',
+      lastAssistant ? `Latest assistant response: ${lastAssistant}` : 'Latest assistant response: unavailable',
+    ].join('\n');
+  }
+
+  private buildWorkingMessages(session: Session, systemPrompt: string): Message[] {
+    const messages: Message[] = [
+      { role: 'system', content: systemPrompt },
+    ];
+
+    if (session.compactionSummaryRef) {
+      const compaction = this.gateway.db.getSessionCompaction(session.compactionSummaryRef);
+      if (compaction?.summary) {
+        messages.push({
+          role: 'system',
+          content: `Conversation summary:\n${compaction.summary}`,
+        });
+      }
+
+      messages.push(...session.messages.slice(-12));
+      return messages;
+    }
+
+    messages.push(...session.messages);
+    return messages;
   }
 
   /**
@@ -141,42 +259,73 @@ export class Brain {
     }
 
     const latestUserPrompt = getLatestUserMessageContent(session.messages);
+    const selectionPayload = await this.gateway.plugins.runHook('before_model_resolve', {
+      sessionId: session.id,
+      ...this.getSelectionForSession(session),
+    });
+    const selection: SessionModelOverride = {
+      provider: (selectionPayload.provider ?? this.getSelectionForSession(session).provider) as SessionModelOverride['provider'],
+      model: typeof selectionPayload.model === 'string' ? selectionPayload.model : this.getSelectionForSession(session).model,
+      reasoningEffort: typeof selectionPayload.reasoningEffort === 'string'
+        ? selectionPayload.reasoningEffort as SessionModelOverride['reasoningEffort']
+        : this.getSelectionForSession(session).reasoningEffort,
+    };
+    const llm = this.getProviderForSelection(selection);
     const skillTurnContext = await this.gateway.skills.buildTurnContext(
       session.id,
       latestUserPrompt,
       options.explicitSkillInvocation
     );
-    const systemPrompt = await this.getSystemPrompt(session, skillTurnContext);
+    const promptPayload = await this.gateway.plugins.runHook('before_prompt_build', {
+      sessionId: session.id,
+      systemPrompt: await this.getSystemPrompt(session, skillTurnContext, llm),
+      envOverlay: { ...skillTurnContext.envOverlay },
+    });
+    const systemPrompt = typeof promptPayload.systemPrompt === 'string'
+      ? promptPayload.systemPrompt
+      : await this.getSystemPrompt(session, skillTurnContext, llm);
+    const envOverlay = (
+      promptPayload.envOverlay && typeof promptPayload.envOverlay === 'object' && !Array.isArray(promptPayload.envOverlay)
+        ? promptPayload.envOverlay as Record<string, string>
+        : skillTurnContext.envOverlay
+    );
 
     // Build messages with system prompt
-    const messages: Message[] = [
-      { role: 'system', content: systemPrompt },
-      ...session.messages,
-    ];
+    const messages: Message[] = this.buildWorkingMessages(session, systemPrompt);
 
     // Get tool definitions
     const tools = this.toolExecutor.getToolDefinitions();
 
-    const contextLimit = getContextWindowLimit(this.config.llm.provider, this.config.llm.model);
+    const contextLimit = getContextWindowLimit(selection.provider, selection.model);
     let iterations = 0;
+    const usageSnapshots: LLMUsageSnapshot[] = [];
 
     while (iterations < this.maxIterations) {
       throwIfAborted(options.runContext?.signal);
       iterations++;
       const truncated = truncateMessages(messages, contextLimit);
-      const providerMessages = prepareMessagesForProvider(truncated, this.llm.name);
+      const providerMessages = prepareMessagesForProvider(truncated, llm.name);
       this.emitContextUsage(session.id, providerMessages, contextLimit);
 
       // Call LLM with tools
       throwIfAborted(options.runContext?.signal);
-      const response = await this.llm.chat(providerMessages, {
+      const startedAt = Date.now();
+      const response = await llm.chat(providerMessages, {
         tools,
-        ...this.buildProviderOptions(session.id, channel, skillTurnContext.contextHash),
+        ...this.buildProviderOptions(session.id, channel, llm, skillTurnContext.contextHash),
       });
       throwIfAborted(options.runContext?.signal);
+      usageSnapshots.push(this.normalizeInvocationUsage(response.usage, {
+        provider: selection.provider,
+        model: selection.model,
+        promptMessages: providerMessages,
+        responseText: response.content,
+        latencyMs: Date.now() - startedAt,
+      }));
 
       // If no tool calls, return the response content
       if (!response.toolCalls || response.toolCalls.length === 0) {
+        this.gateway.recordTurnUsage(session.id, aggregateUsageSnapshots(usageSnapshots));
         return this.finalizeAssistantContent(response.content, messages);
       }
 
@@ -192,7 +341,7 @@ export class Brain {
       const results = await Promise.all(
         response.toolCalls.map((toolCall) =>
           limiter.run(() =>
-            this.executeToolCall(toolCall, channel, session.id, skillTurnContext.envOverlay, options.runContext)
+            this.executeToolCall(toolCall, channel, session.id, envOverlay, options.runContext)
           )
         )
       );
@@ -211,6 +360,9 @@ export class Brain {
       }
     }
 
+    if (usageSnapshots.length > 0) {
+      this.gateway.recordTurnUsage(session.id, aggregateUsageSnapshots(usageSnapshots));
+    }
     return 'Maximum iterations reached. Please try breaking down your request into smaller steps.';
   }
 
@@ -229,36 +381,60 @@ export class Brain {
     }
 
     const latestUserPrompt = getLatestUserMessageContent(session.messages);
+    const selectionPayload = await this.gateway.plugins.runHook('before_model_resolve', {
+      sessionId: session.id,
+      ...this.getSelectionForSession(session),
+    });
+    const selection: SessionModelOverride = {
+      provider: (selectionPayload.provider ?? this.getSelectionForSession(session).provider) as SessionModelOverride['provider'],
+      model: typeof selectionPayload.model === 'string' ? selectionPayload.model : this.getSelectionForSession(session).model,
+      reasoningEffort: typeof selectionPayload.reasoningEffort === 'string'
+        ? selectionPayload.reasoningEffort as SessionModelOverride['reasoningEffort']
+        : this.getSelectionForSession(session).reasoningEffort,
+    };
+    const llm = this.getProviderForSelection(selection);
     const skillTurnContext = await this.gateway.skills.buildTurnContext(
       session.id,
       latestUserPrompt,
       options.explicitSkillInvocation
     );
-    const systemPrompt = await this.getSystemPrompt(session, skillTurnContext);
+    const promptPayload = await this.gateway.plugins.runHook('before_prompt_build', {
+      sessionId: session.id,
+      systemPrompt: await this.getSystemPrompt(session, skillTurnContext, llm),
+      envOverlay: { ...skillTurnContext.envOverlay },
+    });
+    const systemPrompt = typeof promptPayload.systemPrompt === 'string'
+      ? promptPayload.systemPrompt
+      : await this.getSystemPrompt(session, skillTurnContext, llm);
+    const envOverlay = (
+      promptPayload.envOverlay && typeof promptPayload.envOverlay === 'object' && !Array.isArray(promptPayload.envOverlay)
+        ? promptPayload.envOverlay as Record<string, string>
+        : skillTurnContext.envOverlay
+    );
 
-    const messages: Message[] = [
-      { role: 'system', content: systemPrompt },
-      ...session.messages,
-    ];
+    const messages: Message[] = this.buildWorkingMessages(session, systemPrompt);
 
     const tools = this.toolExecutor.getToolDefinitions();
-    const contextLimit = getContextWindowLimit(this.config.llm.provider, this.config.llm.model);
+    const contextLimit = getContextWindowLimit(selection.provider, selection.model);
     let iterations = 0;
     let pendingToolCalls: ToolCall[] = [];
     const spicyMaxObedience = this.isSpicyMaxObedienceActive();
+    const usageSnapshots: LLMUsageSnapshot[] = [];
 
     while (iterations < this.maxIterations) {
       throwIfAborted(options.runContext?.signal);
       iterations++;
       const truncated = truncateMessages(messages, contextLimit);
-      const providerMessages = prepareMessagesForProvider(truncated, this.llm.name);
+      const providerMessages = prepareMessagesForProvider(truncated, llm.name);
       this.emitContextUsage(session.id, providerMessages, contextLimit);
 
       // Stream LLM response
       let fullContent = '';
-      const streamIterator = this.llm.stream(providerMessages, {
+      let latestUsage: LLMUsageSnapshot | undefined;
+      const startedAt = Date.now();
+      const streamIterator = llm.stream(providerMessages, {
         tools,
-        ...this.buildProviderOptions(session.id, channel, skillTurnContext.contextHash),
+        ...this.buildProviderOptions(session.id, channel, llm, skillTurnContext.contextHash),
       })[Symbol.asyncIterator]();
 
       try {
@@ -275,22 +451,37 @@ export class Brain {
               yield chunk.content;
             }
           }
+
+          if (chunk.usage) {
+            latestUsage = chunk.usage;
+          }
           
           if (chunk.toolCalls) {
             pendingToolCalls = chunk.toolCalls;
-          }
-
-          if (chunk.done && pendingToolCalls.length === 0) {
-            if (spicyMaxObedience) {
-              yield this.finalizeAssistantContent(fullContent, messages);
-            }
-            return;
           }
         }
       } finally {
         if (typeof streamIterator.return === 'function') {
           await streamIterator.return();
         }
+      }
+
+      usageSnapshots.push(this.normalizeInvocationUsage(latestUsage, {
+        provider: selection.provider,
+        model: selection.model,
+        promptMessages: providerMessages,
+        responseText: fullContent,
+        latencyMs: Date.now() - startedAt,
+      }));
+
+      if (pendingToolCalls.length === 0) {
+        if (usageSnapshots.length > 0) {
+          this.gateway.recordTurnUsage(session.id, aggregateUsageSnapshots(usageSnapshots));
+        }
+        if (spicyMaxObedience) {
+          yield this.finalizeAssistantContent(fullContent, messages);
+        }
+        return;
       }
 
       throwIfAborted(options.runContext?.signal);
@@ -314,7 +505,7 @@ export class Brain {
         const results = await Promise.all(
           toolCallsCopy.map((toolCall) =>
             limiter.run(() =>
-              this.executeToolCall(toolCall, channel, session.id, skillTurnContext.envOverlay, options.runContext)
+              this.executeToolCall(toolCall, channel, session.id, envOverlay, options.runContext)
             )
           )
         );
@@ -339,6 +530,9 @@ export class Brain {
       }
     }
 
+    if (usageSnapshots.length > 0) {
+      this.gateway.recordTurnUsage(session.id, aggregateUsageSnapshots(usageSnapshots));
+    }
     yield '\n⚠️ Maximum iterations reached.';
   }
 
@@ -366,12 +560,13 @@ export class Brain {
   }
 
   getLLMProviderName(): string {
-    return this.llm.name;
+    return this.getProviderForSelection(this.getDefaultSelection()).name;
   }
 
   getLLMModel(): string {
-    if (typeof this.llm.getModel === 'function') {
-      return this.llm.getModel();
+    const provider = this.getProviderForSelection(this.getDefaultSelection());
+    if (typeof provider.getModel === 'function') {
+      return provider.getModel();
     }
     return this.config.llm.model;
   }
@@ -381,33 +576,34 @@ export class Brain {
     model: string,
     reasoningEffort?: CodexReasoningEffort
   ): Promise<void> {
-    const previousProvider = this.llm;
-
     this.config.llm.provider = provider;
     this.config.llm.model = model;
     if (provider === 'openai-codex') {
       this.config.llm.reasoningEffort = reasoningEffort ?? this.config.llm.reasoningEffort ?? 'medium';
     }
-
-    this.llm = createLLMProvider(this.config);
-
-    if (typeof previousProvider.dispose === 'function') {
-      await previousProvider.dispose();
-    }
+    this.defaultProviderKey = this.buildProviderKey(this.getDefaultSelection());
+    this.getProviderForSelection(this.getDefaultSelection());
   }
 
   async listModels(): Promise<ProviderModelOption[]> {
-    if (typeof this.llm.listModels === 'function') {
-      return this.llm.listModels();
+    const provider = this.getProviderForSelection(this.getDefaultSelection());
+    if (typeof provider.listModels === 'function') {
+      return provider.listModels();
     }
 
     return getFallbackModels(this.config.llm.provider, this.config.llm.model);
   }
 
-  private buildProviderOptions(sessionId: string, channel: Channel, contextHash?: string) {
+  private buildProviderOptions(
+    sessionId: string,
+    channel: Channel,
+    provider?: LLMProvider,
+    contextHash?: string
+  ) {
+    const effectiveProvider = provider ?? this.resolveProvider();
     const executionWorkspace = this.toolExecutor.getWorkspacePath();
     const continuityWorkspace = getDefaultWorkspacePath();
-    const isCodexProvider = this.llm.name === 'openai-codex';
+    const isCodexProvider = effectiveProvider.name === 'openai-codex';
     const spicyMaxObedience = this.isSpicyMaxObedienceActive();
     const safeModeCodexSandbox = isCodexProvider && this.gateway.getSecurityMode() === 'safe'
       ? {
@@ -434,6 +630,10 @@ export class Brain {
       },
       onProviderEvent: (event: { provider: string; method: string; params?: Record<string, unknown> }) => {
         this.gateway.emit('provider:event', { sessionId, event });
+        this.gateway.appendDebugEvent(sessionId, 'provider.event', `Provider event: ${event.method}`, {
+          provider: event.provider,
+          params: event.params,
+        });
       },
     };
   }
@@ -441,13 +641,18 @@ export class Brain {
   /**
    * Get the system prompt with current context
    */
-  private async getSystemPrompt(session: Session, skillContext?: SkillTurnContext): Promise<string> {
+  private async getSystemPrompt(
+    session: Session,
+    skillContext: SkillTurnContext | undefined,
+    provider?: LLMProvider
+  ): Promise<string> {
+    const effectiveProvider = provider ?? this.resolveProvider();
     const mode = this.gateway.getSecurityMode();
     const spicyMaxObedience = this.isSpicyMaxObedienceActive();
     const workspace = this.toolExecutor.getWorkspacePath();
     const continuityWorkspace = getDefaultWorkspacePath();
     const workspaceState = await loadAgentWorkspaceState(continuityWorkspace);
-    const isCodexProvider = this.llm.name === 'openai-codex';
+    const isCodexProvider = effectiveProvider.name === 'openai-codex';
     const userTurns = session.messages.filter((message) => message.role === 'user').length;
     const isFirstUserTurn = userTurns === 1;
     const shouldRunBootstrap = isFirstUserTurn && workspaceState.onboardingRequired;
@@ -548,6 +753,45 @@ ${continuityPathGuidance}`;
     }
 
     return BASE_SYSTEM_PROMPT + modeInfo + workspaceFiles + bootstrapRules + contextSection + memorySection + vectorMemorySection + skillSection;
+  }
+
+  private resolveProvider(): LLMProvider {
+    const legacyProvider = (this as { llm?: LLMProvider }).llm;
+    if (legacyProvider && typeof legacyProvider.name === 'string') {
+      return legacyProvider;
+    }
+
+    return this.getProviderForSelection(this.getDefaultSelection());
+  }
+
+  private normalizeInvocationUsage(
+    usage: LLMUsageSnapshot | undefined,
+    input: {
+      provider: SessionModelOverride['provider'];
+      model: string;
+      promptMessages: Message[];
+      responseText: string;
+      latencyMs?: number;
+    }
+  ): LLMUsageSnapshot {
+    return this.gateway.usage.normalizeUsageSnapshot(
+      usage ?? {
+        provider: input.provider,
+        model: input.model,
+        inputTokens: Number.NaN,
+        outputTokens: Number.NaN,
+        cachedTokens: Number.NaN,
+        totalTokens: Number.NaN,
+        latencyMs: input.latencyMs,
+      },
+      {
+        provider: input.provider,
+        model: input.model,
+        promptText: input.promptMessages.map((message) => `${message.role}:${message.content}`).join('\n'),
+        responseText: input.responseText,
+        latencyMs: input.latencyMs,
+      }
+    );
   }
 
   private emitContextUsage(sessionId: string, messages: Message[], limitTokens: number): void {
@@ -666,6 +910,48 @@ export function rewriteRefusalForSpicyMode(text: string, latestUserPrompt: strin
     `Provider blocked direct execution. Rephrase with explicit executable steps${suffix} ` +
     '(exact command, file path, or URL), and I will run it directly.'
   );
+}
+
+function aggregateUsageSnapshots(usages: LLMUsageSnapshot[]): LLMUsageSnapshot {
+  const first = usages[0] ?? {
+    provider: 'openai',
+    model: 'unknown',
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedTokens: 0,
+    totalTokens: 0,
+  };
+
+  return usages.reduce<LLMUsageSnapshot>((aggregate, usage) => ({
+    provider: usage.provider || aggregate.provider,
+    model: usage.model || aggregate.model,
+    inputTokens: aggregate.inputTokens + usage.inputTokens,
+    outputTokens: aggregate.outputTokens + usage.outputTokens,
+    cachedTokens: aggregate.cachedTokens + usage.cachedTokens,
+    totalTokens: aggregate.totalTokens + usage.totalTokens,
+    latencyMs: (aggregate.latencyMs ?? 0) + (usage.latencyMs ?? 0),
+    costUsd: (aggregate.costUsd ?? 0) + (usage.costUsd ?? 0),
+    estimatedCost: aggregate.estimatedCost || usage.estimatedCost,
+    source: aggregate.source === usage.source ? aggregate.source : 'hybrid',
+    raw: {
+      combined: true,
+      parts: usages.length,
+    },
+  }), {
+    ...first,
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedTokens: 0,
+    totalTokens: 0,
+    latencyMs: 0,
+    costUsd: 0,
+    estimatedCost: false,
+    source: first.source ?? 'estimated',
+    raw: {
+      combined: true,
+      parts: usages.length,
+    },
+  });
 }
 
 function getLatestUserMessageContent(messages: Message[]): string {

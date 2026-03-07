@@ -9,9 +9,18 @@ import {
   type StoredTokenSecrets,
 } from './secretStore.js';
 
-const TOKEN_FILE = 'openai-oauth-tokens.json';
+const DEFAULT_TOKEN_NAMESPACE = 'openai-codex';
+const TOKEN_FILES: Record<string, string> = {
+  'openai-codex': 'openai-oauth-tokens.json',
+  gmail: 'gmail-oauth-tokens.json',
+};
 const TOKEN_STORE_VERSION = 2;
 const EXPIRY_SKEW_SECONDS = 60;
+
+export interface TokenStoreLocation {
+  namespace?: string;
+  tokenFilePath?: string;
+}
 
 export interface StoredTokens {
   access_token: string;
@@ -46,23 +55,29 @@ function withLock<T>(fn: () => Promise<T>): Promise<T> {
   return next;
 }
 
-function getTokenFilePath(): string {
-  return path.join(getConfigDir(), TOKEN_FILE);
+function getTokenFilePath(location?: TokenStoreLocation | string): string {
+  const resolved = resolveTokenStoreLocation(location);
+  if (resolved.tokenFilePath) {
+    return resolved.tokenFilePath;
+  }
+
+  const filename = TOKEN_FILES[resolved.namespace] ?? `${sanitizeNamespace(resolved.namespace)}-oauth-tokens.json`;
+  return path.join(getConfigDir(), filename);
 }
 
-export async function readTokens(): Promise<StoredTokens | null> {
-  return readTokensInternal();
+export async function readTokens(location?: TokenStoreLocation | string): Promise<StoredTokens | null> {
+  return readTokensInternal(getTokenFilePath(location));
 }
 
-export async function writeTokens(tokens: StoredTokens): Promise<void> {
+export async function writeTokens(tokens: StoredTokens, location?: TokenStoreLocation | string): Promise<void> {
   return withLock(async () => {
-    await writeTokensInternal(tokens);
+    await writeTokensInternal(tokens, getTokenFilePath(location));
   });
 }
 
-export async function deleteTokens(): Promise<void> {
+export async function deleteTokens(location?: TokenStoreLocation | string): Promise<void> {
   return withLock(async () => {
-    await deleteTokensInternal();
+    await deleteTokensInternal(getTokenFilePath(location));
   });
 }
 
@@ -73,9 +88,11 @@ export function isTokenExpired(tokens: StoredTokens): boolean {
 
 export async function getValidAccessToken(
   tokenEndpoint: string,
-  clientId: string
+  clientId: string,
+  location?: TokenStoreLocation | string
 ): Promise<string> {
-  const tokens = await readTokens();
+  const tokenPath = getTokenFilePath(location);
+  const tokens = await readTokensInternal(tokenPath);
 
   if (!tokens) {
     throw new Error('Not logged in. Run `keygate auth login --provider openai-codex` first.');
@@ -89,17 +106,19 @@ export async function getValidAccessToken(
     throw new Error('Token expired and no refresh token available. Please login again.');
   }
 
-  return refreshAccessToken(tokenEndpoint, clientId, tokens.refresh_token);
+  return refreshAccessToken(tokenEndpoint, clientId, tokens.refresh_token, location);
 }
 
 export async function refreshAccessToken(
   tokenEndpoint: string,
   clientId: string,
-  refreshToken: string
+  refreshToken: string,
+  location?: TokenStoreLocation | string
 ): Promise<string> {
+  const tokenPath = getTokenFilePath(location);
   return withLock(async () => {
     // Re-read in case another caller already refreshed.
-    const current = await readTokensInternal();
+    const current = await readTokensInternal(tokenPath);
     if (current && !isTokenExpired(current)) {
       return current.access_token;
     }
@@ -119,7 +138,7 @@ export async function refreshAccessToken(
 
     if (!response.ok) {
       const text = await response.text().catch(() => '');
-      await deleteTokensInternal();
+      await deleteTokensInternal(tokenPath);
       throw new Error(
         `Token refresh failed (${response.status}). Please login again.${text ? ` Response: ${text}` : ''}`
       );
@@ -146,13 +165,12 @@ export async function refreshAccessToken(
       scope: current?.scope,
     };
 
-    await writeTokensInternal(updated);
+    await writeTokensInternal(updated, tokenPath);
     return accessToken;
   });
 }
 
-async function readTokensInternal(): Promise<StoredTokens | null> {
-  const tokenPath = getTokenFilePath();
+async function readTokensInternal(tokenPath: string): Promise<StoredTokens | null> {
   const record = await readTokenRecord(tokenPath);
   if (!record) {
     return null;
@@ -243,8 +261,7 @@ async function readTokensInternal(): Promise<StoredTokens | null> {
   return toStoredTokens(metadata, secrets, resolved.backend);
 }
 
-async function writeTokensInternal(tokens: StoredTokens): Promise<void> {
-  const tokenPath = getTokenFilePath();
+async function writeTokensInternal(tokens: StoredTokens, tokenPath: string): Promise<void> {
   const existing = await readTokenRecord(tokenPath);
   const configuredMode = resolveTokenStoreMode(process.env['KEYGATE_TOKEN_STORE']);
   const disableKeychain = isTruthyEnvValue(process.env['KEYGATE_DISABLE_KEYCHAIN']);
@@ -281,8 +298,7 @@ async function writeTokensInternal(tokens: StoredTokens): Promise<void> {
   await resolved.store.write(secrets);
 }
 
-async function deleteTokensInternal(): Promise<void> {
-  const tokenPath = getTokenFilePath();
+async function deleteTokensInternal(tokenPath: string): Promise<void> {
   const existing = await readTokenRecord(tokenPath);
   const configuredMode = resolveTokenStoreMode(process.env['KEYGATE_TOKEN_STORE']);
   const disableKeychain = isTruthyEnvValue(process.env['KEYGATE_DISABLE_KEYCHAIN']);
@@ -304,6 +320,28 @@ async function deleteTokensInternal(): Promise<void> {
   } catch {
     // Already deleted or never existed.
   }
+}
+
+function resolveTokenStoreLocation(location?: TokenStoreLocation | string): TokenStoreLocation & { namespace: string } {
+  if (typeof location === 'string') {
+    return { namespace: location };
+  }
+
+  if (location?.tokenFilePath) {
+    return {
+      namespace: location.namespace ?? DEFAULT_TOKEN_NAMESPACE,
+      tokenFilePath: path.resolve(location.tokenFilePath),
+    };
+  }
+
+  return {
+    namespace: location?.namespace ?? DEFAULT_TOKEN_NAMESPACE,
+  };
+}
+
+function sanitizeNamespace(value: string): string {
+  const normalized = value.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-');
+  return normalized.length > 0 ? normalized : DEFAULT_TOKEN_NAMESPACE;
 }
 
 function resolvePreferredMode(

@@ -16,9 +16,12 @@ import type {
   BrowserDomainPolicy,
   CodexReasoningEffort,
   DmPolicy,
+  GmailConfig,
   KeygateConfig,
+  LLMPricingOverride,
   NodeManager,
   PluginEntryConfig,
+  SandboxScope,
   WhatsAppConfig,
   WhatsAppGroupMode,
 } from '../types.js';
@@ -36,6 +39,8 @@ const DEFAULT_SKILLS_NODE_MANAGER: NodeManager = 'npm';
 const DEFAULT_PLUGINS_WATCH = true;
 const DEFAULT_PLUGINS_WATCH_DEBOUNCE_MS = 250;
 const DEFAULT_PLUGINS_NODE_MANAGER: NodeManager = 'npm';
+const DEFAULT_SANDBOX_SCOPE: SandboxScope = 'session';
+const DEFAULT_SANDBOX_IMAGE = 'ghcr.io/openai/openhands-runtime:latest';
 const PREFERRED_CONFIG_DIRNAME = '.keygate';
 const LEGACY_CONFIG_DIRNAME = 'keygate';
 const PREFERRED_ENV_FILENAME = '.env';
@@ -123,6 +128,9 @@ export function loadConfigFromEnv(): KeygateConfig {
   const persistedSkillsConfig = loadPersistedSkillsConfig(persistedConfig);
   const persistedPluginsConfig = loadPersistedPluginsConfig(persistedConfig);
   const persistedWhatsAppConfig = loadPersistedWhatsAppConfig(persistedConfig);
+  const persistedSandboxConfig = loadPersistedSandboxConfig(persistedConfig);
+  const persistedGmailConfig = loadPersistedGmailConfig(persistedConfig);
+  const pricingOverrides = loadPersistedPricingOverrides(persistedConfig);
   const provider = normalizeProvider(process.env['LLM_PROVIDER']);
   const workspacePath = resolveWorkspacePath(process.env['WORKSPACE_PATH']);
   const spicyModeEnabled = process.env['SPICY_MODE_ENABLED'] === 'true';
@@ -151,6 +159,9 @@ export function loadConfigFromEnv(): KeygateConfig {
       ollama: {
         host: process.env['LLM_OLLAMA_HOST'] ?? 'http://127.0.0.1:11434',
       },
+      pricing: {
+        overrides: pricingOverrides,
+      },
     },
     security: {
       mode: 'safe',
@@ -158,6 +169,14 @@ export function loadConfigFromEnv(): KeygateConfig {
       spicyMaxObedienceEnabled,
       workspacePath,
       allowedBinaries: DEFAULT_ALLOWED_BINARIES,
+      sandbox: {
+        backend: 'docker',
+        scope: normalizeSandboxScope(process.env['KEYGATE_SANDBOX_SCOPE']) ?? persistedSandboxConfig.scope,
+        image: process.env['KEYGATE_SANDBOX_IMAGE']?.trim() || persistedSandboxConfig.image,
+        networkAccess: parseBooleanEnv(process.env['KEYGATE_SANDBOX_NETWORK_ACCESS']) ?? persistedSandboxConfig.networkAccess,
+        degradeWithoutDocker:
+          parseBooleanEnv(process.env['KEYGATE_SANDBOX_DEGRADE_WITHOUT_DOCKER']) ?? persistedSandboxConfig.degradeWithoutDocker,
+      },
     },
     server: {
       port: parseInt(process.env['PORT'] ?? '18790', 10),
@@ -185,6 +204,18 @@ export function loadConfigFromEnv(): KeygateConfig {
       allowFrom: parseIdList(process.env['SLACK_ALLOW_FROM']),
     },
     whatsapp: persistedWhatsAppConfig,
+    gmail: {
+      clientId: process.env['KEYGATE_GMAIL_CLIENT_ID']?.trim() || persistedGmailConfig.clientId,
+      authorizationEndpoint:
+        process.env['KEYGATE_GMAIL_AUTHORIZATION_ENDPOINT']?.trim() || persistedGmailConfig.authorizationEndpoint,
+      tokenEndpoint:
+        process.env['KEYGATE_GMAIL_TOKEN_ENDPOINT']?.trim() || persistedGmailConfig.tokenEndpoint,
+      redirectUri:
+        process.env['KEYGATE_GMAIL_REDIRECT_URI']?.trim() || persistedGmailConfig.redirectUri,
+      redirectPort:
+        parsePositiveInteger(process.env['KEYGATE_GMAIL_REDIRECT_PORT'], persistedGmailConfig.redirectPort ?? 1488),
+      defaults: persistedGmailConfig.defaults,
+    },
     skills: persistedSkillsConfig,
     plugins: persistedPluginsConfig,
     memory: {
@@ -813,6 +844,131 @@ export function loadPersistedWhatsAppConfig(
   };
 }
 
+export function loadPersistedSandboxConfig(
+  parsedConfig: Record<string, unknown> | null = loadPersistedConfigObject()
+): KeygateConfig['security']['sandbox'] {
+  const defaults = buildDefaultSandboxConfig();
+  if (!parsedConfig || typeof parsedConfig !== 'object') {
+    return defaults;
+  }
+
+  const rawSecurity = parsedConfig['security'];
+  if (!rawSecurity || typeof rawSecurity !== 'object' || Array.isArray(rawSecurity)) {
+    return defaults;
+  }
+
+  const rawSandbox = (rawSecurity as Record<string, unknown>)['sandbox'];
+  if (!rawSandbox || typeof rawSandbox !== 'object' || Array.isArray(rawSandbox)) {
+    return defaults;
+  }
+
+  const source = rawSandbox as Record<string, unknown>;
+  return {
+    backend: 'docker',
+    scope: normalizeSandboxScope(source['scope']) ?? defaults.scope,
+    image: typeof source['image'] === 'string' && source['image'].trim().length > 0
+      ? source['image'].trim()
+      : defaults.image,
+    networkAccess: typeof source['networkAccess'] === 'boolean'
+      ? source['networkAccess']
+      : defaults.networkAccess,
+    degradeWithoutDocker: typeof source['degradeWithoutDocker'] === 'boolean'
+      ? source['degradeWithoutDocker']
+      : defaults.degradeWithoutDocker,
+  };
+}
+
+export function loadPersistedGmailConfig(
+  parsedConfig: Record<string, unknown> | null = loadPersistedConfigObject()
+): GmailConfig {
+  const defaults = buildDefaultGmailConfig();
+  if (!parsedConfig || typeof parsedConfig !== 'object') {
+    return defaults;
+  }
+
+  const raw = parsedConfig['gmail'];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return defaults;
+  }
+
+  const source = raw as Record<string, unknown>;
+  const defaultsSource =
+    source['defaults'] && typeof source['defaults'] === 'object' && !Array.isArray(source['defaults'])
+      ? source['defaults'] as Record<string, unknown>
+      : {};
+
+  return {
+    clientId: normalizeOptionalString(source['clientId']) ?? defaults.clientId,
+    authorizationEndpoint:
+      normalizeOptionalString(source['authorizationEndpoint']) ?? defaults.authorizationEndpoint,
+    tokenEndpoint:
+      normalizeOptionalString(source['tokenEndpoint']) ?? defaults.tokenEndpoint,
+    redirectUri:
+      normalizeOptionalString(source['redirectUri']) ?? defaults.redirectUri,
+    redirectPort:
+      Number.isFinite(toFiniteNumber(source['redirectPort']))
+        ? Math.max(1, Math.floor(toFiniteNumber(source['redirectPort'])))
+        : defaults.redirectPort,
+    defaults: {
+      projectId: normalizeOptionalString(defaultsSource['projectId']) ?? defaults.defaults.projectId,
+      pubsubTopic: normalizeOptionalString(defaultsSource['pubsubTopic']) ?? defaults.defaults.pubsubTopic,
+      pushBaseUrl: normalizeOptionalString(defaultsSource['pushBaseUrl']) ?? defaults.defaults.pushBaseUrl,
+      pushPathSecret: normalizeOptionalString(defaultsSource['pushPathSecret']) ?? defaults.defaults.pushPathSecret,
+      targetSessionId: normalizeOptionalString(defaultsSource['targetSessionId']) ?? defaults.defaults.targetSessionId,
+      labelIds: normalizeStringArray(defaultsSource['labelIds']),
+      promptPrefix: normalizeOptionalString(defaultsSource['promptPrefix']) ?? defaults.defaults.promptPrefix,
+      watchRenewalMinutes:
+        Number.isFinite(toFiniteNumber(defaultsSource['watchRenewalMinutes']))
+          ? Math.max(5, Math.floor(toFiniteNumber(defaultsSource['watchRenewalMinutes'])))
+          : defaults.defaults.watchRenewalMinutes,
+    },
+  };
+}
+
+export function loadPersistedPricingOverrides(
+  parsedConfig: Record<string, unknown> | null = loadPersistedConfigObject()
+): Record<string, LLMPricingOverride> {
+  if (!parsedConfig || typeof parsedConfig !== 'object') {
+    return {};
+  }
+
+  const rawLlm = parsedConfig['llm'];
+  if (!rawLlm || typeof rawLlm !== 'object' || Array.isArray(rawLlm)) {
+    return {};
+  }
+
+  const rawPricing = (rawLlm as Record<string, unknown>)['pricing'];
+  if (!rawPricing || typeof rawPricing !== 'object' || Array.isArray(rawPricing)) {
+    return {};
+  }
+
+  const rawOverrides = (rawPricing as Record<string, unknown>)['overrides'];
+  if (!rawOverrides || typeof rawOverrides !== 'object' || Array.isArray(rawOverrides)) {
+    return {};
+  }
+
+  const output: Record<string, LLMPricingOverride> = {};
+  for (const [key, value] of Object.entries(rawOverrides as Record<string, unknown>)) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      continue;
+    }
+    const source = value as Record<string, unknown>;
+    const input = toFiniteNumber(source['inputPerMillionUsd']);
+    const outputPrice = toFiniteNumber(source['outputPerMillionUsd']);
+    const cached = toFiniteNumber(source['cachedInputPerMillionUsd']);
+    if (!Number.isFinite(input) || !Number.isFinite(outputPrice)) {
+      continue;
+    }
+    output[key] = {
+      inputPerMillionUsd: input,
+      outputPerMillionUsd: outputPrice,
+      cachedInputPerMillionUsd: Number.isFinite(cached) ? cached : undefined,
+    };
+  }
+
+  return output;
+}
+
 function buildDefaultSkillsConfig(): NonNullable<KeygateConfig['skills']> {
   return {
     load: {
@@ -853,6 +1009,28 @@ function buildDefaultWhatsAppConfig(): WhatsAppConfig {
   };
 }
 
+function buildDefaultSandboxConfig(): KeygateConfig['security']['sandbox'] {
+  return {
+    backend: 'docker',
+    scope: DEFAULT_SANDBOX_SCOPE,
+    image: DEFAULT_SANDBOX_IMAGE,
+    networkAccess: true,
+    degradeWithoutDocker: true,
+  };
+}
+
+function buildDefaultGmailConfig(): GmailConfig {
+  return {
+    authorizationEndpoint: 'https://accounts.google.com/o/oauth2/v2/auth',
+    tokenEndpoint: 'https://oauth2.googleapis.com/token',
+    redirectPort: 1488,
+    defaults: {
+      labelIds: [],
+      watchRenewalMinutes: 1_320,
+    },
+  };
+}
+
 function normalizeNodeManager(value: unknown, fallback: NodeManager = DEFAULT_SKILLS_NODE_MANAGER): NodeManager {
   if (typeof value !== 'string') {
     return fallback;
@@ -868,6 +1046,33 @@ function normalizeNodeManager(value: unknown, fallback: NodeManager = DEFAULT_SK
     default:
       return fallback;
   }
+}
+
+function normalizeSandboxScope(value: unknown): SandboxScope | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'session' || normalized === 'agent') {
+    return normalized;
+  }
+
+  return undefined;
+}
+
+function normalizeOptionalString(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function toFiniteNumber(value: unknown): number {
+  const numeric = typeof value === 'number' ? value : Number.parseFloat(String(value ?? ''));
+  return Number.isFinite(numeric) ? numeric : Number.NaN;
 }
 
 function normalizeStringArray(value: unknown): string[] {

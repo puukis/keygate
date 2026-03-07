@@ -6,6 +6,7 @@ import type {
   LLMChunk,
   LLMProvider,
   LLMResponse,
+  LLMUsageSnapshot,
   Message,
   ToolCall,
   ToolDefinition,
@@ -48,6 +49,7 @@ export class OllamaProvider implements LLMProvider {
       content: response.message.content,
       toolCalls: toolCalls && toolCalls.length > 0 ? toolCalls : undefined,
       finishReason: toolCalls && toolCalls.length > 0 ? 'tool_calls' : 'stop',
+      usage: mapOllamaUsage(this.model, response),
     };
   }
 
@@ -64,7 +66,12 @@ export class OllamaProvider implements LLMProvider {
       },
     });
 
+    let finalUsage: LLMUsageSnapshot | undefined;
+
     for await (const part of stream) {
+      if (part.done) {
+        finalUsage = mapOllamaUsage(this.model, part);
+      }
       if (part.message.tool_calls) {
         // Ollama streaming tool calls usually come in one chunk at the end or aggregated
         // We'll yield them as a final chunk
@@ -82,6 +89,7 @@ export class OllamaProvider implements LLMProvider {
       
       yield {
         content: part.message.content,
+        usage: part.done ? finalUsage : undefined,
         done: part.done,
       };
     }
@@ -152,4 +160,35 @@ export class OllamaProvider implements LLMProvider {
          }
      }));
   }
+}
+
+function mapOllamaUsage(
+  model: string,
+  payload: {
+    prompt_eval_count?: number;
+    eval_count?: number;
+    total_duration?: number;
+  }
+): LLMUsageSnapshot | undefined {
+  const inputTokens = payload.prompt_eval_count ?? 0;
+  const outputTokens = payload.eval_count ?? 0;
+  if (inputTokens === 0 && outputTokens === 0) {
+    return undefined;
+  }
+
+  return {
+    provider: 'ollama',
+    model,
+    inputTokens,
+    outputTokens,
+    cachedTokens: 0,
+    totalTokens: inputTokens + outputTokens,
+    latencyMs: payload.total_duration ? Math.round(payload.total_duration / 1_000_000) : undefined,
+    source: 'native',
+    raw: {
+      promptEvalCount: payload.prompt_eval_count ?? 0,
+      evalCount: payload.eval_count ?? 0,
+      totalDuration: payload.total_duration ?? null,
+    },
+  };
 }

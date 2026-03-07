@@ -11,14 +11,22 @@ export type NodeCapability =
   | 'shell'
   | 'invoke';
 
+export type NodePermissionStatus = 'granted' | 'denied' | 'unknown';
+
 export interface NodeRecord {
   id: string;
   name: string;
   capabilities: NodeCapability[];
   trusted: boolean;
+  authToken?: string;
+  platform?: string;
+  version?: string;
+  online?: boolean;
+  permissions?: Partial<Record<NodeCapability, NodePermissionStatus>>;
   createdAt: string;
   updatedAt: string;
   lastSeenAt: string;
+  lastInvocationAt?: string;
 }
 
 export interface PairRequest {
@@ -31,7 +39,7 @@ export interface PairRequest {
 }
 
 interface NodeStorePayload {
-  version: 1;
+  version: 2;
   nodes: NodeRecord[];
   pending: PairRequest[];
 }
@@ -44,7 +52,7 @@ function storePath(): string {
 }
 
 function defaultPayload(): NodeStorePayload {
-  return { version: 1, nodes: [], pending: [] };
+  return { version: 2, nodes: [], pending: [] };
 }
 
 function nowIso(): string {
@@ -60,7 +68,7 @@ async function loadPayload(): Promise<NodeStorePayload> {
     const raw = await fs.readFile(storePath(), 'utf8');
     const parsed = JSON.parse(raw) as Partial<NodeStorePayload>;
     return {
-      version: 1,
+      version: 2,
       nodes: Array.isArray(parsed.nodes) ? parsed.nodes.filter((n): n is NodeRecord => typeof n?.id === 'string') : [],
       pending: Array.isArray(parsed.pending) ? parsed.pending.filter((p): p is PairRequest => typeof p?.requestId === 'string') : [],
     };
@@ -86,13 +94,13 @@ function compactPending(payload: NodeStorePayload): NodeStorePayload {
 export class NodeStore {
   async listNodes(): Promise<NodeRecord[]> {
     const payload = await loadPayload();
-    return payload.nodes.map((n) => ({ ...n, capabilities: [...n.capabilities] }));
+    return payload.nodes.map((n) => sanitizeNodeRecord(n));
   }
 
   async describeNode(nodeId: string): Promise<NodeRecord | null> {
     const payload = await loadPayload();
     const node = payload.nodes.find((n) => n.id === nodeId);
-    return node ? { ...node, capabilities: [...node.capabilities] } : null;
+    return node ? sanitizeNodeRecord(node) : null;
   }
 
   async createPairRequest(name: string, capabilities: NodeCapability[]): Promise<PairRequest> {
@@ -140,6 +148,9 @@ export class NodeStore {
       name: request.name,
       capabilities: request.capabilities,
       trusted: true,
+      authToken: randomUUID(),
+      online: false,
+      permissions: Object.fromEntries(request.capabilities.map((cap) => [cap, 'unknown'])) as Partial<Record<NodeCapability, NodePermissionStatus>>,
       createdAt: now,
       updatedAt: now,
       lastSeenAt: now,
@@ -168,4 +179,60 @@ export class NodeStore {
     node.updatedAt = node.lastSeenAt;
     await savePayload(payload);
   }
+
+  async authenticateNode(nodeId: string, authToken: string): Promise<NodeRecord | null> {
+    const payload = await loadPayload();
+    const node = payload.nodes.find((entry) => entry.id === nodeId && entry.authToken === authToken);
+    return node ? { ...node, capabilities: [...node.capabilities] } : null;
+  }
+
+  async updateNodeRuntime(
+    nodeId: string,
+    patch: {
+      platform?: string;
+      version?: string;
+      online?: boolean;
+      permissions?: Partial<Record<NodeCapability, NodePermissionStatus>>;
+      lastInvocationAt?: string;
+    }
+  ): Promise<NodeRecord | null> {
+    const payload = await loadPayload();
+    const node = payload.nodes.find((entry) => entry.id === nodeId);
+    if (!node) {
+      return null;
+    }
+
+    if (patch.platform) {
+      node.platform = patch.platform;
+    }
+    if (patch.version) {
+      node.version = patch.version;
+    }
+    if (patch.online !== undefined) {
+      node.online = patch.online;
+    }
+    if (patch.permissions) {
+      node.permissions = {
+        ...(node.permissions ?? {}),
+        ...patch.permissions,
+      };
+    }
+    if (patch.lastInvocationAt) {
+      node.lastInvocationAt = patch.lastInvocationAt;
+    }
+
+    node.lastSeenAt = nowIso();
+    node.updatedAt = node.lastSeenAt;
+    await savePayload(payload);
+    return sanitizeNodeRecord(node);
+  }
+}
+
+function sanitizeNodeRecord(node: NodeRecord): NodeRecord {
+  return {
+    ...node,
+    authToken: undefined,
+    capabilities: [...node.capabilities],
+    permissions: node.permissions ? { ...node.permissions } : undefined,
+  };
 }

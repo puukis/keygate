@@ -1,74 +1,257 @@
 # WebSocket Event Reference
 
-This page summarizes the major websocket events used by the web app runtime bridge.
+This page summarizes the primary websocket bridge between the gateway and UI clients.
 
 ## Connection and setup
 
-- `connected`: initial handshake + runtime state snapshot
-- `models`: model catalog response for selected provider
-- `model_changed`: confirms provider/model update
+Server push events:
+
+- `connected`: initial runtime snapshot
+- `models`: model catalog response
+- `model_changed`: provider/model update confirmation
+- `mcp_browser_status`: browser MCP health snapshot
 
 ## Session lifecycle
 
-- `session_snapshot`: full list of known sessions/messages metadata
-- `session_created`: new session created
-- `session_switched`: active session changed
-- `session_deleted`: session removed
-- `session_renamed`: session title updated
-- `session_cleared`: main session contents reset
+Requests:
+
+- `get_session_snapshot`
+- `new_session`
+- `switch_session`
+- `rename_session`
+- `clear_session`
+- `delete_session`
+- `delete_all_sessions`
+- `cancel_session`
+
+Results and push events:
+
+- `session_snapshot`
+- `session_created`
+- `session_switched`
+- `session_renamed`
+- `session_cleared`
+- `session_deleted`
+- `session_cancelled`
 
 ## Message stream events
 
-- `message_received`: start of assistant turn
-- `session_chunk`: streaming chunk
-- `session_message_end`: stream completion
-- `session_cancelled`: cancelled turn
+Requests:
+
+- `message`
+
+Push events:
+
+- `message_received`
+- `session_chunk`
+- `session_message_end`
 
 ## Tool and provider events
 
-- `tool_start`: tool call started
-- `tool_end`: tool call finished
-- `provider_event`: raw provider-side event surfaced to UI timeline
+Push events:
 
-## Confirmation and safety events
+- `tool_start`
+- `tool_end`
+- `provider_event`
 
-- `confirm_request`: runtime requests user approval
-- `mode_changed`: safe/spicy mode changed
-- `spicy_enabled_changed`: spicy capability unlocked/changed
-- `spicy_obedience_changed`: obedience option changed
+## Usage, debug, and compaction
 
-## Config and channel events
+Requests:
+
+- `usage_summary`
+- `debug_events`
+- `session_compact`
+
+Results and push events:
+
+- `usage_summary_result`
+- `usage_snapshot`
+- `debug_events_result`
+- `debug_event`
+- `session_compacted`
+
+These power the web `Usage` tab, `Debug` tab, and session compaction flow.
+
+## Safety and mode control
+
+Requests:
+
+- `confirm_response`
+- `set_mode`
+- `enable_spicy_mode`
+- `set_spicy_obedience`
+
+Push events:
+
+- `confirm_request`
+- `mode_changed`
+- `spicy_enabled_changed`
+- `spicy_obedience_changed`
+
+## Model, browser, and config requests
+
+Requests:
+
+- `get_models`
+- `set_model`
+- `get_mcp_browser_status`
+- `setup_mcp_browser`
+- `remove_mcp_browser`
+- `set_browser_policy`
+- `set_discord_config`
+- `set_slack_config`
+- `set_whatsapp_config`
+- `start_whatsapp_login`
+- `cancel_whatsapp_login`
+
+Results and push events include:
 
 - `discord_config_updated`
 - `slack_config_updated`
 - `whatsapp_config_updated`
 - `whatsapp_login_qr`
 - `whatsapp_login_result`
-- `mcp_browser_status`
 
-## WhatsApp request messages
+## Scheduler, webhooks, routing, and Gmail automations
 
-The web app sends these websocket requests for the WhatsApp channel:
+Scheduler requests:
 
-- `set_whatsapp_config`
-- `start_whatsapp_login`
-- `cancel_whatsapp_login`
+- `scheduler_list`
+- `scheduler_create`
+- `scheduler_update`
+- `scheduler_delete`
+- `scheduler_trigger`
 
-## Scheduler and memory events
+Webhook requests:
+
+- `webhook_list`
+- `webhook_create`
+- `webhook_update`
+- `webhook_delete`
+- `webhook_rotate_secret`
+
+Routing requests:
+
+- `routing_list`
+- `routing_create`
+- `routing_delete`
+
+Gmail requests:
+
+- `gmail_watch_list`
+- `gmail_watch_create`
+- `gmail_watch_update`
+- `gmail_watch_delete`
+- `gmail_watch_test`
+
+Results:
 
 - `scheduler_list_result`
 - `scheduler_create_result`
 - `scheduler_update_result`
 - `scheduler_delete_result`
 - `scheduler_trigger_result`
+- `webhook_list_result`
+- `webhook_create_result`
+- `webhook_update_result`
+- `webhook_delete_result`
+- `webhook_rotate_secret_result`
+- `routing_list_result`
+- `routing_create_result`
+- `routing_delete_result`
+- `gmail_watch_list_result`
+- `gmail_watch_create_result`
+- `gmail_watch_update_result`
+- `gmail_watch_delete_result`
+- `gmail_watch_test_result`
+
+## Sandboxes and device nodes
+
+Sandbox requests:
+
+- `sandbox_list`
+- `sandbox_explain`
+- `sandbox_recreate`
+
+Sandbox results:
+
+- `sandbox_list_result`
+- `sandbox_explain_result`
+- `sandbox_recreate_result`
+
+Node pairing and registry requests:
+
+- `node_pair_request`
+- `node_pair_pending`
+- `node_pair_approve`
+- `node_pair_reject`
+- `node_list`
+- `node_describe`
+
+Node runtime requests:
+
+- `node_register`
+- `node_heartbeat`
+- `node_invoke`
+- `node_invoke_response`
+
+Node results and push events:
+
+- `node_pair_request_result`
+- `node_pair_pending_result`
+- `node_pair_approve_result`
+- `node_pair_reject_result`
+- `node_list_result`
+- `node_describe_result`
+- `node_register_result`
+- `node_invoke_request`
+- `node_invoke_result`
+- `node_status_changed`
+
+`node_status_changed` is a broadcast push used by the web app and macOS app to reflect online/offline state transitions.
+
+## Memory and delegated sessions
+
+Memory requests:
+
+- `memory_list`
+- `memory_get`
+- `memory_set`
+- `memory_delete`
+- `memory_search`
+- `memory_namespaces`
+- `memory_vector_search`
+- `memory_reindex`
+- `memory_status`
+
+Delegated session requests:
+
+- `sessions_list`
+- `sessions_spawn`
+- `sessions_history`
+- `sessions_send`
+- `subagents`
+
+Results:
+
 - `memory_list_result`
-- `memory_search_result`
+- `memory_get_result`
 - `memory_set_result`
 - `memory_delete_result`
+- `memory_search_result`
+- `memory_namespaces_result`
+- `memory_vector_search_result`
+- `memory_reindex_result`
+- `memory_status_result`
+- `sessions_list_result`
+- `sessions_spawn_result`
+- `sessions_history_result`
+- `sessions_send_result`
+- `subagents_result`
 
-## Plugin management messages
+## Plugins and marketplace
 
-Requests:
+Plugin management requests:
 
 - `plugins_list`
 - `plugins_info`
@@ -81,7 +264,7 @@ Requests:
 - `plugins_set_config`
 - `plugins_validate`
 
-Results:
+Plugin management results:
 
 - `plugins_list_result`
 - `plugins_info_result`
@@ -94,16 +277,37 @@ Results:
 - `plugins_set_config_result`
 - `plugins_validate_result`
 
-## Plugin runtime invocation
+Plugin RPC:
 
-- `plugin_invoke`: generic request envelope for plugin-defined RPC methods
-- `plugin_result`: successful plugin RPC response
-- `plugin_error`: sanitized plugin RPC failure response
+- `plugin_invoke`
+- `plugin_result`
+- `plugin_error`
+
+Marketplace requests:
+
+- `marketplace_search`
+- `marketplace_info`
+- `marketplace_featured`
+- `marketplace_install`
+
+## Git panel requests
+
+- `git_status`
+- `git_diff`
+- `git_staged_diff`
+- `git_log`
+- `git_file_diff`
+- `git_stage`
+- `git_unstage`
+- `git_discard`
+- `git_commit`
 
 ## Error event
 
-- `error`: generic runtime error payload; should be surfaced in active session state
+- `error`: generic runtime failure payload
 
----
+For exact payload shapes, inspect:
 
-For exact payload structure, inspect the corresponding TypeScript handlers in `packages/web/src/App.tsx` and runtime emitters in `packages/core`.
+- `packages/core/src/server/index.ts`
+- `packages/web/src/App.tsx`
+- `packages/macos/Sources/Keygate/Models/Messages.swift`

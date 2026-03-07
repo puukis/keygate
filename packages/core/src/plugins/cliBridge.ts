@@ -57,6 +57,7 @@ async function executePluginCliCommand(
   const stage: PluginStage = {
     tools: [],
     toolNames: [],
+    hooks: [],
     rpcMethods: new Map(),
     httpRoutes: [],
     cliCommands: [],
@@ -105,6 +106,9 @@ async function executePluginCliCommand(
         content: message.content,
       }))
     ),
+    registerHook() {
+      throw new Error('Plugin hooks are not available in CLI-only mode.');
+    },
     registerTool(definition) {
       stage.tools.push({
         ...definition,

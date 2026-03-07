@@ -1,52 +1,115 @@
 # Environment Variables
 
-Use environment variables for secrets and environment-specific overrides.
+Use environment variables for secrets, machine-specific overrides, and CI/runtime-specific behavior.
 
-> Note: exact variable names may evolve with runtime changes. Keep this page aligned with `.keygate.example` and core config loaders.
+Keygate reads `.env` from:
 
-Keygate stores local runtime env values in `~/.keygate/.env` on macOS/Linux and `%USERPROFILE%\.keygate\.env` on Windows. Legacy `~/.config/keygate/.keygate` installs are copied forward on first run when the new root is missing, or when `~/.keygate` only has bootstrap/cache files and no primary config yet.
+- `~/.keygate/.env` on macOS/Linux
+- `%USERPROFILE%\.keygate\.env` on Windows
 
-## Typical categories
+Environment variables override values from `config.json`.
 
-- Provider credentials/tokens
-- Channel credentials (Discord/Slack)
-- Plugin runtime and plugin install behavior
-- Runtime mode flags
-- Network/host/port bindings
-- Logging and debug levels
+## Model and provider variables
 
-## Plugin environment variables
+- `LLM_PROVIDER`
+- `LLM_MODEL`
+- `LLM_REASONING_EFFORT`
+- `LLM_API_KEY`
+- `LLM_OLLAMA_HOST`
 
+Use these to choose the default provider/model and to supply provider credentials where required.
+
+## Server and gateway variables
+
+- `PORT`
 - `KEYGATE_SERVER_API_TOKEN`
+
+`KEYGATE_SERVER_API_TOKEN` is the operator token used for authenticated plugin HTTP routes and secured remote API access.
+
+## Safe-mode sandbox variables
+
+- `KEYGATE_SANDBOX_SCOPE`
+- `KEYGATE_SANDBOX_IMAGE`
+- `KEYGATE_SANDBOX_NETWORK_ACCESS`
+- `KEYGATE_SANDBOX_DEGRADE_WITHOUT_DOCKER`
+
+These override `security.sandbox.*` from `config.json`.
+
+Typical example:
+
+```dotenv
+KEYGATE_SANDBOX_SCOPE=session
+KEYGATE_SANDBOX_IMAGE=keygate-sandbox:latest
+KEYGATE_SANDBOX_NETWORK_ACCESS=false
+KEYGATE_SANDBOX_DEGRADE_WITHOUT_DOCKER=true
+```
+
+## Browser MCP variables
+
+- `BROWSER_DOMAIN_POLICY`
+- `BROWSER_DOMAIN_ALLOWLIST`
+- `BROWSER_DOMAIN_BLOCKLIST`
+- `BROWSER_TRACE_RETENTION_DAYS`
+- `MCP_PLAYWRIGHT_VERSION`
+
+Use these when you want browser policy or Playwright MCP behavior to vary by machine or environment.
+
+## Channel variables
+
+Discord:
+
+- `DISCORD_TOKEN`
+- `DISCORD_DM_POLICY`
+- `DISCORD_ALLOW_FROM`
+
+Slack:
+
+- `SLACK_BOT_TOKEN`
+- `SLACK_APP_TOKEN`
+- `SLACK_SIGNING_SECRET`
+- `SLACK_DM_POLICY`
+- `SLACK_ALLOW_FROM`
+
+WhatsApp does not use a static auth env variable. Login is handled through a linked-device QR flow and its long-lived auth state is stored under `~/.keygate/channels/whatsapp/auth/`.
+
+## Gmail OAuth variables
+
+- `KEYGATE_GMAIL_CLIENT_ID`
+- `KEYGATE_GMAIL_AUTHORIZATION_ENDPOINT`
+- `KEYGATE_GMAIL_TOKEN_ENDPOINT`
+- `KEYGATE_GMAIL_REDIRECT_URI`
+- `KEYGATE_GMAIL_REDIRECT_PORT`
+
+Important detail:
+
+- Gmail watch defaults such as `pubsubTopic`, `pushBaseUrl`, `pushPathSecret`, `labelIds`, and `targetSessionId` live in `config.json`, not environment variables.
+
+## Memory variables
+
+- `KEYGATE_MEMORY_PROVIDER`
+- `KEYGATE_MEMORY_MODEL`
+- `KEYGATE_MEMORY_VECTOR_WEIGHT`
+- `KEYGATE_MEMORY_TEXT_WEIGHT`
+- `KEYGATE_MEMORY_MAX_RESULTS`
+- `KEYGATE_MEMORY_MIN_SCORE`
+- `KEYGATE_MEMORY_AUTO_INDEX`
+- `KEYGATE_MEMORY_INDEX_SESSIONS`
+- `KEYGATE_MEMORY_TEMPORAL_DECAY`
+- `KEYGATE_MEMORY_TEMPORAL_HALF_LIFE`
+- `KEYGATE_MEMORY_MMR`
+
+## Plugin loader variables
+
 - `KEYGATE_PLUGINS_WATCH`
 - `KEYGATE_PLUGINS_WATCH_DEBOUNCE_MS`
 - `KEYGATE_PLUGINS_PATHS`
 - `KEYGATE_PLUGINS_NODE_MANAGER`
 
-## WhatsApp note
-
-WhatsApp does not require a new `.env` entry for login.
-
-- Login is done through a linked-device QR flow
-- Structured WhatsApp policy is stored in `~/.keygate/config.json`
-- Linked auth credentials are stored in `~/.keygate/channels/whatsapp/auth/`
+These affect plugin discovery, hot reload, and install behavior.
 
 ## Recommended policy
 
-- Store secrets in `.env`/secret manager, not source control
-- Use different values per environment (dev/staging/prod)
-- Rotate credentials periodically and after personnel changes
-
-## Validation workflow
-
-1. Set/update env vars
-2. Start Keygate and verify startup health
-3. Run a model request
-4. Run one safe tool call
-5. Verify channel connectivity (if enabled)
-
-## Security reminders
-
-- Never expose tokens in logs
-- Avoid sharing screenshots with visible secrets
-- Revoke and reissue leaked credentials immediately
+- Keep `.env` out of source control.
+- Prefer `config.json` for stable shared defaults and `.env` for secrets or per-machine overrides.
+- Rotate leaked or stale tokens immediately.
+- After changing env vars, run `keygate doctor` and at least one real model/tool flow.

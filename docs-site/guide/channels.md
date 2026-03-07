@@ -4,7 +4,7 @@ Keygate supports operating from multiple input/output surfaces.
 
 ## Channel types
 
-- Web (primary control interface)
+- Web
 - Terminal/TUI
 - Discord
 - Slack
@@ -30,6 +30,7 @@ Operational notes:
 
 - keep token secret and never commit it
 - restart channel process after token/prefix changes
+- native slash commands are registered by the Discord runtime on startup
 
 ## Slack setup
 
@@ -43,6 +44,7 @@ Operational notes:
 
 - rotate tokens on membership/security events
 - validate event subscriptions and scopes in Slack app config
+- native operator commands are exposed as `/agenthelp`, `/agentstatus`, `/agentmodel`, `/agentcompact`, `/agentdebug`, `/agentstop`, `/agentnew`, and `/agentreset`
 
 ## WhatsApp setup
 
@@ -70,11 +72,39 @@ Operational notes:
 - restart the WhatsApp runtime after changing policy
 - use `keygate pairing approve whatsapp <code>` for DM pairing approvals
 
+## Operator commands across channels
+
+Keygate supports a shared operator command set:
+
+- `/help`
+- `/status`
+- `/model`
+- `/compact`
+- `/debug`
+- `/stop`
+- `/new`
+- `/reset`
+
+How those commands arrive depends on the channel:
+
+- Web, TUI, macOS companion UI, and WhatsApp use text slash commands
+- Discord registers native slash commands on bot startup
+- Slack uses native `/agent*` slash commands
+
+The command behavior is shared across channels even when the transport differs.
+
+Notes:
+
+- `/model` is session-scoped and does not rewrite the global default model
+- `/compact` stores a summary and keeps the full transcript in storage
+- `/debug on` enables the same session debug buffer visible in the web app
+
 ## Channel safety guidance
 
 - Use read-only mirror behavior where appropriate
 - Keep high-risk tool execution in controlled sessions
 - Audit tool event logs after sensitive workflows
+- Prefer DM pairing for external channels unless the bot is intentionally public
 
 ## Failure modes to expect
 

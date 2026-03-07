@@ -11,6 +11,7 @@ import type {
   LLMChunk,
   LLMProvider,
   LLMResponse,
+  LLMUsageSnapshot,
   Message,
   ToolCall,
   ToolDefinition,
@@ -66,6 +67,7 @@ export class GeminiProvider implements LLMProvider {
         content: text,
         toolCalls: toolCalls && toolCalls.length > 0 ? toolCalls : undefined,
         finishReason: toolCalls && toolCalls.length > 0 ? 'tool_calls' : 'stop',
+        usage: mapGeminiUsage(this.model, response.usageMetadata as Record<string, unknown> | undefined),
       };
     });
   }
@@ -115,8 +117,13 @@ export class GeminiProvider implements LLMProvider {
       };
     }
 
+    const finalResponse = await result.response;
     yield {
       toolCalls: accumulatedToolCalls.length > 0 ? accumulatedToolCalls : undefined,
+      usage: mapGeminiUsage(
+        this.model,
+        finalResponse.usageMetadata as Record<string, unknown> | undefined
+      ),
       done: true,
     };
   }
@@ -233,4 +240,38 @@ export class GeminiProvider implements LLMProvider {
       },
     })) as FunctionDeclaration[];
   }
+}
+
+function mapGeminiUsage(
+  model: string,
+  usageMetadata: Record<string, unknown> | undefined
+): LLMUsageSnapshot | undefined {
+  if (!usageMetadata) {
+    return undefined;
+  }
+
+  const inputTokens = toTokenCount(usageMetadata['promptTokenCount']);
+  const outputTokens = toTokenCount(usageMetadata['candidatesTokenCount']);
+  const cachedTokens = toTokenCount(usageMetadata['cachedContentTokenCount']);
+  const totalTokens = toTokenCount(usageMetadata['totalTokenCount']) || (inputTokens + outputTokens);
+
+  if (inputTokens === 0 && outputTokens === 0 && totalTokens === 0) {
+    return undefined;
+  }
+
+  return {
+    provider: 'gemini',
+    model,
+    inputTokens,
+    outputTokens,
+    cachedTokens,
+    totalTokens,
+    source: 'native',
+    raw: usageMetadata,
+  };
+}
+
+function toTokenCount(value: unknown): number {
+  const numeric = typeof value === 'number' ? value : Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : 0;
 }

@@ -1,44 +1,192 @@
 # Configuration Reference
 
-This page summarizes practical configuration surfaces used in Keygate.
+Keygate uses a mixed configuration model:
+
+- `.env` for secrets and environment-specific overrides
+- `config.json` for structured persisted settings
+- runtime stores under `~/.keygate/` for SQLite, OAuth state, sandboxes, webhooks, Gmail watches, and channel auth
 
 ## Primary config files
 
-- `~/.keygate/.env` – local runtime configuration on macOS/Linux
-- `%USERPROFILE%\.keygate\.env` – local runtime configuration on Windows
-- `.keygate.example` – baseline template used for bootstrapping
-- `~/.keygate/config.json` – persisted structured settings such as skills and WhatsApp channel policy
-- `~/.keygate/channels/whatsapp/auth/` – linked-device WhatsApp auth state
+- `~/.keygate/.env` on macOS/Linux
+- `%USERPROFILE%\.keygate\.env` on Windows
+- `~/.keygate/config.json`
+- `~/.keygate/keygate.db`
+- `~/.keygate/channels/whatsapp/auth/`
+- `~/.keygate/auth/gmail/`
+- `~/.keygate/gmail-store.json`
 
 ## Migration from the legacy config root
 
-- Keygate now uses a home dotdir config root: `~/.keygate` on macOS/Linux and `%USERPROFILE%\.keygate` on Windows.
-- Legacy installs stored config in `~/.config/keygate` (or the platform-equivalent config directory).
-- On first run, Keygate copies the legacy tree into the new root when the new root does not exist, or when it only contains bootstrap/cache files and no primary config yet.
-- The legacy `.keygate` filename is still read for compatibility, but new writes use `.env`.
-- The old directory is not deleted automatically.
+- Keygate now uses `~/.keygate` on macOS/Linux and `%USERPROFILE%\.keygate` on Windows.
+- Legacy installs in `~/.config/keygate` are copied forward automatically when the new root is missing or only contains bootstrap/cache files.
+- The legacy `.keygate` filename is still read for compatibility, but new writes target `.env`.
+
+## Precedence model
+
+1. Environment variables
+2. Persisted `config.json`
+3. Built-in defaults
+
+That means you can keep stable defaults in `config.json` and override them in CI, staging, or one-off local shells through `.env`.
+
+## `config.json` structure
+
+Not every field must be present. A typical advanced config looks like this:
+
+```json
+{
+  "llm": {
+    "pricing": {
+      "overrides": {
+        "openai:gpt-4o": {
+          "inputPerMillionUsd": 5,
+          "outputPerMillionUsd": 15,
+          "cachedInputPerMillionUsd": 2.5
+        }
+      }
+    }
+  },
+  "security": {
+    "sandbox": {
+      "backend": "docker",
+      "scope": "session",
+      "image": "keygate-sandbox:latest",
+      "networkAccess": false,
+      "degradeWithoutDocker": true
+    }
+  },
+  "gmail": {
+    "clientId": "YOUR_GOOGLE_OAUTH_CLIENT_ID",
+    "authorizationEndpoint": "https://accounts.google.com/o/oauth2/v2/auth",
+    "tokenEndpoint": "https://oauth2.googleapis.com/token",
+    "redirectUri": "http://127.0.0.1:1488/oauth/callback",
+    "redirectPort": 1488,
+    "defaults": {
+      "pubsubTopic": "projects/acme/topics/keygate-gmail",
+      "pushBaseUrl": "https://keygate.example.com",
+      "pushPathSecret": "replace-me",
+      "targetSessionId": "web:ops-inbox",
+      "labelIds": ["INBOX"],
+      "promptPrefix": "[GMAIL WATCH EVENT]",
+      "watchRenewalMinutes": 1320
+    }
+  },
+  "plugins": {
+    "entries": {
+      "acme-plugin": {
+        "enabled": true,
+        "env": {
+          "ACME_REGION": "eu-central-1"
+        },
+        "config": {
+          "projectId": "demo"
+        }
+      }
+    }
+  }
+}
+```
 
 ## Key configuration domains
 
 ### Provider and model
 
-- default provider
-- model ID
-- model-specific settings (e.g., reasoning effort where supported)
+Environment-driven defaults:
 
-### Security and execution
+- `LLM_PROVIDER`
+- `LLM_MODEL`
+- `LLM_REASONING_EFFORT`
+- `LLM_API_KEY`
+- `LLM_OLLAMA_HOST`
 
-- safe/spicy mode defaults
-- confirmation requirements
-- command/tool policy boundaries
+Persisted model pricing overrides live under:
 
-### Channel credentials
+```json
+{
+  "llm": {
+    "pricing": {
+      "overrides": {
+        "<provider>:<model>": {
+          "inputPerMillionUsd": 0,
+          "outputPerMillionUsd": 0,
+          "cachedInputPerMillionUsd": 0
+        }
+      }
+    }
+  }
+}
+```
 
-- Discord token + prefixes
-- Slack bot token, app token, signing secret
-- WhatsApp DM policy, allowlist, group policy, and read-receipt settings (stored in `config.json`, not `.keygate`)
+Use pricing overrides when a provider does not report native cost data or when you want Keygate's estimates to follow your internal billing assumptions.
 
-Example persisted WhatsApp block:
+### Security and sandbox execution
+
+Safe mode routes `filesystem`, `shell`, and `sandbox` tool calls through Docker.
+
+Structured config:
+
+```json
+{
+  "security": {
+    "mode": "safe",
+    "spicyModeEnabled": false,
+    "spicyMaxObedienceEnabled": false,
+    "sandbox": {
+      "backend": "docker",
+      "scope": "session",
+      "image": "keygate-sandbox:latest",
+      "networkAccess": false,
+      "degradeWithoutDocker": true
+    }
+  }
+}
+```
+
+Meaning of the sandbox fields:
+
+- `backend`: currently always `docker`
+- `scope`: `session` reuses one sandbox per session, `agent` isolates delegated agents separately
+- `image`: Docker image used for safe-mode tool execution
+- `networkAccess`: whether sandbox containers get outbound network access
+- `degradeWithoutDocker`: when `true`, gateway startup stays non-fatal if Docker is missing, but safe-mode sandboxed tools fail fast and doctor reports a degraded posture
+
+### Server and operator auth
+
+Important server settings:
+
+- `PORT`
+- `server.apiToken` or `KEYGATE_SERVER_API_TOKEN`
+
+Set `server.apiToken` when you expose operator-only plugin HTTP routes or remote web/API surfaces.
+
+### Channel credentials and policy
+
+Discord:
+
+- token
+- command prefix
+- DM policy
+- allowlist
+
+Slack:
+
+- bot token
+- app token
+- signing secret
+- DM policy
+- allowlist
+
+WhatsApp:
+
+- linked-device auth store
+- DM policy
+- allowlist
+- group mode
+- per-group mention rules
+- read receipts
+
+Example WhatsApp block:
 
 ```json
 {
@@ -59,42 +207,49 @@ Example persisted WhatsApp block:
 
 ### Browser MCP
 
-- desired version pin
-- domain policy (none/allowlist/blocklist)
-- allow/block lists
+Browser config includes:
+
+- domain policy
+- allowlist / blocklist
 - trace retention
+- Playwright MCP version pin
 
-### Scheduler
+### Gmail automations
 
-- per-job schedule
-- session target mapping
-- enabled/disabled state
+Gmail config is split into two layers:
+
+- OAuth client and redirect settings under `gmail.*`
+- watch creation defaults under `gmail.defaults.*`
+
+Useful defaults:
+
+- `pubsubTopic`: required to create watches
+- `pushBaseUrl`: public base URL used to build the push callback
+- `pushPathSecret`: optional shared secret appended to `/api/gmail/push`
+- `targetSessionId`: default session for new watches
+- `labelIds`: default Gmail label filters
+- `promptPrefix`: default text prepended to Gmail-delivered session messages
+- `watchRenewalMinutes`: renewal cadence used before Gmail watch expiration
 
 ### Plugins
 
+Plugin config supports:
+
 - plugin search roots
 - install node manager
-- per-plugin enabled flag
-- persisted plugin config and env overlays
-- `server.apiToken` for authenticated plugin HTTP routes
+- per-plugin enabled flags
+- per-plugin env overlays
+- per-plugin JSON config
 
-See the dedicated pages:
+See:
 
+- `/reference/plugin-sdk`
 - `/reference/plugin-configuration`
 - `/reference/plugin-manifest`
 
 ## Configuration hygiene
 
-- Never commit secrets
-- Never commit the WhatsApp auth directory
-- Keep production and local values separate
-- Prefer explicit values over hidden defaults for critical behavior
-- Re-test key workflows after changing security/model settings
-
-## Change management checklist
-
-- [ ] Update config in controlled environment
-- [ ] Validate connection and model operations
-- [ ] Validate one tool execution path
-- [ ] Validate channel send/receive for enabled channels
-- [ ] Document behavior changes in docs and PR notes
+- Do not commit `.env`, OAuth token files, `keygate.db`, or `channels/whatsapp/auth/`.
+- Keep `server.apiToken` set whenever operator-only HTTP surfaces are exposed.
+- Re-run `keygate doctor` after changing sandbox, Gmail, or plugin config.
+- Re-test one safe-mode tool call after changing `security.sandbox.*`.

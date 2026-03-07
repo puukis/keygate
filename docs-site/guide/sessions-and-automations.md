@@ -1,67 +1,108 @@
-# Sessions and Automations
+# Sessions & Automations
 
-Sessions are the foundation of clean context management in Keygate.
-
-## Session strategy
-
-Use one session per problem space.
-
-Examples:
-
-- `infra-debug-staging`
-- `docs-rewrite`
-- `feature-auth-flow`
-
-Benefits:
-
-- cleaner prompt history
-- lower context confusion
-- easier post-incident review
+Sessions are Keygate’s main isolation primitive. Automations attach to sessions instead of bypassing them.
 
 ## Session lifecycle
 
-- Create
-- Rename
-- Switch
-- Delete
+Key session operations:
 
-Best practice: rename sessions early to keep your sidebar and history readable.
+- create
+- rename
+- switch
+- delete
+- reset
+- compact
 
-## Automations lifecycle
+Use separate sessions for separate workflows:
 
-Scheduler jobs are linked to target sessions.
+- `web:release-triage`
+- `discord:customer-success`
+- `slack:ops-incident`
 
-Required fields:
+That keeps context narrow and makes automation routing predictable.
 
-- cron expression
+## Session controls
+
+### Chat commands
+
+```text
+/new
+/reset
+/compact
+/model
+/status
+```
+
+### Web app
+
+The **Sessions** tab lets you:
+
+- create web sessions
+- open existing sessions
+- rename web sessions
+- delete web sessions
+
+### CLI / APIs
+
+Session history and derived usage also surface through:
+
+- `keygate status`
+- `keygate usage`
+- websocket `sessions_*` requests
+
+## Automation surfaces
+
+The **Automations** tab now includes three delivery mechanisms.
+
+### Scheduler
+
+Scheduler jobs need:
+
 - target session
+- cron expression
 - prompt
 - enabled state
 
-## Cron design tips
+### Webhooks
 
-- Start with disabled jobs, then dry-run manually
-- Prefer explicit schedules over overly frequent intervals
-- Use one-purpose prompts (single responsibility)
+Webhook routes need:
 
-## Safe automation patterns
+- name
+- target session
+- prompt prefix
+- shared secret
+- enabled state
 
-- Notification summaries
-- Regular status snapshots
-- Health checks with bounded scope
+Inbound payloads are delivered as structured messages into the target session.
 
-## Patterns to avoid
+### Gmail
 
-- very high-frequency jobs without backoff
-- broad prompts that can trigger risky tools repeatedly
-- shared session targets for unrelated automations
+Gmail watches need:
 
-## Debugging automations
+- account
+- target session
+- optional label filters
+- prompt prefix
+- enabled state
 
-If a job appears idle:
+Push notifications are deduped and then routed into the normal session pipeline.
 
-1. verify it is enabled
-2. verify cron expression validity
-3. verify target session exists
-4. run job manually with **Run now**
-5. inspect tool/stream activity and logs
+## Design guidance
+
+- keep one automation type per problem session when possible
+- do not reuse a single session for unrelated cron jobs, webhooks, and Gmail watches
+- use `/compact` on high-traffic automation sessions to keep prompt context stable
+- prefer explicit label filters and prompt prefixes for Gmail/webhook sessions
+
+## Debugging
+
+If an automation appears idle:
+
+1. verify the target session still exists
+2. check that the automation is enabled
+3. run `keygate status` or `keygate doctor`
+4. inspect the **Debug** tab for the target session
+5. use manual test paths:
+   - scheduler: **Run now**
+   - Gmail: `keygate gmail test <watchId>`
+   - webhook: send a signed request to the route URL

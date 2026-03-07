@@ -68,6 +68,118 @@ export interface PluginServiceDefinition {
   stop?: () => Promise<void> | void;
 }
 
+export type PluginHookName =
+  | 'before_model_resolve'
+  | 'before_prompt_build'
+  | 'message_received'
+  | 'message_sent'
+  | 'before_tool_call'
+  | 'after_tool_call'
+  | 'before_compaction'
+  | 'after_compaction'
+  | 'session_start'
+  | 'session_end'
+  | 'subagent_spawning'
+  | 'subagent_spawned'
+  | 'subagent_ended'
+  | 'gateway_start'
+  | 'gateway_stop';
+
+export interface PluginHookPayloadMap {
+  before_model_resolve: {
+    sessionId: string;
+    provider: string;
+    model: string;
+    reasoningEffort?: string;
+  };
+  before_prompt_build: {
+    sessionId: string;
+    systemPrompt: string;
+    envOverlay: Record<string, string>;
+  };
+  message_received: {
+    sessionId: string;
+    channelType: string;
+    userId: string;
+    content: string;
+    attachments: unknown[];
+  };
+  message_sent: {
+    sessionId: string;
+    channelType: string;
+    content: string;
+  };
+  before_tool_call: {
+    sessionId: string;
+    toolName: string;
+    arguments: Record<string, unknown>;
+    envOverlay: Record<string, string>;
+  };
+  after_tool_call: {
+    sessionId: string;
+    toolName: string;
+    arguments: Record<string, unknown>;
+    result: { success: boolean; output: string; error?: string };
+  };
+  before_compaction: {
+    sessionId: string;
+    sourceMessageCount?: number;
+    messageCount?: number;
+    messages?: Array<{
+      role: string;
+      content: string;
+      attachments?: unknown[];
+    }>;
+  };
+  after_compaction: {
+    sessionId: string;
+    summary: string;
+    compactionSummaryRef?: string;
+    sourceMessageCount?: number;
+  };
+  session_start: {
+    sessionId: string;
+    channelType?: string;
+    delegated?: boolean;
+    parentSessionId?: string;
+  };
+  session_end: {
+    sessionId: string;
+    reason?: string;
+  };
+  subagent_spawning: {
+    parentSessionId: string;
+    label?: string;
+    requestedLabel?: string;
+    channelType?: string;
+  };
+  subagent_spawned: {
+    parentSessionId: string;
+    sessionId: string;
+    label?: string;
+    channelType?: string;
+  };
+  subagent_ended: {
+    parentSessionId?: string;
+    sessionId: string;
+    reason?: string;
+  };
+  gateway_start: {
+    mode?: string;
+    provider?: string;
+    model?: string;
+  };
+  gateway_stop: {
+    mode?: string;
+    provider?: string;
+    model?: string;
+  };
+}
+
+export type PluginHookPayload<TName extends PluginHookName> = PluginHookPayloadMap[TName];
+export type PluginHookHandler<TName extends PluginHookName> =
+  (payload: PluginHookPayload<TName>) => Promise<Partial<PluginHookPayload<TName>> | void> | Partial<PluginHookPayload<TName>> | void;
+
 export interface PluginSetupApi {
   pluginId: string;
   manifest: Record<string, unknown>;
@@ -92,6 +204,11 @@ export interface PluginSetupApi {
   sendMessageToSession(sessionId: string, content: string, source?: string): Promise<void>;
   listSessions(): Array<{ id: string; channelType: string; title?: string; updatedAt: string }>;
   getSessionHistory(sessionId: string, limit?: number): Array<{ role: string; content: string }>;
+  registerHook<TName extends PluginHookName>(
+    name: TName,
+    handler: PluginHookHandler<TName>,
+    options?: { priority?: number }
+  ): void;
   registerTool(definition: PluginToolDefinition): void;
   registerRpcMethod(name: string, handler: (params: unknown) => Promise<unknown> | unknown): void;
   registerHttpRoute(definition: PluginHttpRouteDefinition): void;

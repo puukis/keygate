@@ -36,6 +36,8 @@ type ConfirmationBrokerEntry = {
   timeout: NodeJS.Timeout;
 };
 
+type SlashRespondFn = (message: { text: string; response_type?: 'ephemeral' | 'in_channel' }) => Promise<unknown>;
+
 interface SlackFileLike {
   id?: string;
   name?: string;
@@ -203,6 +205,36 @@ class SlackChannel extends BaseChannel {
   }
 }
 
+class SlackRespondChannel extends BaseChannel {
+  type = 'slack' as const;
+
+  constructor(private readonly respond: SlashRespondFn) {
+    super();
+  }
+
+  async send(content: string): Promise<void> {
+    for (const chunk of splitSlackMessage(content)) {
+      await this.respond({ text: chunk, response_type: 'in_channel' });
+    }
+  }
+
+  async sendStream(stream: AsyncIterable<string>): Promise<void> {
+    let buffer = '';
+    for await (const chunk of stream) {
+      buffer += chunk;
+    }
+    await this.send(buffer || '(No response)');
+  }
+
+  async requestConfirmation(prompt: string): Promise<'cancel'> {
+    await this.respond({
+      text: `${prompt}\n\nThis action requires interactive confirmation and cannot be approved from a Slack slash command.`,
+      response_type: 'ephemeral',
+    });
+    return 'cancel';
+  }
+}
+
 /**
  * Start the Slack bot using Socket Mode (no public URL required)
  */
@@ -338,6 +370,63 @@ export async function startSlackBot(config: KeygateConfig): Promise<App> {
     }
   });
 
+  registerSlackSlashCommand(app, {
+    name: '/agenthelp',
+    buildContent: () => '/help',
+    gateway,
+    router,
+    config,
+  });
+  registerSlackSlashCommand(app, {
+    name: '/agentstatus',
+    buildContent: () => '/status',
+    gateway,
+    router,
+    config,
+  });
+  registerSlackSlashCommand(app, {
+    name: '/agentcompact',
+    buildContent: () => '/compact',
+    gateway,
+    router,
+    config,
+  });
+  registerSlackSlashCommand(app, {
+    name: '/agentstop',
+    buildContent: () => '/stop',
+    gateway,
+    router,
+    config,
+  });
+  registerSlackSlashCommand(app, {
+    name: '/agentnew',
+    buildContent: () => '/new',
+    gateway,
+    router,
+    config,
+  });
+  registerSlackSlashCommand(app, {
+    name: '/agentreset',
+    buildContent: () => '/reset',
+    gateway,
+    router,
+    config,
+  });
+  registerSlackSlashCommand(app, {
+    name: '/agentdebug',
+    buildContent: (text) => text.trim() ? `/debug ${text.trim()}` : '/debug',
+    gateway,
+    router,
+    config,
+  });
+  registerSlackSlashCommand(app, {
+    name: '/agentmodel',
+    buildContent: (text) => text.trim() ? `/model ${text.trim()}` : '/model',
+    gateway,
+    router,
+    config,
+  });
+
   await app.start();
   console.log('🤖 Slack bot ready! Listening via Socket Mode.');
 
@@ -430,6 +519,92 @@ function getActionThreadTs(body: unknown): string {
   const threadTs = typeof message['thread_ts'] === 'string' ? message['thread_ts'] : undefined;
   const messageTs = typeof message['ts'] === 'string' ? message['ts'] : undefined;
   return threadTs ?? messageTs ?? '';
+}
+
+function registerSlackSlashCommand(
+  app: App,
+  options: {
+    name: string;
+    buildContent: (text: string) => string;
+    gateway: Gateway;
+    router: RoutingService;
+    config: KeygateConfig;
+  }
+): void {
+  app.command(options.name, async ({ ack, command, respond }) => {
+    await ack();
+
+    const content = options.buildContent(command.text ?? '');
+    const route = await options.router.resolve({
+      channel: 'slack',
+      accountId: command.team_id,
+      chatId: command.channel_id,
+      userId: command.user_id,
+    });
+    const sessionId = route.sessionId;
+    options.gateway.setSessionWorkspace(sessionId, route.workspacePath);
+
+    try {
+      const isDirectMessage = command.channel_id.startsWith('D');
+      if (isDirectMessage) {
+        const policy = options.config.slack?.dmPolicy ?? 'pairing';
+        const allowFrom = options.config.slack?.allowFrom ?? [];
+        const paired = await isUserPaired('slack', command.user_id);
+        const allowed = isDmAllowedByPolicy({ policy, userId: command.user_id, allowFrom, paired });
+        if (!allowed) {
+          const request = await createOrGetPairingCode('slack', command.user_id);
+          await respond({
+            text: `🔐 DM pairing required. Your code: ${request.code}\nAsk the owner to run: keygate pairing approve slack ${request.code}`,
+            response_type: 'ephemeral',
+          });
+          return;
+        }
+      }
+
+      const channel = new SlackRespondChannel(respond as SlashRespondFn);
+      const normalized = normalizeSlackMessage(
+        command.trigger_id || randomUUID(),
+        command.channel_id,
+        command.user_id,
+        content,
+        channel,
+        undefined,
+        sessionId,
+      );
+      await options.gateway.processMessage(normalized);
+    } catch (error) {
+      console.error(`Error processing Slack slash command ${options.name}:`, error);
+      await respond({
+        text: '❌ An error occurred while processing your request.',
+        response_type: 'ephemeral',
+      }).catch(() => {});
+    }
+  });
+}
+
+function splitSlackMessage(content: string, maxLength = SLACK_MAX_MESSAGE_LENGTH): string[] {
+  const chunks: string[] = [];
+  let remaining = content;
+
+  while (remaining.length > 0) {
+    if (remaining.length <= maxLength) {
+      chunks.push(remaining);
+      break;
+    }
+
+    let breakPoint = remaining.lastIndexOf('\n', maxLength);
+    if (breakPoint === -1 || breakPoint < maxLength / 2) {
+      breakPoint = remaining.lastIndexOf(' ', maxLength);
+    }
+    if (breakPoint === -1 || breakPoint < maxLength / 2) {
+      breakPoint = maxLength;
+    }
+
+    chunks.push(remaining.slice(0, breakPoint));
+    remaining = remaining.slice(breakPoint).trimStart();
+  }
+
+  return chunks;
 }
 
 async function ingestSlackImageAttachments(

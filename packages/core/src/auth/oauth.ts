@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { URL } from 'node:url';
 import { generateCodeVerifier, generateCodeChallenge, generateState } from './pkce.js';
-import { writeTokens, type StoredTokens } from './tokenStore.js';
+import { writeTokens, type StoredTokens, type TokenStoreLocation } from './tokenStore.js';
 
 const DEFAULT_AUTHORIZATION_ENDPOINT = 'https://auth.openai.com/oauth/authorize';
 const DEFAULT_TOKEN_ENDPOINT = 'https://auth.openai.com/oauth/token';
@@ -123,6 +123,7 @@ export async function runOAuthFlow(
     openExternalUrl?: (url: string) => Promise<boolean>;
     readCallbackUrl?: () => Promise<string>;
     timeoutMs?: number;
+    tokenStore?: TokenStoreLocation | string;
   } = {}
 ): Promise<OAuthFlowResult> {
   const resolved = resolveConfig(config);
@@ -166,7 +167,7 @@ export async function runOAuthFlow(
   const tokens = await exchangeCodeForTokens(config, callbackResult.code, codeVerifier);
 
   // Persist tokens.
-  await writeTokens(tokens);
+  await writeTokens(tokens, options.tokenStore);
 
   return { tokens };
 }

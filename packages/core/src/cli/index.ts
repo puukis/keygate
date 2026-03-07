@@ -14,6 +14,10 @@ import { runMemoryCommand } from './commands/memory.js';
 import { runPairingCommand } from './commands/pairing.js';
 import { runDoctorCommand } from './commands/doctor.js';
 import { runPluginsCommand } from './commands/plugins.js';
+import { runStatusCommand } from './commands/status.js';
+import { runUsageCommand } from './commands/usage.js';
+import { runSandboxCommand } from './commands/sandbox.js';
+import { runGmailCommand } from './commands/gmail.js';
 import { loadConfigFromEnv } from '../config/env.js';
 import { runPluginCliBridge } from '../plugins/index.js';
 
@@ -82,6 +86,18 @@ export async function runCli(argv: string[]): Promise<boolean> {
     case 'doctor':
       await runDoctorCommand(args);
       return true;
+    case 'status':
+      await runStatusCommand(args);
+      return true;
+    case 'usage':
+      await runUsageCommand(args);
+      return true;
+    case 'sandbox':
+      await runSandboxCommand(args);
+      return true;
+    case 'gmail':
+      await runGmailCommand(args);
+      return true;
     case 'plugins':
       await runPluginsCommand(args);
       return true;
@@ -115,6 +131,10 @@ Usage:
   keygate memory <list|get|set|delete|search|namespaces|clear>
   keygate pairing <approve|pending>
   keygate doctor [--non-interactive]
+  keygate status [--session <id>] [--json]
+  keygate usage [--session <id>] [--window 24h|7d|30d|all] [--json]
+  keygate sandbox <list|explain|recreate> [--scope <key>] [--workspace <path>] [--json]
+  keygate gmail <login|list|watch|update|delete|test|renew> ...
 
 Notes:
   - openai-codex uses ChatGPT OAuth through Codex app-server.

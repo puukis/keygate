@@ -2,6 +2,7 @@
 
 export type SecurityMode = 'safe' | 'spicy';
 export type ChannelType = 'web' | 'discord' | 'terminal' | 'slack' | 'whatsapp';
+export type LLMProviderName = 'openai' | 'gemini' | 'ollama' | 'openai-codex';
 export type CodexReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 export type BrowserDomainPolicy = 'none' | 'allowlist' | 'blocklist';
 export type DmPolicy = 'pairing' | 'open' | 'closed';
@@ -9,6 +10,7 @@ export type WhatsAppGroupMode = 'closed' | 'selected' | 'open';
 export type SkillSourceType = 'workspace' | 'global' | 'plugin' | 'bundled' | 'extra';
 export type SessionCancelReason = 'user' | 'disconnect';
 export type NodeManager = 'npm' | 'pnpm' | 'yarn' | 'bun';
+export type SandboxScope = 'session' | 'agent';
 export type SkillEligibilityReason =
   | 'eligible'
   | 'disabled'
@@ -111,12 +113,14 @@ export interface LLMResponse {
   content: string;
   toolCalls?: ToolCall[];
   finishReason: 'stop' | 'tool_calls' | 'length' | 'error';
+  usage?: LLMUsageSnapshot;
 }
 
 export interface LLMChunk {
   content?: string;
   toolCalls?: ToolCall[];
   done: boolean;
+  usage?: LLMUsageSnapshot;
 }
 
 export interface ChatOptions {
@@ -150,6 +154,26 @@ export interface ProviderModelOption {
   metadata?: Record<string, unknown>;
 }
 
+export interface LLMPricingOverride {
+  inputPerMillionUsd: number;
+  outputPerMillionUsd: number;
+  cachedInputPerMillionUsd?: number;
+}
+
+export interface LLMUsageSnapshot {
+  provider: LLMProviderName | string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  totalTokens: number;
+  latencyMs?: number;
+  costUsd?: number;
+  estimatedCost?: boolean;
+  source?: 'native' | 'estimated' | 'hybrid';
+  raw?: Record<string, unknown>;
+}
+
 export interface LLMProvider {
   name: string;
   chat(messages: Message[], options?: ChatOptions): Promise<LLMResponse>;
@@ -163,11 +187,39 @@ export interface LLMProvider {
 
 // ==================== Sessions ====================
 
+export interface SessionModelOverride {
+  provider: LLMProviderName;
+  model: string;
+  reasoningEffort?: CodexReasoningEffort;
+}
+
+export interface SessionUsageAggregate {
+  turnCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  totalTokens: number;
+  costUsd: number;
+  lastTurnAt?: string;
+}
+
+export interface SessionDebugEvent {
+  id: string;
+  timestamp: string;
+  type: string;
+  message: string;
+  data?: Record<string, unknown>;
+}
+
 export interface Session {
   id: string;
   channelType: ChannelType;
   title?: string;
   messages: Message[];
+  modelOverride?: SessionModelOverride;
+  debugMode?: boolean;
+  compactionSummaryRef?: string;
+  usage?: SessionUsageAggregate;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -176,13 +228,16 @@ export interface Session {
 
 export interface KeygateConfig {
   llm: {
-    provider: 'openai' | 'gemini' | 'ollama' | 'openai-codex';
+    provider: LLMProviderName;
     model: string;
     reasoningEffort?: CodexReasoningEffort;
     apiKey: string;
     ollama?: {
         host: string;
-    }
+    };
+    pricing?: {
+      overrides?: Record<string, LLMPricingOverride>;
+    };
   };
   security: {
     mode: SecurityMode;
@@ -190,6 +245,13 @@ export interface KeygateConfig {
     spicyMaxObedienceEnabled?: boolean;
     workspacePath: string;
     allowedBinaries: string[];
+    sandbox: {
+      backend: 'docker';
+      scope: SandboxScope;
+      image: string;
+      networkAccess: boolean;
+      degradeWithoutDocker: boolean;
+    };
   };
   server: {
     port: number;
@@ -241,6 +303,7 @@ export interface KeygateConfig {
     allowFrom?: string[];
   };
   whatsapp?: WhatsAppConfig;
+  gmail?: GmailConfig;
   memory?: {
     provider: 'auto' | 'openai' | 'codex' | 'gemini' | 'ollama';
     model?: string;
@@ -254,6 +317,26 @@ export interface KeygateConfig {
     temporalHalfLifeDays: number;
     mmr: boolean;
   };
+}
+
+export interface GmailDefaultsConfig {
+  projectId?: string;
+  pubsubTopic?: string;
+  pushBaseUrl?: string;
+  pushPathSecret?: string;
+  targetSessionId?: string;
+  labelIds?: string[];
+  promptPrefix?: string;
+  watchRenewalMinutes?: number;
+}
+
+export interface GmailConfig {
+  clientId?: string;
+  authorizationEndpoint?: string;
+  tokenEndpoint?: string;
+  redirectUri?: string;
+  redirectPort?: number;
+  defaults: GmailDefaultsConfig;
 }
 
 export interface WhatsAppGroupRule {
@@ -360,6 +443,25 @@ export interface KeygateEvents {
     usedTokens: number;
     limitTokens: number;
     percent: number;
+  };
+  'usage:snapshot': {
+    sessionId: string;
+    usage: LLMUsageSnapshot;
+    aggregate: SessionUsageAggregate;
+  };
+  'session:compacted': {
+    sessionId: string;
+    compactionSummaryRef: string;
+    summary: string;
+  };
+  'debug:event': {
+    sessionId: string;
+    event: SessionDebugEvent;
+  };
+  'node:status_changed': {
+    nodeId: string;
+    online: boolean;
+    lastSeenAt: string;
   };
   'mode:changed': { mode: SecurityMode };
   'spicy_enabled:changed': { enabled: boolean };

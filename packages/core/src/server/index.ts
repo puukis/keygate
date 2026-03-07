@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { Gateway } from '../gateway/index.js';
+import type { UsageWindow } from '../usage/index.js';
 import { normalizeWebMessage, BaseChannel } from '../pipeline/index.js';
 import { updateKeygateFile } from '../config/env.js';
 import { MCPBrowserManager, type MCPBrowserStatus } from '../codex/mcpBrowserManager.js';
@@ -29,6 +30,7 @@ import {
 import { WebhookService, WebhookStore } from '../webhooks/index.js';
 import { RoutingRuleStore, RoutingService } from '../routing/index.js';
 import { NodeService, type NodeCapability } from '../nodes/index.js';
+import type { NodeInvokeResult } from '../nodes/index.js';
 import type {
   BrowserDomainPolicy,
   ChannelType,
@@ -53,6 +55,7 @@ import {
   sanitizeUploadSessionId as sanitizeUploadSessionIdFromStore,
   type UploadAttachmentRef,
 } from '../attachments/uploadStore.js';
+import { GmailAutomationService, type GmailHealthSummary } from '../gmail/index.js';
 
 type WSAttachmentRef = UploadAttachmentRef;
 
@@ -110,12 +113,23 @@ interface WSMessage {
     | 'sessions_spawn'
     | 'sessions_history'
     | 'sessions_send'
+    | 'usage_summary'
+    | 'session_compact'
+    | 'debug_events'
+    | 'sandbox_list'
+    | 'sandbox_explain'
+    | 'sandbox_recreate'
     | 'subagents'
     | 'scheduler_list'
     | 'scheduler_create'
     | 'scheduler_update'
     | 'scheduler_delete'
     | 'scheduler_trigger'
+    | 'gmail_watch_list'
+    | 'gmail_watch_create'
+    | 'gmail_watch_update'
+    | 'gmail_watch_delete'
+    | 'gmail_watch_test'
     | 'webhook_list'
     | 'webhook_create'
     | 'webhook_delete'
@@ -124,6 +138,9 @@ interface WSMessage {
     | 'routing_list'
     | 'routing_create'
     | 'routing_delete'
+    | 'node_register'
+    | 'node_heartbeat'
+    | 'node_invoke_response'
     | 'node_pair_request'
     | 'node_pair_pending'
     | 'node_pair_approve'
@@ -176,6 +193,7 @@ interface WSMessage {
   query?: string;
   tags?: string[];
   scope?: string;
+  window?: UsageWindow;
   namespace?: string;
   key?: string;
   parentSessionId?: string;
@@ -187,6 +205,8 @@ interface WSMessage {
   cronExpression?: string;
   prompt?: string;
   jobId?: string;
+  watchId?: string;
+  labelIds?: string[] | string;
   name?: string;
   pluginId?: string;
   method?: string;
@@ -205,11 +225,18 @@ interface WSMessage {
   requestId?: string;
   pairingCode?: string;
   nodeId?: string;
+  authToken?: string;
   capability?: NodeCapability;
   capabilities?: NodeCapability[];
+  permissions?: Record<string, 'granted' | 'denied' | 'unknown'>;
   params?: unknown;
   highRiskAck?: boolean;
   nodeName?: string;
+  platform?: string;
+  version?: string;
+  ok?: boolean;
+  payload?: Record<string, unknown>;
+  message?: string;
   file?: string;
   path?: string;
   staged?: boolean;
@@ -439,6 +466,15 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
   const webhookService = new WebhookService(new WebhookStore(), async (sessionId, content) => {
     await gateway.sendMessageToSession(sessionId, content, 'webhook:event');
   });
+  const gmailService = new GmailAutomationService(config, {
+    dispatchToSession: async (sessionId, content) => {
+      await gateway.sendMessageToSession(sessionId, content, 'gmail:watch');
+    },
+  });
+  gmailService.start();
+  void gmailService.renewDueWatches().catch((error) => {
+    console.warn('Initial Gmail watch renewal failed:', error);
+  });
   const routingService = new RoutingService(new RoutingRuleStore(), config.security.workspacePath);
   const nodeService = new NodeService();
 
@@ -458,8 +494,27 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
 
     // Simple REST endpoints
     if (url.pathname === '/api/status') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(buildStatusPayload(gateway, config)));
+      void Promise.allSettled([
+        gateway.sandbox.getHealth(),
+        nodeService.listNodes(),
+        gmailService.getHealth(),
+      ]).then((results) => {
+        const sandboxHealth = results[0]?.status === 'fulfilled' ? results[0].value : undefined;
+        const nodes = results[1]?.status === 'fulfilled' ? results[1].value : undefined;
+        const gmailHealth = results[2]?.status === 'fulfilled' ? results[2].value : undefined;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(buildStatusPayload(gateway, config, {
+          sandboxHealth,
+          nodes,
+          gmailHealth,
+        })));
+      }).catch((error) => {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          status: 'error',
+          error: error instanceof Error ? error.message : 'Failed to build status payload',
+        }));
+      });
       return;
     }
 
@@ -489,6 +544,11 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
       return;
     }
 
+    if (url.pathname === '/api/gmail/push') {
+      void handleGmailPushRequest(req, res, gmailService, url);
+      return;
+    }
+
     if (url.pathname.startsWith('/api/plugins/')) {
       void handlePluginHttpRequest(req, res, pluginManager, url);
       return;
@@ -512,6 +572,11 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
     channels.set(sessionId, channel);
     const llmState = gateway.getLLMState();
     let webSessionId = `web:${sessionId}`;
+    let connectedNodeId: string | null = null;
+    const pendingNodeInvokes = new Map<string, {
+      resolve: (result: NodeInvokeResult) => void;
+      timer: NodeJS.Timeout;
+    }>();
 
     console.log(`Client connected: ${sessionId}`);
 
@@ -527,6 +592,100 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
         const msg = JSON.parse(data.toString()) as WSMessage;
 
         switch (msg.type) {
+          case 'node_register': {
+            const nodeId = typeof msg.nodeId === 'string' ? msg.nodeId.trim() : '';
+            const authToken = typeof msg.authToken === 'string' ? msg.authToken.trim() : '';
+            if (!nodeId || !authToken) {
+              ws.send(JSON.stringify({ type: 'error', error: 'nodeId and authToken are required' }));
+              break;
+            }
+
+            const registered = await nodeService.registerNode(
+              nodeId,
+              authToken,
+              {
+                platform: typeof msg.platform === 'string' ? msg.platform : undefined,
+                version: typeof msg.version === 'string' ? msg.version : undefined,
+                permissions: msg.permissions,
+              },
+              {
+                invoke: (request) => new Promise((resolve) => {
+                  const requestId = crypto.randomUUID();
+                  const timer = setTimeout(() => {
+                    pendingNodeInvokes.delete(requestId);
+                    resolve({
+                      ok: false,
+                      nodeId: request.nodeId,
+                      capability: request.capability,
+                      mode: 'brokered',
+                      message: 'Node invocation timed out',
+                      deniedReason: 'node_timeout',
+                    });
+                  }, 30_000);
+                  pendingNodeInvokes.set(requestId, { resolve, timer });
+                  ws.send(JSON.stringify({
+                    type: 'node_invoke_request',
+                    requestId,
+                    ...request,
+                  }));
+                }),
+              }
+            );
+
+            if (!registered) {
+              ws.send(JSON.stringify({ type: 'error', error: 'Node authentication failed' }));
+              break;
+            }
+
+            connectedNodeId = nodeId;
+            ws.send(JSON.stringify({ type: 'node_register_result', node: registered }));
+            broadcast(wss, { type: 'node_status_changed', nodeId, online: true, lastSeenAt: registered.lastSeenAt });
+            break;
+          }
+
+          case 'node_heartbeat': {
+            const nodeId = typeof msg.nodeId === 'string' ? msg.nodeId.trim() : '';
+            const authToken = typeof msg.authToken === 'string' ? msg.authToken.trim() : '';
+            if (!nodeId || !authToken) {
+              ws.send(JSON.stringify({ type: 'error', error: 'nodeId and authToken are required' }));
+              break;
+            }
+
+            const updated = await nodeService.heartbeat(nodeId, authToken, {
+              platform: typeof msg.platform === 'string' ? msg.platform : undefined,
+              version: typeof msg.version === 'string' ? msg.version : undefined,
+              permissions: msg.permissions,
+            });
+            if (!updated) {
+              ws.send(JSON.stringify({ type: 'error', error: 'Node heartbeat authentication failed' }));
+              break;
+            }
+
+            broadcast(wss, { type: 'node_status_changed', nodeId, online: true, lastSeenAt: updated.lastSeenAt });
+            break;
+          }
+
+          case 'node_invoke_response': {
+            const requestId = typeof msg.requestId === 'string' ? msg.requestId : '';
+            const pending = pendingNodeInvokes.get(requestId);
+            if (!pending) {
+              break;
+            }
+            clearTimeout(pending.timer);
+            pendingNodeInvokes.delete(requestId);
+            pending.resolve({
+              ok: msg.ok === true,
+              nodeId: typeof msg.nodeId === 'string' ? msg.nodeId : (connectedNodeId ?? 'unknown'),
+              capability: isNodeCapability(msg.capability) ? msg.capability : 'invoke',
+              mode: 'brokered',
+              message: typeof msg.message === 'string' ? msg.message : (msg.ok === true ? 'Node invocation completed' : 'Node invocation failed'),
+              deniedReason: typeof msg.source === 'string' ? msg.source : undefined,
+              payload: msg.payload,
+              params: msg.params,
+            });
+            break;
+          }
+
           case 'message': {
             const content = typeof msg.content === 'string' ? msg.content.trim() : '';
             let attachments: MessageAttachment[] = [];
@@ -555,6 +714,7 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
             });
             webSessionId = route.sessionId;
             gateway.setSessionWorkspace(route.sessionId, route.workspacePath);
+            channel.setSessionId(webSessionId);
 
             const activeSession = webSessionId.startsWith('web:') ? webSessionId.slice(4) : webSessionId;
             const normalized = normalizeWebMessage(
@@ -564,8 +724,6 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
               channel,
               attachments.length > 0 ? attachments : undefined
             );
-
-            ws.send(JSON.stringify({ type: 'message_received', sessionId: activeSession }));
 
             await gateway.processMessage(normalized);
             break;
@@ -1587,6 +1745,87 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
             break;
           }
 
+          case 'usage_summary': {
+            const window = normalizeUsageWindow(msg.window);
+            const targetSessionId = typeof msg.sessionId === 'string' && msg.sessionId.trim().length > 0
+              ? msg.sessionId.trim()
+              : undefined;
+            const summary = gateway.usage.summarize({
+              sessionId: targetSessionId,
+              window,
+            });
+            ws.send(JSON.stringify({
+              type: 'usage_summary_result',
+              summary,
+            }));
+            break;
+          }
+
+          case 'session_compact': {
+            const targetSessionId = typeof msg.sessionId === 'string' && msg.sessionId.trim().length > 0
+              ? msg.sessionId.trim()
+              : webSessionId;
+            try {
+              const result = await gateway.compactSession(targetSessionId);
+              ws.send(JSON.stringify({
+                type: 'session_compacted',
+                sessionId: targetSessionId,
+                compactionSummaryRef: result.ref,
+                summary: result.summary,
+              }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Failed to compact session',
+              }));
+            }
+            break;
+          }
+
+          case 'debug_events': {
+            const targetSessionId = typeof msg.sessionId === 'string' && msg.sessionId.trim().length > 0
+              ? msg.sessionId.trim()
+              : webSessionId;
+            ws.send(JSON.stringify({
+              type: 'debug_events_result',
+              sessionId: targetSessionId,
+              events: gateway.getSessionDebugEvents(targetSessionId),
+            }));
+            break;
+          }
+
+          case 'sandbox_list': {
+            const sandboxes = await gateway.sandbox.list();
+            ws.send(JSON.stringify({ type: 'sandbox_list_result', sandboxes }));
+            break;
+          }
+
+          case 'sandbox_explain': {
+            const scopeKey = typeof msg.scope === 'string' && msg.scope.trim().length > 0
+              ? msg.scope.trim()
+              : webSessionId;
+            const detail = await gateway.sandbox.explain(scopeKey);
+            ws.send(JSON.stringify({ type: 'sandbox_explain_result', detail }));
+            break;
+          }
+
+          case 'sandbox_recreate': {
+            const scopeKey = typeof msg.scope === 'string' && msg.scope.trim().length > 0
+              ? msg.scope.trim()
+              : webSessionId;
+            const workspacePath = gateway.getSessionWorkspace(scopeKey) ?? gateway.config.security.workspacePath;
+            try {
+              const record = await gateway.sandbox.recreate(scopeKey, workspacePath);
+              ws.send(JSON.stringify({ type: 'sandbox_recreate_result', sandbox: record }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Failed to recreate sandbox',
+              }));
+            }
+            break;
+          }
+
           case 'subagents': {
             const action = msg.action;
             if (action === 'list') {
@@ -1709,6 +1948,89 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
               ws.send(JSON.stringify({ type: 'scheduler_trigger_result', job }));
             } catch (error) {
               ws.send(JSON.stringify({ type: 'error', error: error instanceof Error ? error.message : 'Failed to trigger scheduler job' }));
+            }
+            break;
+          }
+
+          case 'gmail_watch_list': {
+            const payload = await gmailService.list();
+            ws.send(JSON.stringify({ type: 'gmail_watch_list_result', ...payload }));
+            break;
+          }
+
+          case 'gmail_watch_create': {
+            try {
+              const payload = await gmailService.createWatch({
+                accountId: typeof msg.accountId === 'string' ? msg.accountId.trim() : '',
+                targetSessionId:
+                  typeof msg.sessionId === 'string' && msg.sessionId.trim().length > 0
+                    ? msg.sessionId.trim()
+                    : webSessionId,
+                labelIds: parseStringList(msg.labelIds),
+                promptPrefix: typeof msg.promptPrefix === 'string' ? msg.promptPrefix : undefined,
+                enabled: typeof msg.enabled === 'boolean' ? msg.enabled : true,
+              });
+              ws.send(JSON.stringify({ type: 'gmail_watch_create_result', watch: payload }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Failed to create Gmail watch',
+              }));
+            }
+            break;
+          }
+
+          case 'gmail_watch_update': {
+            const watchId = typeof msg.watchId === 'string' ? msg.watchId.trim() : '';
+            if (!watchId) {
+              ws.send(JSON.stringify({ type: 'error', error: 'watchId is required' }));
+              break;
+            }
+
+            try {
+              const watch = await gmailService.updateWatch(watchId, {
+                targetSessionId: typeof msg.sessionId === 'string' ? msg.sessionId : undefined,
+                labelIds: msg.labelIds === undefined ? undefined : parseStringList(msg.labelIds),
+                promptPrefix: typeof msg.promptPrefix === 'string' ? msg.promptPrefix : undefined,
+                enabled: typeof msg.enabled === 'boolean' ? msg.enabled : undefined,
+              });
+              ws.send(JSON.stringify({ type: 'gmail_watch_update_result', watch }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Failed to update Gmail watch',
+              }));
+            }
+            break;
+          }
+
+          case 'gmail_watch_delete': {
+            const watchId = typeof msg.watchId === 'string' ? msg.watchId.trim() : '';
+            if (!watchId) {
+              ws.send(JSON.stringify({ type: 'error', error: 'watchId is required' }));
+              break;
+            }
+
+            const deleted = await gmailService.deleteWatch(watchId);
+            ws.send(JSON.stringify({ type: 'gmail_watch_delete_result', watchId, deleted }));
+            break;
+          }
+
+          case 'gmail_watch_test': {
+            const watchId = typeof msg.watchId === 'string' ? msg.watchId.trim() : '';
+            if (!watchId) {
+              ws.send(JSON.stringify({ type: 'error', error: 'watchId is required' }));
+              break;
+            }
+
+            try {
+              const result = await gmailService.testWatch(watchId);
+              ws.send(JSON.stringify({ type: 'gmail_watch_test_result', watchId, result }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Failed to test Gmail watch',
+              }));
             }
             break;
           }
@@ -1925,7 +2247,13 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
             try {
               const builtinCommands = [
                 { command: 'help', description: 'Show available commands.', source: 'builtin' as const },
-                { command: 'new', description: 'Start a fresh session.', source: 'builtin' as const },
+                { command: 'status', description: 'Show current model, tokens, and session state.', source: 'builtin' as const },
+                { command: 'model', description: 'Show or set the session model override.', source: 'builtin' as const },
+                { command: 'compact', description: 'Summarize the session and keep a short recent tail.', source: 'builtin' as const },
+                { command: 'debug', description: 'Show or toggle the session debug buffer.', source: 'builtin' as const },
+                { command: 'stop', description: 'Cancel the active run for this session.', source: 'builtin' as const },
+                { command: 'new', description: 'Start a fresh session in the current thread.', source: 'builtin' as const },
+                { command: 'reset', description: 'Reset the session history and local overrides.', source: 'builtin' as const },
               ];
 
               let skillCommands: { command: string; description: string; source: 'skill' }[] = [];
@@ -2082,6 +2410,28 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
     });
 
     ws.on('close', () => {
+      for (const pending of pendingNodeInvokes.values()) {
+        clearTimeout(pending.timer);
+        pending.resolve({
+          ok: false,
+          nodeId: connectedNodeId ?? 'unknown',
+          capability: 'invoke',
+          mode: 'brokered',
+          message: 'Node connection closed',
+          deniedReason: 'node_disconnected',
+        });
+      }
+      pendingNodeInvokes.clear();
+      if (connectedNodeId) {
+        void nodeService.disconnectNode(connectedNodeId).then(() => {
+          broadcast(wss, {
+            type: 'node_status_changed',
+            nodeId: connectedNodeId,
+            online: false,
+            lastSeenAt: new Date().toISOString(),
+          });
+        });
+      }
       gateway.cancelSessionRun(webSessionId, 'disconnect');
       channel.handleDisconnect();
       console.log(`Client disconnected: ${sessionId}`);
@@ -2092,6 +2442,10 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
   // Forward gateway events to all connected clients
   gateway.on('message:user', (event) => {
     broadcast(wss, buildSessionUserMessagePayload(event));
+  });
+
+  gateway.on('message:start', (event) => {
+    broadcast(wss, { type: 'message_received', sessionId: event.sessionId });
   });
 
   gateway.on('message:chunk', (event) => {
@@ -2142,8 +2496,20 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
     broadcast(wss, { type: 'context_usage', ...event });
   });
 
+  gateway.on('usage:snapshot', (event) => {
+    broadcast(wss, { type: 'usage_snapshot', ...event });
+  });
+
+  gateway.on('session:compacted', (event) => {
+    broadcast(wss, { type: 'session_compacted', ...event });
+  });
+
   gateway.on('session:cancelled', (event) => {
     broadcast(wss, { type: 'session_cancelled', ...event });
+  });
+
+  gateway.on('debug:event', (event) => {
+    broadcast(wss, { type: 'debug_event', ...event });
   });
 
   server.listen(config.server.port, () => {
@@ -2159,6 +2525,7 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
   server.on('close', () => {
     clearInterval(browserCleanupInterval);
     clearInterval(uploadCleanupInterval);
+    gmailService.stop();
   });
 
   return {
@@ -2190,10 +2557,29 @@ function broadcast(wss: WebSocketServer, data: object): void {
 
 export { WebSocketChannel };
 
-export function buildStatusPayload(gateway: Gateway, config: KeygateConfig): Record<string, unknown> {
+export function buildStatusPayload(
+  gateway: Gateway,
+  config: KeygateConfig,
+  extras: {
+    sandboxHealth?: { available: boolean; detail: string; image: string; scope: string };
+    nodes?: Array<{ online?: boolean }>;
+    gmailHealth?: GmailHealthSummary;
+  } = {}
+): Record<string, unknown> {
   const skills = typeof (gateway as Partial<Gateway>).getSkillsStatus === 'function'
     ? gateway.getSkillsStatus()
     : { loadedCount: 0, eligibleCount: 0, snapshotVersion: 'empty' };
+  const usage = typeof (gateway as Partial<Gateway> & { usage?: { summarize?: (options: { window: UsageWindow }) => unknown } }).usage?.summarize === 'function'
+    ? gateway.usage.summarize({ window: '30d' })
+    : {
+      window: '30d',
+      generatedAt: new Date().toISOString(),
+      total: { key: 'total', turns: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, totalTokens: 0, costUsd: 0 },
+      byProvider: [],
+      byModel: [],
+      bySession: [],
+      byDay: [],
+    };
   return {
     status: 'ok',
     mode: gateway.getSecurityMode(),
@@ -2205,6 +2591,36 @@ export function buildStatusPayload(gateway: Gateway, config: KeygateConfig): Rec
     whatsapp: buildWhatsAppConfigViewSync(config),
     browser: buildBrowserConfigViewFromConfig(config),
     skills,
+    usage,
+    sandbox: extras.sandboxHealth
+      ? {
+        available: extras.sandboxHealth.available,
+        detail: extras.sandboxHealth.detail,
+        image: extras.sandboxHealth.image,
+        scope: extras.sandboxHealth.scope,
+      }
+      : {
+        available: false,
+        detail: 'unavailable',
+        image: config.security?.sandbox?.image ?? 'unknown',
+        scope: config.security?.sandbox?.scope ?? 'session',
+      },
+    nodes: extras.nodes
+      ? {
+        total: extras.nodes.length,
+        online: extras.nodes.filter((node) => node.online === true).length,
+      }
+      : {
+        total: 0,
+        online: 0,
+      },
+    gmail: extras.gmailHealth ?? {
+      accounts: 0,
+      watches: 0,
+      enabledWatches: 0,
+      expiredWatches: 0,
+      dueForRenewal: 0,
+    },
   };
 }
 
@@ -2466,6 +2882,27 @@ function parseBrowserOrigins(value: string[] | string): string[] {
   ));
 }
 
+function parseStringList(value: string[] | string | undefined): string[] {
+  if (Array.isArray(value)) {
+    return Array.from(new Set(
+      value
+        .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+        .filter((entry) => entry.length > 0)
+    ));
+  }
+
+  if (typeof value !== 'string') {
+    return [];
+  }
+
+  return Array.from(new Set(
+    value
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0)
+  ));
+}
+
 function normalizeBrowserDomainPolicy(value: unknown): BrowserDomainPolicy {
   if (typeof value !== 'string') {
     return 'none';
@@ -2692,6 +3129,14 @@ function normalizeCodexReasoningEffort(value: unknown): CodexReasoningEffort | u
     default:
       return undefined;
   }
+}
+
+function normalizeUsageWindow(value: unknown): UsageWindow {
+  if (value === '24h' || value === '7d' || value === '30d' || value === 'all') {
+    return value;
+  }
+
+  return '30d';
 }
 
 function buildDiscordConfigView(config: KeygateConfig): DiscordConfigView {
@@ -3099,6 +3544,46 @@ export async function handleWebhookInboundRequest(
     accepted: result.accepted,
     message: result.message,
     routeId: result.route?.id,
+  }));
+}
+
+export async function handleGmailPushRequest(
+  req: Parameters<typeof handleWebhookInboundRequest>[0],
+  res: Parameters<typeof handleWebhookInboundRequest>[1],
+  gmailService: GmailAutomationService,
+  url: URL,
+): Promise<void> {
+  if (req.method !== 'POST') {
+    res.writeHead(405, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Method Not Allowed' }));
+    return;
+  }
+
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += buffer.length;
+    if (totalBytes > WEBHOOK_MAX_BODY_BYTES) {
+      res.writeHead(413, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Payload too large' }));
+      return;
+    }
+    chunks.push(buffer);
+  }
+
+  const rawBody = Buffer.concat(chunks).toString('utf8');
+  const result = await gmailService.handlePushRequest(
+    rawBody,
+    typeof req.headers['authorization'] === 'string' ? req.headers['authorization'] : undefined,
+    url.toString(),
+  );
+  res.writeHead(result.statusCode, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({
+    accepted: result.accepted,
+    processed: result.processed,
+    message: result.message,
   }));
 }
 
