@@ -12,6 +12,8 @@ import {
   type PluginValidationView,
 } from './components/PluginsPanel';
 import { SessionSidebar, type SidebarActionId, type SidebarTabId } from './components/SessionSidebar';
+import { GitPanel, type GitRepoStateView, type GitCommitView } from './components/GitPanel';
+import type { FileDiffView } from './components/DiffView';
 import { useWebSocket } from './hooks/useWebSocket';
 import { buildEnableSpicyModeMessage, buildSetSpicyObedienceMessage } from './spicyObedience';
 import {
@@ -212,6 +214,7 @@ const ACTIVE_SCREEN_LABELS: Record<SidebarTabId, string> = {
   debug: 'Debug',
   logs: 'Logs',
   docs: 'Docs',
+  git: 'Git',
 };
 
 const DEFAULT_BROWSER_CONFIG_STATE: BrowserConfigState = {
@@ -1039,6 +1042,11 @@ function App() {
 
   const [agentMemories, setAgentMemories] = useState<MemoryEntryView[]>([]);
   const [agentMemoryNamespaces, setAgentMemoryNamespaces] = useState<string[]>([]);
+
+  const [gitState, setGitState] = useState<GitRepoStateView | null>(null);
+  const [gitDiff, setGitDiff] = useState<FileDiffView[]>([]);
+  const [gitStagedDiff, setGitStagedDiff] = useState<FileDiffView[]>([]);
+  const [gitLog, setGitLog] = useState<GitCommitView[]>([]);
 
   const [scheduledJobs, setScheduledJobs] = useState<ScheduledJobView[]>([]);
   const [schedulerSessionDraft, setSchedulerSessionDraft] = useState('');
@@ -1997,6 +2005,36 @@ function App() {
       case 'chunk':
       case 'stream_end':
       case 'message':
+
+      // ==================== Git ====================
+      case 'git_status_result': {
+        const state = data['state'] as GitRepoStateView | undefined;
+        if (state) setGitState(state);
+        break;
+      }
+      case 'git_diff_result': {
+        const diffs = Array.isArray(data['diffs']) ? data['diffs'] as FileDiffView[] : [];
+        setGitDiff(diffs);
+        break;
+      }
+      case 'git_staged_diff_result': {
+        const diffs = Array.isArray(data['diffs']) ? data['diffs'] as FileDiffView[] : [];
+        setGitStagedDiff(diffs);
+        break;
+      }
+      case 'git_log_result': {
+        const commits = Array.isArray(data['commits']) ? data['commits'] as GitCommitView[] : [];
+        setGitLog(commits);
+        break;
+      }
+      case 'git_commit_result': {
+        const state = data['state'] as GitRepoStateView | undefined;
+        if (state) setGitState(state);
+        setGitStagedDiff([]);
+        setGitDiff([]);
+        break;
+      }
+
       default:
         break;
     }
@@ -3686,6 +3724,24 @@ function App() {
           {activeScreen === 'docs' && renderComingSoonScreen(
             'Docs',
             'In-app documentation is planned. This section will provide guided references and setup guides.',
+          )}
+
+          {activeScreen === 'git' && (
+            <GitPanel
+              connected={connected}
+              state={gitState}
+              diff={gitDiff}
+              stagedDiff={gitStagedDiff}
+              log={gitLog}
+              onRefresh={() => send({ type: 'git_status' })}
+              onStage={(path) => send({ type: 'git_stage', path })}
+              onUnstage={(path) => send({ type: 'git_unstage', path })}
+              onDiscard={(path) => send({ type: 'git_discard', path })}
+              onCommit={(commitMessage) => send({ type: 'git_commit', commitMessage })}
+              onFetchDiff={() => send({ type: 'git_diff' })}
+              onFetchStagedDiff={() => send({ type: 'git_staged_diff' })}
+              onFetchLog={() => send({ type: 'git_log' })}
+            />
           )}
         </section>
 

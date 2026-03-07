@@ -131,7 +131,16 @@ interface WSMessage {
     | 'node_list'
     | 'node_describe'
     | 'node_invoke'
-    | 'list_slash_commands';
+    | 'list_slash_commands'
+    | 'git_status'
+    | 'git_diff'
+    | 'git_staged_diff'
+    | 'git_log'
+    | 'git_file_diff'
+    | 'git_stage'
+    | 'git_unstage'
+    | 'git_discard'
+    | 'git_commit';
   sessionId?: string;
   content?: string;
   decision?: ConfirmationDecision;
@@ -201,6 +210,10 @@ interface WSMessage {
   params?: unknown;
   highRiskAck?: boolean;
   nodeName?: string;
+  file?: string;
+  path?: string;
+  staged?: boolean;
+  commitMessage?: string;
 }
 
 interface StartWebServerOptions {
@@ -1942,6 +1955,122 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
             }
             break;
           }
+
+          // ==================== Git ====================
+
+          case 'git_status': {
+            try {
+              const cwd = gateway.getSessionWorkspace(webSessionId) ?? gateway.config.security.workspacePath;
+              const state = await gateway.git.getStatus(cwd);
+              ws.send(JSON.stringify({ type: 'git_status_result', state }));
+            } catch (error) {
+              ws.send(JSON.stringify({ type: 'error', error: error instanceof Error ? error.message : 'git_status failed' }));
+            }
+            break;
+          }
+
+          case 'git_diff': {
+            try {
+              const cwd = gateway.getSessionWorkspace(webSessionId) ?? gateway.config.security.workspacePath;
+              const diffs = await gateway.git.getDiff(cwd);
+              ws.send(JSON.stringify({ type: 'git_diff_result', diffs }));
+            } catch (error) {
+              ws.send(JSON.stringify({ type: 'error', error: error instanceof Error ? error.message : 'git_diff failed' }));
+            }
+            break;
+          }
+
+          case 'git_staged_diff': {
+            try {
+              const cwd = gateway.getSessionWorkspace(webSessionId) ?? gateway.config.security.workspacePath;
+              const diffs = await gateway.git.getStagedDiff(cwd);
+              ws.send(JSON.stringify({ type: 'git_staged_diff_result', diffs }));
+            } catch (error) {
+              ws.send(JSON.stringify({ type: 'error', error: error instanceof Error ? error.message : 'git_staged_diff failed' }));
+            }
+            break;
+          }
+
+          case 'git_log': {
+            try {
+              const cwd = gateway.getSessionWorkspace(webSessionId) ?? gateway.config.security.workspacePath;
+              const limit = typeof msg.limit === 'number' ? msg.limit : 20;
+              const commits = await gateway.git.getLog(cwd, limit);
+              ws.send(JSON.stringify({ type: 'git_log_result', commits }));
+            } catch (error) {
+              ws.send(JSON.stringify({ type: 'error', error: error instanceof Error ? error.message : 'git_log failed' }));
+            }
+            break;
+          }
+
+          case 'git_file_diff': {
+            try {
+              const filePath = typeof msg.path === 'string' ? msg.path : '';
+              if (!filePath) { ws.send(JSON.stringify({ type: 'error', error: 'path is required' })); break; }
+              const cwd = gateway.getSessionWorkspace(webSessionId) ?? gateway.config.security.workspacePath;
+              const diff = await gateway.git.getFileDiff(cwd, filePath);
+              ws.send(JSON.stringify({ type: 'git_file_diff_result', diff }));
+            } catch (error) {
+              ws.send(JSON.stringify({ type: 'error', error: error instanceof Error ? error.message : 'git_file_diff failed' }));
+            }
+            break;
+          }
+
+          case 'git_stage': {
+            try {
+              const filePath = typeof msg.path === 'string' ? msg.path : '';
+              if (!filePath) { ws.send(JSON.stringify({ type: 'error', error: 'path is required' })); break; }
+              const cwd = gateway.getSessionWorkspace(webSessionId) ?? gateway.config.security.workspacePath;
+              await gateway.git.stage(cwd, filePath);
+              const state = await gateway.git.getStatus(cwd);
+              ws.send(JSON.stringify({ type: 'git_status_result', state }));
+            } catch (error) {
+              ws.send(JSON.stringify({ type: 'error', error: error instanceof Error ? error.message : 'git_stage failed' }));
+            }
+            break;
+          }
+
+          case 'git_unstage': {
+            try {
+              const filePath = typeof msg.path === 'string' ? msg.path : '';
+              if (!filePath) { ws.send(JSON.stringify({ type: 'error', error: 'path is required' })); break; }
+              const cwd = gateway.getSessionWorkspace(webSessionId) ?? gateway.config.security.workspacePath;
+              await gateway.git.unstage(cwd, filePath);
+              const state = await gateway.git.getStatus(cwd);
+              ws.send(JSON.stringify({ type: 'git_status_result', state }));
+            } catch (error) {
+              ws.send(JSON.stringify({ type: 'error', error: error instanceof Error ? error.message : 'git_unstage failed' }));
+            }
+            break;
+          }
+
+          case 'git_discard': {
+            try {
+              const filePath = typeof msg.path === 'string' ? msg.path : '';
+              if (!filePath) { ws.send(JSON.stringify({ type: 'error', error: 'path is required' })); break; }
+              const cwd = gateway.getSessionWorkspace(webSessionId) ?? gateway.config.security.workspacePath;
+              await gateway.git.discard(cwd, filePath);
+              const state = await gateway.git.getStatus(cwd);
+              ws.send(JSON.stringify({ type: 'git_status_result', state }));
+            } catch (error) {
+              ws.send(JSON.stringify({ type: 'error', error: error instanceof Error ? error.message : 'git_discard failed' }));
+            }
+            break;
+          }
+
+          case 'git_commit': {
+            try {
+              const commitMessage = typeof msg.commitMessage === 'string' ? msg.commitMessage.trim() : '';
+              if (!commitMessage) { ws.send(JSON.stringify({ type: 'error', error: 'commitMessage is required' })); break; }
+              const cwd = gateway.getSessionWorkspace(webSessionId) ?? gateway.config.security.workspacePath;
+              const result = await gateway.git.commit(cwd, commitMessage);
+              const state = await gateway.git.getStatus(cwd);
+              ws.send(JSON.stringify({ type: 'git_commit_result', result, state }));
+            } catch (error) {
+              ws.send(JSON.stringify({ type: 'error', error: error instanceof Error ? error.message : 'git_commit failed' }));
+            }
+            break;
+          }
         }
       } catch (error) {
         console.error('WebSocket message error:', error);
@@ -1979,6 +2108,18 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
 
   gateway.on('tool:end', (event) => {
     broadcast(wss, { type: 'tool_end', ...event });
+
+    // Auto-push git status after filesystem/shell tool completes
+    const toolType = (event as Record<string, unknown>)['toolType'] as string | undefined;
+    const sid = (event as Record<string, unknown>)['sessionId'] as string | undefined;
+    if (sid && (toolType === 'filesystem' || toolType === 'shell' || toolType === 'other')) {
+      const cwd = gateway.getSessionWorkspace(sid) ?? gateway.config.security.workspacePath;
+      void gateway.git.getStatus(cwd).then((state) => {
+        if (state.isRepo) {
+          broadcast(wss, { type: 'git_status_result', state, sessionId: sid });
+        }
+      }).catch(() => { /* ignore git status errors on auto-push */ });
+    }
   });
 
   gateway.on('mode:changed', (event) => {

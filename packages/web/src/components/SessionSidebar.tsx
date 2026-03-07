@@ -13,7 +13,8 @@ export type SidebarTabId =
   | 'agents'
   | 'debug'
   | 'logs'
-  | 'docs';
+  | 'docs'
+  | 'git';
 export type SidebarActionId = 'open_config_plugins' | 'open_config_marketplace' | 'open_config_mcp_browser';
 type SidebarSectionId = 'chat' | 'control' | 'agent' | 'settings' | 'resources';
 type SidebarIconId =
@@ -31,7 +32,8 @@ type SidebarIconId =
   | 'config'
   | 'debug'
   | 'logs'
-  | 'docs';
+  | 'docs'
+  | 'git';
 
 interface SidebarTabItem {
   kind: 'tab';
@@ -67,6 +69,7 @@ export const SIDEBAR_SECTIONS: SidebarSection[] = [
     label: 'Chat',
     items: [
       { kind: 'tab', id: 'chat', label: 'Chat', icon: 'chat' },
+      { kind: 'tab', id: 'git', label: 'Git', icon: 'git' },
     ],
   },
   {
@@ -220,6 +223,15 @@ function SidebarIcon({ id }: { id: SidebarIconId }) {
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <rect x="5.5" y="3.5" width="13" height="17" rx="1.8" />
           <path d="M8.5 8.5h7M8.5 12h7M8.5 15.5h5" />
+        </svg>
+      );
+    case 'git':
+      return (
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <circle cx="7" cy="7" r="2" />
+          <circle cx="17" cy="12" r="2" />
+          <circle cx="7" cy="17" r="2" />
+          <path d="M7 9v6M9 7l6 3.5M9 17l6-3.5" />
         </svg>
       );
     default:

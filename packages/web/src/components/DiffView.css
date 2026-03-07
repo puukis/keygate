@@ -1,0 +1,123 @@
+.diff-view {
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.diff-title {
+  font-family: var(--font-sans, sans-serif);
+  font-weight: 600;
+  font-size: 0.85rem;
+  margin-bottom: 0.5rem;
+  color: var(--text-primary);
+}
+
+.diff-empty {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  padding: 1rem;
+  text-align: center;
+}
+
+.diff-file {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 0.75rem;
+  overflow: hidden;
+}
+
+.diff-file-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  background: var(--surface-muted);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-sans, sans-serif);
+  font-size: 0.8rem;
+}
+
+.diff-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.2rem;
+  height: 1.2rem;
+  border-radius: 3px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.diff-status-added { background: #28a74530; color: #28a745; }
+.diff-status-modified { background: #e3b34130; color: #e3b341; }
+.diff-status-deleted { background: #d73a4930; color: #d73a49; }
+.diff-status-renamed { background: #6f42c130; color: #6f42c1; }
+.diff-status-copied { background: #0366d630; color: #0366d6; }
+
+.diff-file-path {
+  font-weight: 500;
+  word-break: break-all;
+  color: var(--text-primary);
+}
+
+.diff-file-rename {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+}
+
+.diff-binary {
+  padding: 0.5rem 0.6rem;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.diff-hunk {
+  border-top: 1px solid var(--border);
+}
+
+.diff-hunk:first-child {
+  border-top: none;
+}
+
+.diff-hunk-header {
+  padding: 0.2rem 0.6rem;
+  background: var(--surface-muted);
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+}
+
+.diff-hunk-ctx {
+  margin-left: 0.5rem;
+  color: var(--text-secondary);
+}
+
+.diff-lines {
+  overflow-x: auto;
+}
+
+.diff-line {
+  display: flex;
+  white-space: pre;
+  padding: 0 0.6rem;
+}
+
+.diff-line-add {
+  background: #28a74515;
+}
+
+.diff-line-remove {
+  background: #d73a4915;
+}
+
+.diff-line-prefix {
+  flex-shrink: 0;
+  width: 1rem;
+  color: var(--text-secondary);
+  user-select: none;
+}
+
+.diff-line-content {
+  flex: 1;
+  min-width: 0;
+}
