@@ -1,7 +1,9 @@
 import * as readline from 'node:readline';
 import { stdin as input, stdout as output } from 'node:process';
+import path from 'node:path';
 import { getDefaultWorkspacePath, loadConfigFromEnv } from '../../config/env.js';
 import { ensureAgentWorkspaceFiles } from '../../workspace/agentWorkspace.js';
+import { ensureWorkspaceGitRepo } from '../../workspace/gitWorkspace.js';
 import { Gateway } from '../../gateway/index.js';
 import { BaseChannel, normalizeTerminalMessage } from '../../pipeline/index.js';
 import type {
@@ -993,7 +995,20 @@ function createSessionToken(): string {
 
 export async function runTuiCommand(_args: ParsedArgs): Promise<void> {
   const config = loadConfigFromEnv();
-  await ensureAgentWorkspaceFiles(getDefaultWorkspacePath());
+  const workspaceBootstrap = await ensureAgentWorkspaceFiles(getDefaultWorkspacePath());
+  try {
+    await ensureWorkspaceGitRepo(config.security.workspacePath, {
+      isRootWorkspace: true,
+      initialCommitPaths:
+        path.resolve(config.security.workspacePath) === path.resolve(getDefaultWorkspacePath())
+          ? [...workspaceBootstrap.created, ...workspaceBootstrap.migrated]
+          : [],
+    });
+  } catch (error) {
+    console.warn(
+      `Workspace Git bootstrap skipped: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
   const gateway = Gateway.getInstance(config);
   const tui = new KeygateTui(config, gateway);
   await tui.run();

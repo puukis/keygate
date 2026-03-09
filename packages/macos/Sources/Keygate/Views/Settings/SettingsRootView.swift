@@ -258,7 +258,7 @@ struct LLMSettingsTab: View {
                     }
                     if let effort = llm.reasoningEffort {
                         LabeledContent("Reasoning Effort") {
-                            Text(effort)
+                            Text(reasoningEffortDisplayLabel(effort))
                                 .foregroundStyle(.secondary)
                         }
                     }
@@ -280,6 +280,7 @@ struct LLMSettingsTab: View {
                     Text("Low").tag("low")
                     Text("Medium").tag("medium")
                     Text("High").tag("high")
+                    Text("Extra High").tag("xhigh")
                 }
 
                 Button("Apply") {

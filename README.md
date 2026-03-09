@@ -387,6 +387,15 @@ On first start, Keygate also initializes continuity files in a device-specific f
 - `IDENTITY.md` - created during first chat when identity is established
 - `memory/` - daily memory files (optional)
 
+Keygate also bootstraps local Git repos for managed workspaces so the Git tab works immediately without GitHub:
+
+- the configured root workspace becomes a local repo on `main`
+- routed agent workspaces under `agents/<agentKey>/` become their own local repos on first use
+- Keygate-created repos get a repo-local author identity of `Keygate Local <keygate@local>`
+- managed repos ignore runtime artifact folders such as `.keygate-browser-runs/` and `.keygate-uploads/`
+- the root workspace repo also ignores `agents/` so nested agent repos stay isolated
+- no remote is configured unless you add one yourself
+
 ## Development
 
 ```bash

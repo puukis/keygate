@@ -411,7 +411,7 @@ export async function startDiscordBot(config: KeygateConfig): Promise<Client> {
         userId: message.author.id,
       });
       const sessionId = route.sessionId;
-      gateway.setSessionWorkspace(sessionId, route.workspacePath);
+      await gateway.prepareSessionWorkspace(sessionId, route.workspacePath);
 
       const attachments = await ingestDiscordImageAttachments(
         route.workspacePath,
@@ -477,7 +477,7 @@ export async function startDiscordBot(config: KeygateConfig): Promise<Client> {
         userId: interaction.user.id,
       });
       const sessionId = route.sessionId;
-      gateway.setSessionWorkspace(sessionId, route.workspacePath);
+      await gateway.prepareSessionWorkspace(sessionId, route.workspacePath);
 
       const channel = new DiscordInteractionChannel(interaction);
       const normalized = normalizeDiscordMessage(

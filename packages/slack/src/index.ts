@@ -274,7 +274,7 @@ export async function startSlackBot(config: KeygateConfig): Promise<App> {
       userId,
     });
     const sessionId = route.sessionId;
-    gateway.setSessionWorkspace(sessionId, route.workspacePath);
+    await gateway.prepareSessionWorkspace(sessionId, route.workspacePath);
 
     try {
       const attachments = await ingestSlackImageAttachments(
@@ -326,7 +326,7 @@ export async function startSlackBot(config: KeygateConfig): Promise<App> {
       userId,
     });
     const sessionId = route.sessionId;
-    gateway.setSessionWorkspace(sessionId, route.workspacePath);
+    await gateway.prepareSessionWorkspace(sessionId, route.workspacePath);
 
     try {
       const policy = config.slack?.dmPolicy ?? 'pairing';
@@ -542,7 +542,7 @@ function registerSlackSlashCommand(
       userId: command.user_id,
     });
     const sessionId = route.sessionId;
-    options.gateway.setSessionWorkspace(sessionId, route.workspacePath);
+    await options.gateway.prepareSessionWorkspace(sessionId, route.workspacePath);
 
     try {
       const isDirectMessage = command.channel_id.startsWith('D');

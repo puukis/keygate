@@ -62,7 +62,7 @@ struct ChatView: View {
                         .foregroundStyle(.purple)
                         .clipShape(RoundedRectangle(cornerRadius: 4))
 
-                    Text("\(llm.model)\(llm.reasoningEffort.map { " · \($0.capitalized)" } ?? "")")
+                    Text("\(llm.model)\(llm.reasoningEffort.map { " · \(reasoningEffortDisplayLabel($0))" } ?? "")")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }

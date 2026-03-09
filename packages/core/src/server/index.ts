@@ -713,7 +713,7 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
               userId: 'web-user',
             });
             webSessionId = route.sessionId;
-            gateway.setSessionWorkspace(route.sessionId, route.workspacePath);
+            await gateway.prepareSessionWorkspace(route.sessionId, route.workspacePath);
             channel.setSessionId(webSessionId);
 
             const activeSession = webSessionId.startsWith('web:') ? webSessionId.slice(4) : webSessionId;

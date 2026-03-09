@@ -43,6 +43,22 @@ describe('riskEngine', () => {
     expect(risk.score).toBeGreaterThan(90);
   });
 
+  it('treats native git mutations as confirmation-worthy', () => {
+    const tool: Tool = {
+      name: 'git_commit',
+      description: 'git commit',
+      parameters: { type: 'object' },
+      requiresConfirmation: true,
+      type: 'other',
+      handler: async () => ({ success: true, output: '' }),
+    };
+    const call: ToolCall = { id: 'git-1', name: 'git_commit', arguments: { message: 'save work' } };
+
+    const risk = assessToolRisk(tool, call);
+    expect(risk.level).toBe('medium');
+    expect(risk.score).toBeGreaterThanOrEqual(60);
+  });
+
   it('remembers and reuses persisted approvals', async () => {
     await rememberApproval('sig-1', 'write_file', 'high');
     expect(await hasRememberedApproval('sig-1', 'high')).toBe(true);

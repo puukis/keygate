@@ -165,6 +165,7 @@ export class ToolExecutor {
       // Normalize filesystem path arguments before validation and execution.
       this.normalizeFilesystemCallPath(tool, effectiveCall, sessionId);
       this.normalizeShellCallWorkingDirectory(tool, effectiveCall, sessionId);
+      this.normalizeGitCallWorkingDirectory(tool, effectiveCall, sessionId);
 
       // Apply security checks in Safe Mode
       if (this.mode === 'safe') {
@@ -259,6 +260,13 @@ export class ToolExecutor {
       const cwd = call.arguments['cwd'] as string | undefined;
       if (cwd) {
         this.assertShellWorkingDirectoryAllowedInSafeMode(cwd, sessionId);
+      }
+    }
+
+    if (isGitToolName(tool.name)) {
+      const cwd = call.arguments['cwd'] as string | undefined;
+      if (cwd) {
+        this.assertGitWorkingDirectoryAllowedInSafeMode(cwd, sessionId);
       }
     }
 
@@ -444,6 +452,27 @@ export class ToolExecutor {
     call.arguments['cwd'] = path.resolve(workspacePath, expandedPath);
   }
 
+  private normalizeGitCallWorkingDirectory(tool: Tool, call: ToolCall, sessionId: string): void {
+    if (!isGitToolName(tool.name)) {
+      return;
+    }
+
+    const workspacePath = this.getWorkspacePathForSession(sessionId);
+    const cwd = call.arguments['cwd'];
+    if (typeof cwd !== 'string' || cwd.trim().length === 0) {
+      call.arguments['cwd'] = workspacePath;
+      return;
+    }
+
+    const expandedPath = this.expandPath(cwd.trim());
+    if (path.isAbsolute(expandedPath)) {
+      call.arguments['cwd'] = path.normalize(expandedPath);
+      return;
+    }
+
+    call.arguments['cwd'] = path.resolve(workspacePath, expandedPath);
+  }
+
   private assertShellWorkingDirectoryAllowedInSafeMode(cwd: string, sessionId: string): void {
     const resolvedPath = path.normalize(cwd);
     const workspacePath = this.getWorkspacePathForSession(sessionId);
@@ -453,6 +482,18 @@ export class ToolExecutor {
 
     throw new Error(
       `Access denied: Shell cwd "${cwd}" is outside Safe Mode workspace "${workspacePath}".`
+    );
+  }
+
+  private assertGitWorkingDirectoryAllowedInSafeMode(cwd: string, sessionId: string): void {
+    const resolvedPath = path.normalize(cwd);
+    const workspacePath = this.getWorkspacePathForSession(sessionId);
+    if (this.isPathWithinRoot(resolvedPath, workspacePath)) {
+      return;
+    }
+
+    throw new Error(
+      `Access denied: Git cwd "${cwd}" is outside Safe Mode workspace "${workspacePath}".`
     );
   }
 
@@ -726,4 +767,14 @@ function isAbortError(error: unknown): boolean {
 
 function isDockerSandboxedTool(tool: Tool): boolean {
   return tool.type === 'filesystem' || tool.type === 'shell' || tool.type === 'sandbox';
+}
+
+function isGitToolName(toolName: string): boolean {
+  return toolName === 'git_status'
+    || toolName === 'git_diff'
+    || toolName === 'git_log'
+    || toolName === 'git_stage'
+    || toolName === 'git_unstage'
+    || toolName === 'git_discard'
+    || toolName === 'git_commit';
 }

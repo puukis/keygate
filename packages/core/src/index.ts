@@ -34,3 +34,4 @@ export {
 } from './server/index.js';
 export { runCli, printHelp } from './cli/index.js';
 export { ensureAgentWorkspaceFiles } from './workspace/agentWorkspace.js';
+export { ensureWorkspaceGitRepo } from './workspace/gitWorkspace.js';

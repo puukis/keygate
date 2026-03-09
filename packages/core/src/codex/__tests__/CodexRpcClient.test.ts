@@ -403,7 +403,7 @@ describe('CodexRpcClient', () => {
 
     expect(spawnCalls.length).toBe(2);
     expect(spawnCalls[0]).toContain('-c');
-    expect(spawnCalls[0]).toContain('model_reasoning_effort="high"');
+    expect(spawnCalls[0]).toContain('model_reasoning_effort="xhigh"');
     expect(spawnCalls[1]).toContain('-c');
     expect(spawnCalls[1]).toContain('model_reasoning_effort="high"');
     expect(spawnCalls[1]).not.toContain('model_reasoning_effort="xhigh"');

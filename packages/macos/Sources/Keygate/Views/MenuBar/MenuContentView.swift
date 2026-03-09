@@ -182,7 +182,7 @@ struct MenuContentView: View {
                 Spacer()
 
                 if let effort = llm.reasoningEffort {
-                    Text("Reasoning: \(effort.capitalized)")
+                    Text("Reasoning: \(reasoningEffortDisplayLabel(effort))")
                         .font(.system(size: 10))
                         .foregroundStyle(.tertiary)
                         .padding(.horizontal, 6)
@@ -326,4 +326,3 @@ struct KeyboardShortcutLabel: View {
             .foregroundStyle(.tertiary)
     }
 }
-

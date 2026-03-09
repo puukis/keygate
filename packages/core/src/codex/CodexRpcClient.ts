@@ -748,14 +748,12 @@ function normalizeModelReasoningEffort(value: string | undefined): string | unde
     case 'low':
     case 'medium':
     case 'high':
-      return normalized;
     case 'xhigh':
-      return 'high';
+      return normalized;
     case 'extra-high':
     case 'extra_high':
     case 'extra high':
-      // Current Codex variants top out at "high".
-      return 'high';
+      return 'xhigh';
     default:
       return undefined;
   }

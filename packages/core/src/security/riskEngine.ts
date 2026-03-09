@@ -112,6 +112,10 @@ export function assessToolRisk(tool: Tool, call: ToolCall): RiskAssessment {
     return { level: 'medium', score: 62, reason: 'browser automation can perform external actions' };
   }
 
+  if (call.name === 'git_stage' || call.name === 'git_unstage' || call.name === 'git_discard' || call.name === 'git_commit') {
+    return { level: 'medium', score: 61, reason: 'git mutation changes repository state' };
+  }
+
   if (/delete|remove|uninstall|revoke|publish|send/i.test(call.name)) {
     return { level: 'medium', score: 58, reason: 'action-oriented tool name implies side effects' };
   }

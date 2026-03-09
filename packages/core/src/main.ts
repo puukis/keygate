@@ -8,7 +8,9 @@ import { startWebServer } from './server/index.js';
 import { runCli, printHelp } from './cli/index.js';
 import { getDefaultWorkspacePath, loadConfigFromEnv, loadEnvironment } from './config/env.js';
 import { ensureAgentWorkspaceFiles } from './workspace/agentWorkspace.js';
+import { ensureWorkspaceGitRepo } from './workspace/gitWorkspace.js';
 import { spawn } from 'node:child_process';
+import path from 'node:path';
 
 const DEFAULT_CHAT_SITE_URL = 'http://localhost:18790';
 const DISABLED_ENV_VALUES = new Set(['0', 'false', 'no', 'off']);
@@ -30,6 +32,20 @@ async function main(): Promise<void> {
 
   const config = loadConfigFromEnv();
   const workspaceBootstrap = await ensureAgentWorkspaceFiles(getDefaultWorkspacePath());
+  let gitBootstrap: Awaited<ReturnType<typeof ensureWorkspaceGitRepo>> | null = null;
+  try {
+    gitBootstrap = await ensureWorkspaceGitRepo(config.security.workspacePath, {
+      isRootWorkspace: true,
+      initialCommitPaths:
+        path.resolve(config.security.workspacePath) === path.resolve(getDefaultWorkspacePath())
+          ? [...workspaceBootstrap.created, ...workspaceBootstrap.migrated]
+          : [],
+    });
+  } catch (error) {
+    console.warn(
+      `   Workspace Git bootstrap skipped: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 
   console.log('⚡ Starting Keygate...');
   console.log(`   LLM Provider: ${config.llm.provider}`);
@@ -41,6 +57,9 @@ async function main(): Promise<void> {
   }
   if (workspaceBootstrap.migrated.length > 0) {
     console.log(`   Migrated workspace files: ${workspaceBootstrap.migrated.join(', ')}`);
+  }
+  if (gitBootstrap?.createdRepo) {
+    console.log(`   Initialized local git repo on branch ${gitBootstrap.branch}`);
   }
   console.log('');
 

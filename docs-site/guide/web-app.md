@@ -87,6 +87,30 @@ Disable it with:
 /debug off
 ```
 
+### Git
+
+The **Git** tab is the session-scoped repository view.
+
+It automatically refreshes status when you open it and shows the repo attached to the active session workspace.
+
+Use it to:
+
+- inspect branch and ahead/behind state
+- review staged, unstaged, and untracked files
+- stage and unstage files
+- discard unstaged changes
+- commit staged work
+- inspect recent local history
+
+Important behavior:
+
+- Keygate bootstraps managed workspaces as local repos by default
+- the UI works with local Git only unless you manually add a remote yourself
+- after routing, the Git tab follows that routed agent workspace rather than the root workspace
+- assistant-triggered Git mutations in Safe Mode still go through the normal confirmation flow
+
+For the full repo model, see [Local Git Workspaces](/guide/local-git-workspaces).
+
 ## Configuration surfaces
 
 The configuration area includes:

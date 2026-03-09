@@ -40,8 +40,23 @@ export class GitService {
 
   /** Return the current branch name. */
   async getBranch(cwd: string): Promise<string> {
-    const out = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], cwd);
-    return out.trim();
+    try {
+      const out = await runGit(['symbolic-ref', '--short', 'HEAD'], cwd);
+      return out.trim();
+    } catch {
+      const out = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], cwd);
+      return out.trim();
+    }
+  }
+
+  /** Return true when the repository has at least one commit. */
+  async hasCommits(cwd: string): Promise<boolean> {
+    try {
+      await runGit(['rev-parse', '--verify', 'HEAD'], cwd);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /** Return ahead/behind counts relative to upstream. */
@@ -123,6 +138,11 @@ export class GitService {
 
   /** Return recent commit log. */
   async getLog(cwd: string, limit = 20): Promise<GitCommit[]> {
+    const hasCommits = await this.hasCommits(cwd);
+    if (!hasCommits) {
+      return [];
+    }
+
     const sep = '<<SEP>>';
     const format = ['%H', '%h', '%an', '%aI', '%s'].join(sep);
     const raw = await runGit(
@@ -135,6 +155,11 @@ export class GitService {
   /** Stage a file. */
   async stage(cwd: string, filePath: string): Promise<void> {
     await runGit(['add', '--', filePath], cwd);
+  }
+
+  /** Stage all tracked and untracked changes. */
+  async stageAll(cwd: string): Promise<void> {
+    await runGit(['add', '-A'], cwd);
   }
 
   /** Unstage a file. */

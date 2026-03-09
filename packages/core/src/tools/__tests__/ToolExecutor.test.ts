@@ -51,6 +51,18 @@ const shellDangerTool: Tool = {
   handler: async () => ({ success: true, output: 'ok' }),
 };
 
+const gitPathProbeTool: Tool = {
+  name: 'git_status',
+  description: 'git probe',
+  parameters: { type: 'object' },
+  requiresConfirmation: false,
+  type: 'other',
+  handler: async (args) => ({
+    success: true,
+    output: String(args['cwd'] ?? ''),
+  }),
+};
+
 function createChannel(
   decision: 'allow_once' | 'allow_always' | 'cancel'
 ): { channel: Channel; requestConfirmation: ReturnType<typeof vi.fn> } {
@@ -284,6 +296,51 @@ describe('ToolExecutor', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('outside Safe Mode workspace');
+  });
+
+  it('defaults git cwd to the session workspace when omitted', async () => {
+    const workspace = '/tmp/keygate-safe-workspace';
+    const gateway = {
+      emit: vi.fn(),
+      getSessionWorkspace: (sessionId: string) => (sessionId === 'discord:alpha:123' ? '/tmp/keygate-agent-alpha' : undefined),
+    } as any;
+    const executor = new ToolExecutor('safe', workspace, ['cat'], gateway);
+    executor.registerTool(gitPathProbeTool);
+
+    const { channel } = createChannel('allow_once');
+    const result = await executor.execute(
+      {
+        id: 'git-1',
+        name: 'git_status',
+        arguments: {},
+      },
+      channel,
+      'discord:alpha:123'
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.output).toBe('/tmp/keygate-agent-alpha');
+  });
+
+  it('blocks git cwd outside configured workspace in safe mode', async () => {
+    const workspace = '/tmp/keygate-safe-workspace';
+    const gateway = { emit: vi.fn() } as any;
+    const executor = new ToolExecutor('safe', workspace, ['cat'], gateway);
+    executor.registerTool(gitPathProbeTool);
+
+    const { channel } = createChannel('allow_once');
+    const result = await executor.execute(
+      {
+        id: 'git-2',
+        name: 'git_status',
+        arguments: { cwd: '/tmp/outside-workspace' },
+      },
+      channel,
+      'web:session-git'
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Git cwd');
   });
 
   it('tracks owners for registered tools and removes them cleanly', () => {

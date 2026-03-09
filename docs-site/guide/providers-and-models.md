@@ -25,11 +25,23 @@ Use this practical approach:
 
 For providers that support it (e.g. codex variants), reasoning effort can be adjusted.
 
-Guidance:
+Codex exposes four levels:
 
 - low: quick iteration, lower depth
 - medium: balanced default
-- high/xhigh: complex planning, reviews, large changes
+- high: deeper planning without the highest latency/cost profile
+- extra high (`xhigh`): maximum Codex reasoning depth for large refactors, reviews, and multi-step changes
+
+Where to set it:
+
+- web app model controls
+- macOS app **Settings → LLM**
+- `/model [provider] <model> [low|medium|high|xhigh]`
+
+Notes:
+
+- Keygate sends `Extra High` to Codex as the native `xhigh` value.
+- If an older Codex binary still rejects `xhigh`, Keygate retries once with the legacy `high` compatibility override.
 
 ## Operational safety
 

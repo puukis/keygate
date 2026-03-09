@@ -35,6 +35,7 @@ import { PluginRuntimeManager } from '../plugins/index.js';
 import { allBuiltinTools } from '../tools/builtin/index.js';
 import { GitService } from '../git/index.js';
 import { SchedulerService, SchedulerStore, type ScheduledJob, type ScheduledJobCreateInput, type ScheduledJobUpdateInput } from '../scheduler/index.js';
+import { ensureWorkspaceGitRepo } from '../workspace/gitWorkspace.js';
 
 const CANCEL_HARD_STOP_TIMEOUT_MS = 2_000;
 const MAX_DEBUG_EVENTS_PER_SESSION = 200;
@@ -780,6 +781,23 @@ export class Gateway extends EventEmitter<KeygateEvents> {
       return;
     }
     this.sessionWorkspacePaths.set(sessionId, normalized);
+  }
+
+  async prepareSessionWorkspace(sessionId: string, workspacePath: string): Promise<void> {
+    const normalized = workspacePath.trim();
+    if (!normalized) {
+      return;
+    }
+
+    this.sessionWorkspacePaths.set(sessionId, normalized);
+    try {
+      await ensureWorkspaceGitRepo(normalized);
+    } catch (error) {
+      console.warn(
+        `Failed to initialize local git repo for session workspace "${normalized}":`,
+        error,
+      );
+    }
   }
 
   getSessionWorkspace(sessionId: string): string | undefined {

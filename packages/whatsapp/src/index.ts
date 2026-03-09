@@ -554,7 +554,7 @@ async function handleSingleMessage(
     userId,
   });
   const sessionId = route.sessionId;
-  options.gateway.setSessionWorkspace(sessionId, route.workspacePath);
+  await options.gateway.prepareSessionWorkspace(sessionId, route.workspacePath);
 
   const media = await ingestWhatsAppMediaAttachment(route.workspacePath, sessionId, options.sock, rawMessage as { key?: unknown; message?: unknown });
   if (media.rejectionReason) {

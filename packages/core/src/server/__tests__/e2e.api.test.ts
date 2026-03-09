@@ -97,6 +97,11 @@ describe('server e2e api flows', () => {
     await waitForType(ws, 'session_user_message');
     await waitForType(ws, 'message_received');
 
+    ws.send(JSON.stringify({ type: 'git_status' }));
+    const gitStatus = await waitForType(ws, 'git_status_result');
+    expect(gitStatus.state.isRepo).toBe(true);
+    expect(gitStatus.state.branch).toBe('main');
+
     ws.send(JSON.stringify({ type: 'routing_create', scope: 'web', chatId: connected.sessionId, agentKey: 'ops' }));
     const routingCreated = await waitForType(ws, 'routing_create_result');
     expect(routingCreated.rule.agentKey).toBe('ops');

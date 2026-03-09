@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import {
   ensureAgentWorkspaceFiles,
+  ensureWorkspaceGitRepo,
   getDefaultWorkspacePath,
   loadConfigFromEnv,
   loadEnvironment,
@@ -37,6 +38,20 @@ async function main(): Promise<void> {
 
   const config = loadConfigFromEnv();
   const workspaceBootstrap = await ensureAgentWorkspaceFiles(getDefaultWorkspacePath());
+  let gitBootstrap: Awaited<ReturnType<typeof ensureWorkspaceGitRepo>> | null = null;
+  try {
+    gitBootstrap = await ensureWorkspaceGitRepo(config.security.workspacePath, {
+      isRootWorkspace: true,
+      initialCommitPaths:
+        path.resolve(config.security.workspacePath) === path.resolve(getDefaultWorkspacePath())
+          ? [...workspaceBootstrap.created, ...workspaceBootstrap.migrated]
+          : [],
+    });
+  } catch (error) {
+    console.warn(
+      `   Workspace Git bootstrap skipped: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
   const staticAssetsDir = await resolveStaticAssetsDir();
 
   console.log('⚡ Starting Keygate...');
@@ -49,6 +64,9 @@ async function main(): Promise<void> {
   }
   if (workspaceBootstrap.migrated.length > 0) {
     console.log(`   Migrated workspace files: ${workspaceBootstrap.migrated.join(', ')}`);
+  }
+  if (gitBootstrap?.createdRepo) {
+    console.log(`   Initialized local git repo on branch ${gitBootstrap.branch}`);
   }
   if (!staticAssetsDir) {
     console.log('   Web UI bundle not found; API/WS server will still start.');

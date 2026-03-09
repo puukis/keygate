@@ -37,4 +37,4 @@ Browser automation capability with configurable domain policy.
 Model backend service.
 
 ## Reasoning Effort
-Provider/model-level option controlling depth vs speed tradeoff.
+Provider/model-level option controlling depth vs speed tradeoff. Codex supports `low`, `medium`, `high`, and `xhigh` (shown in the UI as `Extra High`).

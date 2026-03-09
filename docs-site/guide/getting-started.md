@@ -37,13 +37,15 @@ Then open the web app and complete onboarding.
 3. Send one test prompt
 4. Run one safe tool action
 5. Create a second session and rename it
-6. Open Automations and create a disabled cron job
-7. Verify settings drawer (model/provider, security, browser)
-8. If you want mobile chat ingress, link WhatsApp from the config screen or with `keygate channels whatsapp login`
+6. Open Git and confirm the active workspace reports a local repo
+7. Open Automations and create a disabled cron job
+8. Verify settings drawer (model/provider, security, browser)
+9. If you want mobile chat ingress, link WhatsApp from the config screen or with `keygate channels whatsapp login`
 
 ## Where to go next
 
 - Setup details: [Installation](/guide/installation)
 - Runtime design: [Architecture](/guide/architecture)
 - UI controls: [Web App](/guide/web-app)
+- Workspace repos: [Local Git Workspaces](/guide/local-git-workspaces)
 - Safe operations: [Security](/reference/security)
