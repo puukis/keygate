@@ -49,4 +49,4 @@ test-results/
 # Release scripts
 scripts/bump-release.sh
 
-.playwright-cli/
+.playwright-cli/.codex/
