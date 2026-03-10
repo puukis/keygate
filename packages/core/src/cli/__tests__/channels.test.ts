@@ -43,7 +43,7 @@ describe('channels command', () => {
 
   it('throws usage for invalid syntax', async () => {
     await expect(runChannelsCommand(makeArgs())).rejects.toThrow(
-      'Usage: keygate channels <web|discord|slack|whatsapp> <start|stop|restart|status|config|login|logout>'
+      'Usage: keygate channels <web|discord|slack|whatsapp|telegram> <start|stop|restart|status|config|login|logout>'
     );
   });
 
