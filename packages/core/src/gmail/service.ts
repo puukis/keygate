@@ -68,7 +68,7 @@ interface PubSubEnvelope {
 
 interface PubSubNotificationPayload {
   emailAddress?: string;
-  historyId?: string;
+  historyId?: string | number;
 }
 
 interface GoogleJwtPayload {
@@ -444,7 +444,7 @@ export class GmailAutomationService {
     }
 
     const email = decoded.emailAddress?.trim().toLowerCase();
-    const historyId = decoded.historyId?.trim();
+    const historyId = decoded.historyId != null ? String(decoded.historyId).trim() : undefined;
     if (!email || !historyId) {
       return { accepted: false, statusCode: 400, message: 'Gmail notification missing emailAddress or historyId', processed: 0 };
     }
@@ -503,6 +503,12 @@ export class GmailAutomationService {
 
       let delivered = 0;
       for (const messageId of messageIds) {
+        const dispatchKey = `msg:${watch.id}:${messageId}`;
+        const isNew = await this.store.recordNotification(dispatchKey);
+        if (!isNew) {
+          continue;
+        }
+
         const message = await this.fetchMessage(accessToken, messageId);
         if (!this.matchesWatchLabels(watch, message.labelIds ?? [])) {
           continue;
@@ -551,6 +557,7 @@ export class GmailAutomationService {
 
     return {
       clientId,
+      clientSecret: this.config.gmail?.clientSecret?.trim(),
       authorizationEndpoint: this.config.gmail?.authorizationEndpoint,
       tokenEndpoint: this.config.gmail?.tokenEndpoint,
       redirectUri: this.config.gmail?.redirectUri,
@@ -561,11 +568,11 @@ export class GmailAutomationService {
 
   private async getAccountAccessToken(account: GmailAccountRecord): Promise<string> {
     const tokenEndpoint = this.config.gmail?.tokenEndpoint?.trim() || 'https://oauth2.googleapis.com/token';
-    const clientId = this.resolveOAuthConfig().clientId;
-    return getValidAccessToken(tokenEndpoint, clientId, {
+    const oauthConfig = this.resolveOAuthConfig();
+    return getValidAccessToken(tokenEndpoint, oauthConfig.clientId, {
       namespace: 'gmail',
       tokenFilePath: account.tokenFilePath,
-    });
+    }, oauthConfig.clientSecret);
   }
 
   private async fetchProfile(accessToken: string): Promise<GmailProfileResponse> {

@@ -73,6 +73,7 @@ export class Gateway extends EventEmitter<KeygateEvents> {
   private laneQueues = new Map<string, LaneQueue>();
   private activeRuns = new Map<string, ActiveSessionRun>();
   private delegatedSessions = new Map<string, DelegatedSessionRecord>();
+  private proactiveSenders = new Map<string, (sessionId: string, content: string) => Promise<void>>();
   private sessionWorkspacePaths = new Map<string, string>();
   private sessionDebugEvents = new Map<string, SessionDebugEvent[]>();
   private securityMode: SecurityMode = 'safe';
@@ -878,6 +879,10 @@ export class Gateway extends EventEmitter<KeygateEvents> {
     return session.messages.slice(-Math.max(1, limit)).map((msg) => ({ ...msg }));
   }
 
+  registerProactiveSender(channelType: string, sender: (sessionId: string, content: string) => Promise<void>): void {
+    this.proactiveSenders.set(channelType, sender);
+  }
+
   async sendMessageToSession(sessionId: string, content: string, userId = 'delegate:system'): Promise<void> {
     const session = this.getSession(sessionId);
     if (!session) {
@@ -890,11 +895,16 @@ export class Gateway extends EventEmitter<KeygateEvents> {
       record.status = 'running';
     }
 
+    const proactiveSender = this.proactiveSenders.get(session.channelType);
+    const channel = proactiveSender
+      ? createProactiveChannel(session.channelType, sessionId, proactiveSender)
+      : createInternalDelegationChannel(session.channelType);
+
     await this.processMessage({
       id: randomUUID(),
       sessionId,
       channelType: session.channelType,
-      channel: createInternalDelegationChannel(session.channelType),
+      channel,
       userId,
       content,
       timestamp: new Date(),
@@ -1235,6 +1245,31 @@ function isReservedTerminalSlashCommand(content: string, channelType: Session['c
 
   const normalized = content.trim().toLowerCase();
   return normalized === '/help' || normalized === '/new' || normalized === '/exit' || normalized === '/quit';
+}
+
+function createProactiveChannel(
+  type: Session['channelType'],
+  sessionId: string,
+  sender: (sessionId: string, content: string) => Promise<void>
+): Channel {
+  return {
+    type,
+    async send(content: string) {
+      await sender(sessionId, content);
+    },
+    async sendStream(stream: AsyncIterable<string>) {
+      let buffer = '';
+      for await (const chunk of stream) {
+        buffer += chunk;
+      }
+      if (buffer) {
+        await sender(sessionId, buffer);
+      }
+    },
+    async requestConfirmation() {
+      return 'allow_once' as const;
+    },
+  };
 }
 
 function createInternalDelegationChannel(type: Session['channelType']): Channel {

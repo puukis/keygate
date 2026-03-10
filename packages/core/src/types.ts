@@ -333,6 +333,7 @@ export interface GmailDefaultsConfig {
 
 export interface GmailConfig {
   clientId?: string;
+  clientSecret?: string;
   authorizationEndpoint?: string;
   tokenEndpoint?: string;
   redirectUri?: string;

@@ -11,6 +11,7 @@ const DEFAULT_SCOPE = 'openai.chat';
 
 export interface OAuthConfig {
   clientId: string;
+  clientSecret?: string;
   authorizationEndpoint?: string;
   tokenEndpoint?: string;
   redirectUri?: string;
@@ -71,13 +72,17 @@ export async function exchangeCodeForTokens(
 ): Promise<StoredTokens> {
   const resolved = resolveConfig(config);
 
-  const body = new URLSearchParams({
+  const bodyParams: Record<string, string> = {
     grant_type: 'authorization_code',
     client_id: resolved.clientId,
     code,
     redirect_uri: resolved.redirectUri,
     code_verifier: codeVerifier,
-  });
+  };
+  if (config.clientSecret) {
+    bodyParams['client_secret'] = config.clientSecret;
+  }
+  const body = new URLSearchParams(bodyParams);
 
   const response = await fetch(resolved.tokenEndpoint, {
     method: 'POST',

@@ -89,7 +89,8 @@ export function isTokenExpired(tokens: StoredTokens): boolean {
 export async function getValidAccessToken(
   tokenEndpoint: string,
   clientId: string,
-  location?: TokenStoreLocation | string
+  location?: TokenStoreLocation | string,
+  clientSecret?: string
 ): Promise<string> {
   const tokenPath = getTokenFilePath(location);
   const tokens = await readTokensInternal(tokenPath);
@@ -106,14 +107,15 @@ export async function getValidAccessToken(
     throw new Error('Token expired and no refresh token available. Please login again.');
   }
 
-  return refreshAccessToken(tokenEndpoint, clientId, tokens.refresh_token, location);
+  return refreshAccessToken(tokenEndpoint, clientId, tokens.refresh_token, location, clientSecret);
 }
 
 export async function refreshAccessToken(
   tokenEndpoint: string,
   clientId: string,
   refreshToken: string,
-  location?: TokenStoreLocation | string
+  location?: TokenStoreLocation | string,
+  clientSecret?: string
 ): Promise<string> {
   const tokenPath = getTokenFilePath(location);
   return withLock(async () => {
@@ -124,11 +126,15 @@ export async function refreshAccessToken(
     }
 
     const effectiveRefreshToken = current?.refresh_token ?? refreshToken;
-    const body = new URLSearchParams({
+    const refreshParams: Record<string, string> = {
       grant_type: 'refresh_token',
       client_id: clientId,
       refresh_token: effectiveRefreshToken,
-    });
+    };
+    if (clientSecret) {
+      refreshParams['client_secret'] = clientSecret;
+    }
+    const body = new URLSearchParams(refreshParams);
 
     const response = await fetch(tokenEndpoint, {
       method: 'POST',

@@ -210,6 +210,7 @@ export function loadConfigFromEnv(): KeygateConfig {
     whatsapp: persistedWhatsAppConfig,
     gmail: {
       clientId: process.env['KEYGATE_GMAIL_CLIENT_ID']?.trim() || persistedGmailConfig.clientId,
+      clientSecret: process.env['KEYGATE_GMAIL_CLIENT_SECRET']?.trim() || persistedGmailConfig.clientSecret,
       authorizationEndpoint:
         process.env['KEYGATE_GMAIL_AUTHORIZATION_ENDPOINT']?.trim() || persistedGmailConfig.authorizationEndpoint,
       tokenEndpoint:
@@ -903,6 +904,7 @@ export function loadPersistedGmailConfig(
 
   return {
     clientId: normalizeOptionalString(source['clientId']) ?? defaults.clientId,
+    clientSecret: normalizeOptionalString(source['clientSecret']) ?? defaults.clientSecret,
     authorizationEndpoint:
       normalizeOptionalString(source['authorizationEndpoint']) ?? defaults.authorizationEndpoint,
     tokenEndpoint:

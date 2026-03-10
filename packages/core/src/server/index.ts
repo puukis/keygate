@@ -477,6 +477,21 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
   const webhookService = new WebhookService(new WebhookStore(), async (sessionId, content) => {
     await gateway.sendMessageToSession(sessionId, content, 'webhook:event');
   });
+  const telegramToken = config.telegram?.token ?? process.env['TELEGRAM_BOT_TOKEN'];
+  if (telegramToken) {
+    gateway.registerProactiveSender('telegram', async (sessionId, content) => {
+      const parts = sessionId.split(':');
+      const chatId = Number(parts[parts.length - 1]);
+      if (!Number.isFinite(chatId) || chatId === 0) return;
+      const apiUrl = `https://api.telegram.org/bot${telegramToken}/sendMessage`;
+      await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, text: content }),
+      }).catch(() => {});
+    });
+  }
+
   const gmailService = new GmailAutomationService(config, {
     dispatchToSession: async (sessionId, content) => {
       await gateway.sendMessageToSession(sessionId, content, 'gmail:watch');

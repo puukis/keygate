@@ -96,7 +96,24 @@ export async function runGmailCommand(args: ParsedArgs): Promise<void> {
       if (!watchId) {
         throw new Error('Usage: keygate gmail test <watchId>');
       }
-      const result = await gmail.testWatch(watchId);
+      const telegramToken = config.telegram?.token ?? process.env['TELEGRAM_BOT_TOKEN'];
+      const gmailWithDispatch = new GmailAutomationService(config, {
+        dispatchToSession: async (sessionId, content) => {
+          if (telegramToken) {
+            const parts = sessionId.split(':');
+            const chatId = Number(parts[parts.length - 1]);
+            if (Number.isFinite(chatId) && chatId !== 0) {
+              await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chat_id: chatId, text: content }),
+              }).catch(() => {});
+            }
+          }
+          console.log(`[dispatch → ${sessionId}]\n${content}`);
+        },
+      });
+      const result = await gmailWithDispatch.testWatch(watchId);
       console.log(JSON.stringify(result, null, 2));
       return;
     }
