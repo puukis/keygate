@@ -79,19 +79,21 @@ keygate channels web <start|status|config>
 keygate channels discord <start|stop|restart|status|config>
 keygate channels slack <start|stop|restart|status|config>
 keygate channels whatsapp <login|start|stop|restart|status|config|logout>
+keygate channels telegram <start|stop|restart|status|config>
 ```
 
 Notes:
 
-- Discord and Slack runtimes register their native operator commands when the bot starts.
+- Discord, Slack, and Telegram runtimes register their native operator commands when the bot starts.
 - WhatsApp uses linked-device login instead of static bot credentials.
+- Telegram requires `TELEGRAM_BOT_TOKEN` to be set before starting.
 - The web channel maps to the background gateway lifecycle.
 
 ## Pairing commands
 
 ```bash
-keygate pairing approve <discord|slack|whatsapp> <code>
-keygate pairing pending [discord|slack|whatsapp]
+keygate pairing approve <discord|slack|whatsapp|telegram> <code>
+keygate pairing pending [discord|slack|whatsapp|telegram]
 ```
 
 These approve pending DM trust requests for external chat channels.

@@ -116,6 +116,30 @@ export function normalizeWhatsAppMessage(
 }
 
 /**
+ * Create a normalized message from Telegram
+ */
+export function normalizeTelegramMessage(
+  messageId: string,
+  chatId: string,
+  userId: string,
+  content: string,
+  channel: Channel,
+  attachments?: MessageAttachment[],
+  explicitSessionId?: string,
+): NormalizedMessage {
+  return {
+    id: messageId,
+    sessionId: explicitSessionId ?? `telegram:${chatId}`,
+    channelType: 'telegram',
+    channel,
+    userId,
+    content,
+    attachments,
+    timestamp: new Date(),
+  };
+}
+
+/**
  * Abstract channel implementation helper
  */
 export abstract class BaseChannel implements Channel {

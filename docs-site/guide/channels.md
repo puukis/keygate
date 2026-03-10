@@ -9,6 +9,7 @@ Keygate supports operating from multiple input/output surfaces.
 - Discord
 - Slack
 - WhatsApp
+- Telegram
 
 ## Recommended rollout order
 
@@ -72,6 +73,31 @@ Operational notes:
 - restart the WhatsApp runtime after changing policy
 - use `keygate pairing approve whatsapp <code>` for DM pairing approvals
 
+## Telegram setup
+
+Telegram uses a static bot token obtained from BotFather.
+
+Primary steps:
+
+1. Create a bot via @BotFather and copy the token
+2. Set `TELEGRAM_BOT_TOKEN` in `~/.keygate/.env`
+3. Start the runtime with `keygate channels telegram start`
+4. Configure DM and group policy in the web app
+
+Key settings:
+
+- `dmPolicy`: `pairing`, `open`, or `closed`
+- `groupMode`: `closed`, `open`, or `mention`
+- `allowFrom`: comma-separated Telegram numeric user IDs
+- `requireMentionDefault`: whether groups require a @mention by default
+
+Operational notes:
+
+- restart the Telegram runtime after changing policy
+- use `keygate pairing approve telegram <code>` for DM pairing approvals
+- forum topics in supergroups each get an isolated session automatically
+- see the [Telegram guide](/guide/telegram) for webhook mode, streaming, and media details
+
 ## Operator commands across channels
 
 Keygate supports a shared operator command set:
@@ -87,7 +113,7 @@ Keygate supports a shared operator command set:
 
 How those commands arrive depends on the channel:
 
-- Web, TUI, macOS companion UI, and WhatsApp use text slash commands
+- Web, TUI, macOS companion UI, WhatsApp, and Telegram use text slash commands
 - Discord registers native slash commands on bot startup
 - Slack uses native `/agent*` slash commands
 

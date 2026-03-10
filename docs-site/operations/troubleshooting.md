@@ -82,6 +82,23 @@ Actions:
 - restart with `keygate channels whatsapp restart`
 - verify `groupMode`, explicit `group:<id>` keys, and mention rules
 
+## 4b) Telegram is not responding
+
+Checks:
+
+- is `TELEGRAM_BOT_TOKEN` set and valid?
+- is the runtime process started?
+- is the sender blocked by DM or group policy?
+- is the bot in a group with `groupMode=mention` and the message lacks a @mention?
+
+Actions:
+
+- run `keygate channels telegram status`
+- start the runtime with `keygate channels telegram start`
+- check `keygate pairing pending telegram` if DM policy is `pairing`
+- approve pending pairing codes with `keygate pairing approve telegram <code>`
+- restart with `keygate channels telegram restart` after config changes
+
 ## 5) Scheduler job not running
 
 Checks:

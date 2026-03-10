@@ -22,11 +22,14 @@ import type {
   NodeManager,
   PluginEntryConfig,
   SandboxScope,
+  TelegramConfig,
+  TelegramGroupMode,
   WhatsAppConfig,
   WhatsAppGroupMode,
 } from '../types.js';
 
 const DEFAULT_ALLOWED_BINARIES = ['git', 'ls', 'npm', 'cat', 'node', 'python3'];
+const DEFAULT_TELEGRAM_GROUP_MODE: TelegramGroupMode = 'closed';
 const DEFAULT_DISCORD_PREFIX = '!keygate ';
 const DEFAULT_BROWSER_TRACE_RETENTION_DAYS = 7;
 const DEFAULT_MCP_PLAYWRIGHT_VERSION = '0.0.64';
@@ -190,6 +193,7 @@ export function loadConfigFromEnv(): KeygateConfig {
       mcpPlaywrightVersion,
       artifactsPath,
     },
+    telegram: loadTelegramConfig(),
     discord: {
       token: process.env['DISCORD_TOKEN'] ?? '',
       prefix: discordPrefix,
@@ -1205,6 +1209,37 @@ function parseBooleanEnv(value: string | undefined): boolean | undefined {
   }
 
   return undefined;
+}
+
+export function loadTelegramConfig(): TelegramConfig | undefined {
+  const token = process.env['TELEGRAM_BOT_TOKEN']?.trim() ?? '';
+  if (!token) {
+    return undefined;
+  }
+
+  return {
+    token,
+    dmPolicy: normalizeDmPolicy(process.env['TELEGRAM_DM_POLICY']),
+    allowFrom: parseIdList(process.env['TELEGRAM_ALLOW_FROM']),
+    groupMode: normalizeTelegramGroupMode(process.env['TELEGRAM_GROUP_MODE']),
+    requireMentionDefault: process.env['TELEGRAM_REQUIRE_MENTION_DEFAULT'] !== 'false',
+    groupRules: {},
+    webhookUrl: process.env['TELEGRAM_WEBHOOK_URL']?.trim() || undefined,
+    webhookPort: parsePositiveInteger(process.env['TELEGRAM_WEBHOOK_PORT'], 8787),
+    webhookPath: process.env['TELEGRAM_WEBHOOK_PATH']?.trim() || '/telegram/webhook',
+  };
+}
+
+function normalizeTelegramGroupMode(value: string | undefined): TelegramGroupMode {
+  switch (value?.trim().toLowerCase()) {
+    case 'open':
+      return 'open';
+    case 'mention':
+      return 'mention';
+    case 'closed':
+    default:
+      return DEFAULT_TELEGRAM_GROUP_MODE;
+  }
 }
 
 function normalizeEnvMap(value: unknown): Record<string, string> {

@@ -50,6 +50,8 @@ COPY packages/cli/package.json packages/cli/package.json
 COPY packages/web/package.json packages/web/package.json
 COPY packages/discord/package.json packages/discord/package.json
 COPY packages/slack/package.json packages/slack/package.json
+COPY packages/whatsapp/package.json packages/whatsapp/package.json
+COPY packages/telegram/package.json packages/telegram/package.json
 
 RUN pnpm install --frozen-lockfile
 

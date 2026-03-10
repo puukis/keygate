@@ -4,7 +4,7 @@ import { promises as fs } from 'node:fs';
 import { getConfigDir } from '../config/env.js';
 import type { DmPolicy } from '../types.js';
 
-export type PairingChannel = 'discord' | 'slack' | 'whatsapp';
+export type PairingChannel = 'discord' | 'slack' | 'whatsapp' | 'telegram';
 
 interface PendingPairing {
   channel: PairingChannel;
@@ -22,7 +22,7 @@ interface PairingStore {
 
 const DEFAULT_TTL_MS = 15 * 60 * 1000;
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-const PAIRING_CHANNELS: PairingChannel[] = ['discord', 'slack', 'whatsapp'];
+const PAIRING_CHANNELS: PairingChannel[] = ['discord', 'slack', 'whatsapp', 'telegram'];
 
 function getStorePath(): string {
   return path.join(getConfigDir(), 'pairing.json');
@@ -35,6 +35,7 @@ function createDefaultStore(): PairingStore {
       discord: [],
       slack: [],
       whatsapp: [],
+      telegram: [],
     },
     pending: [],
   };
@@ -55,6 +56,7 @@ async function loadStore(): Promise<PairingStore> {
         discord: Array.isArray(parsed?.allowlist?.discord) ? parsed.allowlist.discord.filter((v) => typeof v === 'string') : [],
         slack: Array.isArray(parsed?.allowlist?.slack) ? parsed.allowlist.slack.filter((v) => typeof v === 'string') : [],
         whatsapp: Array.isArray(parsed?.allowlist?.whatsapp) ? parsed.allowlist.whatsapp.filter((v) => typeof v === 'string') : [],
+        telegram: Array.isArray(parsed?.allowlist?.telegram) ? parsed.allowlist.telegram.filter((v) => typeof v === 'string') : [],
       },
       pending: Array.isArray(parsed?.pending)
         ? parsed.pending.filter((entry): entry is PendingPairing =>

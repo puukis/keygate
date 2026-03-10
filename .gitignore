@@ -52,3 +52,5 @@ scripts/bump-release.sh
 .playwright-cli/
 
 .codex/
+
+.github/skills/

@@ -1,7 +1,7 @@
 import { approvePairingCode, listPendingPairings, type PairingChannel } from '../../security/pairing.js';
 import type { ParsedArgs } from '../argv.js';
 
-const CHANNELS: PairingChannel[] = ['discord', 'slack', 'whatsapp'];
+const CHANNELS: PairingChannel[] = ['discord', 'slack', 'whatsapp', 'telegram'];
 
 export async function runPairingCommand(args: ParsedArgs): Promise<void> {
   const subcommand = args.positional[1];
@@ -23,7 +23,7 @@ async function runApprove(args: ParsedArgs): Promise<void> {
   const code = args.positional[3]?.trim() ?? '';
 
   if (!channel || !code) {
-    throw new Error('Usage: keygate pairing approve <discord|slack|whatsapp> <code>');
+    throw new Error('Usage: keygate pairing approve <discord|slack|whatsapp|telegram> <code>');
   }
 
   const result = await approvePairingCode(channel, code);
@@ -63,5 +63,5 @@ function parseChannel(value: string | undefined): PairingChannel | null {
 }
 
 function printPairingHelp(): void {
-  console.log(`Pairing commands:\n  keygate pairing approve <discord|slack|whatsapp> <code>\n  keygate pairing pending [discord|slack|whatsapp]`);
+  console.log(`Pairing commands:\n  keygate pairing approve <discord|slack|whatsapp|telegram> <code>\n  keygate pairing pending [discord|slack|whatsapp|telegram]`);
 }

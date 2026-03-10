@@ -11,7 +11,7 @@ import {
 import { getFlagString, hasFlag, type ParsedArgs } from '../argv.js';
 import { runGatewayCommand, type GatewayAction } from './gateway.js';
 
-export type ChannelName = 'web' | 'discord' | 'slack' | 'whatsapp';
+export type ChannelName = 'web' | 'discord' | 'slack' | 'whatsapp' | 'telegram';
 export type ChannelAction = 'start' | 'stop' | 'restart' | 'status' | 'config' | 'login' | 'logout';
 export type DiscordChannelState = {
   pid: number;
@@ -22,6 +22,7 @@ export type DiscordChannelState = {
 };
 export type SlackChannelState = DiscordChannelState;
 export type WhatsAppChannelState = DiscordChannelState;
+export type TelegramChannelState = DiscordChannelState;
 export type ChannelRuntimeState = 'running' | 'stopped' | 'unknown';
 
 interface ChannelStatus {
@@ -54,7 +55,7 @@ interface ChannelCommandDeps {
   now: () => Date;
 }
 
-const CHANNELS_USAGE = 'Usage: keygate channels <web|discord|slack|whatsapp> <start|stop|restart|status|config|login|logout>';
+const CHANNELS_USAGE = 'Usage: keygate channels <web|discord|slack|whatsapp|telegram> <start|stop|restart|status|config|login|logout>';
 const DISABLED_ENV_VALUES = new Set(['0', 'false', 'no', 'off']);
 const DEFAULT_DISCORD_PREFIX = '!keygate ';
 
@@ -86,11 +87,16 @@ export async function runChannelsCommand(
     return;
   }
 
+  if (channel === 'telegram') {
+    await runTelegramChannelAction(action, deps);
+    return;
+  }
+
   await runDiscordChannelAction(action, deps);
 }
 
 export function parseChannelName(value: string | undefined): ChannelName | null {
-  if (value === 'web' || value === 'discord' || value === 'slack' || value === 'whatsapp') {
+  if (value === 'web' || value === 'discord' || value === 'slack' || value === 'whatsapp' || value === 'telegram') {
     return value;
   }
 
@@ -1187,4 +1193,277 @@ async function waitForWhatsAppStart(deps: ChannelCommandDeps, pid: number): Prom
 
   await clearWhatsAppState(deps);
   throw new Error('WhatsApp channel failed to stay running after start.');
+}
+
+// ── Telegram channel ──
+
+async function runTelegramChannelAction(action: ChannelAction, deps: ChannelCommandDeps): Promise<void> {
+  if (action === 'login' || action === 'logout') {
+    throw new Error('Telegram channel does not support login or logout actions.');
+  }
+
+  if (action === 'config') {
+    await printTelegramChannelConfig(deps);
+    return;
+  }
+
+  if (action === 'status') {
+    const status = await getTelegramStatus(deps);
+    printTelegramStatus(deps, status);
+    return;
+  }
+
+  if (action === 'restart') {
+    await stopTelegramChannel(deps);
+    await startTelegramChannel(deps);
+    const status = await getTelegramStatus(deps);
+    deps.log('Telegram channel restart requested.');
+    printTelegramStatus(deps, status);
+    return;
+  }
+
+  if (action === 'start') {
+    const before = await getTelegramStatus(deps);
+    if (before.state === 'running') {
+      deps.log('Telegram channel is already running.');
+      printTelegramStatus(deps, before);
+      return;
+    }
+
+    await startTelegramChannel(deps);
+    const after = await getTelegramStatus(deps);
+    deps.log('Telegram channel start requested.');
+    printTelegramStatus(deps, after);
+    return;
+  }
+
+  const before = await getTelegramStatus(deps);
+  if (before.state === 'stopped') {
+    deps.log('Telegram channel is already stopped.');
+    printTelegramStatus(deps, before);
+    return;
+  }
+
+  await stopTelegramChannel(deps);
+  const after = await getTelegramStatus(deps);
+  deps.log('Telegram channel stop requested.');
+  printTelegramStatus(deps, after);
+}
+
+async function printTelegramChannelConfig(deps: ChannelCommandDeps): Promise<void> {
+  const token = (deps.env['TELEGRAM_BOT_TOKEN'] ?? '').trim();
+  const dmPolicy = (deps.env['TELEGRAM_DM_POLICY'] ?? 'pairing').trim();
+  const groupMode = (deps.env['TELEGRAM_GROUP_MODE'] ?? 'closed').trim();
+  const state = await readTelegramState(deps);
+  const launchCommand = resolveTelegramLaunchCommand(deps);
+
+  deps.log('Channel: telegram');
+  deps.log(`Token configured: ${token.length > 0 ? 'yes' : 'no'}`);
+  deps.log(`DM policy: ${dmPolicy}`);
+  deps.log(`Group mode: ${groupMode}`);
+  if (state) {
+    deps.log(`Managed process state file: ${telegramStateFilePath(deps)}`);
+    deps.log(`Last known pid: ${state.pid}`);
+  }
+  deps.log(`Launch command: ${launchCommand}`);
+}
+
+async function startTelegramChannel(deps: ChannelCommandDeps): Promise<void> {
+  const token = (deps.env['TELEGRAM_BOT_TOKEN'] ?? '').trim();
+  if (!token) {
+    throw new Error('Telegram bot token is missing. Configure TELEGRAM_BOT_TOKEN before starting telegram channel.');
+  }
+
+  const launchSpec = resolveTelegramLaunchSpec(deps);
+  const pid = deps.spawnDetached(launchSpec);
+
+  await deps.mkdir(path.dirname(telegramStateFilePath(deps)));
+  const state: TelegramChannelState = {
+    pid,
+    command: launchSpec.command,
+    args: launchSpec.args,
+    cwd: launchSpec.cwd,
+    startedAt: deps.now().toISOString(),
+  };
+  await writeTelegramState(deps, state);
+  await waitForTelegramStart(deps, pid);
+}
+
+async function stopTelegramChannel(deps: ChannelCommandDeps): Promise<void> {
+  const state = await readTelegramState(deps);
+  if (!state) {
+    return;
+  }
+
+  if (!isProcessAlive(deps, state.pid)) {
+    await clearTelegramState(deps);
+    return;
+  }
+
+  try {
+    deps.kill(state.pid, 'SIGTERM');
+  } catch {
+    await clearTelegramState(deps);
+    return;
+  }
+
+  await waitForExit(deps, state.pid, 5_000);
+  if (isProcessAlive(deps, state.pid)) {
+    try {
+      deps.kill(state.pid, 'SIGKILL');
+    } catch {
+      // no-op
+    }
+    await waitForExit(deps, state.pid, 2_000);
+  }
+
+  if (isProcessAlive(deps, state.pid)) {
+    throw new Error(`Unable to stop telegram channel process pid=${state.pid}.`);
+  }
+
+  await clearTelegramState(deps);
+}
+
+async function getTelegramStatus(deps: ChannelCommandDeps): Promise<ChannelStatus> {
+  const state = await readTelegramState(deps);
+  if (!state) {
+    return {
+      state: 'stopped',
+      detail: 'no managed telegram process state found',
+    };
+  }
+
+  if (isProcessAlive(deps, state.pid)) {
+    const args = state.args.map((value) => JSON.stringify(value)).join(' ');
+    const command = `${state.command}${args.length > 0 ? ` ${args}` : ''}`;
+    return {
+      state: 'running',
+      detail: `pid=${state.pid}, cwd=${state.cwd}, startedAt=${state.startedAt}, command=${command}`,
+    };
+  }
+
+  await clearTelegramState(deps);
+  return {
+    state: 'stopped',
+    detail: 'stale telegram process state removed',
+  };
+}
+
+function printTelegramStatus(deps: ChannelCommandDeps, status: ChannelStatus): void {
+  deps.log(`Telegram channel status: ${status.state}`);
+  if (status.detail.trim().length > 0) {
+    deps.log(`Detail: ${status.detail}`);
+  }
+}
+
+function resolveTelegramLaunchSpec(deps: ChannelCommandDeps): LaunchSpec {
+  const configured = deps.env['KEYGATE_TELEGRAM_START_COMMAND']?.trim();
+  if (configured) {
+    return {
+      command: shellForPlatform(),
+      args: shellArgsForPlatform(configured),
+      cwd: deps.cwd,
+    };
+  }
+
+  const repoRoot = resolveRepoRoot(deps);
+  if (!repoRoot) {
+    throw new Error(
+      'Unable to resolve telegram channel runtime. Set KEYGATE_TELEGRAM_START_COMMAND or run from the keygate repository.'
+    );
+  }
+
+  const distEntry = path.join(repoRoot, 'packages', 'telegram', 'dist', 'index.js');
+  if (deps.pathExists(distEntry)) {
+    return {
+      command: deps.execPath,
+      args: [distEntry],
+      cwd: repoRoot,
+    };
+  }
+
+  const sourceEntry = path.join(repoRoot, 'packages', 'telegram', 'src', 'index.ts');
+  if (deps.pathExists(sourceEntry) && deps.hasCommand('pnpm')) {
+    return {
+      command: 'pnpm',
+      args: ['--filter', '@puukis/telegram', 'exec', 'tsx', 'src/index.ts'],
+      cwd: repoRoot,
+    };
+  }
+
+  throw new Error(
+    'Unable to resolve telegram channel runtime. Build @puukis/telegram (`pnpm --filter @puukis/telegram build`) or set KEYGATE_TELEGRAM_START_COMMAND.'
+  );
+}
+
+function resolveTelegramLaunchCommand(deps: ChannelCommandDeps): string {
+  try {
+    const spec = resolveTelegramLaunchSpec(deps);
+    return `${spec.command} ${spec.args.join(' ')}`.trim();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return `unresolved (${message})`;
+  }
+}
+
+function telegramStateFilePath(deps: ChannelCommandDeps): string {
+  return path.join(deps.configDir, 'channels', 'telegram.json');
+}
+
+async function readTelegramState(deps: ChannelCommandDeps): Promise<TelegramChannelState | null> {
+  const statePath = telegramStateFilePath(deps);
+  if (!deps.pathExists(statePath)) {
+    return null;
+  }
+
+  try {
+    const raw = await deps.readFile(statePath);
+    const parsed = JSON.parse(raw) as Partial<TelegramChannelState>;
+    if (
+      typeof parsed.pid !== 'number' ||
+      !Number.isInteger(parsed.pid) ||
+      parsed.pid <= 0 ||
+      typeof parsed.command !== 'string' ||
+      !Array.isArray(parsed.args) ||
+      !parsed.args.every((item) => typeof item === 'string') ||
+      typeof parsed.cwd !== 'string' ||
+      typeof parsed.startedAt !== 'string'
+    ) {
+      return null;
+    }
+
+    return {
+      pid: parsed.pid,
+      command: parsed.command,
+      args: parsed.args,
+      cwd: parsed.cwd,
+      startedAt: parsed.startedAt,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function writeTelegramState(deps: ChannelCommandDeps, state: TelegramChannelState): Promise<void> {
+  const statePath = telegramStateFilePath(deps);
+  await deps.writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
+}
+
+async function clearTelegramState(deps: ChannelCommandDeps): Promise<void> {
+  const statePath = telegramStateFilePath(deps);
+  try {
+    await deps.unlink(statePath);
+  } catch {
+    // no-op
+  }
+}
+
+async function waitForTelegramStart(deps: ChannelCommandDeps, pid: number): Promise<void> {
+  await wait(250);
+  if (isProcessAlive(deps, pid)) {
+    return;
+  }
+
+  await clearTelegramState(deps);
+  throw new Error('Telegram channel failed to stay running after start.');
 }

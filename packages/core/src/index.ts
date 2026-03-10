@@ -20,7 +20,7 @@ export * from './sandbox/index.js';
 export * from './usage/index.js';
 export * from './gmail/index.js';
 export * from './whatsapp/index.js';
-export { normalizeDiscordMessage, normalizeSlackMessage, normalizeTerminalMessage, normalizeWhatsAppMessage, normalizeWebMessage, BaseChannel } from './pipeline/index.js';
+export { normalizeDiscordMessage, normalizeSlackMessage, normalizeTerminalMessage, normalizeWhatsAppMessage, normalizeWebMessage, normalizeTelegramMessage, BaseChannel } from './pipeline/index.js';
 export * from './attachments/uploadStore.js';
 export { Database } from './db/index.js';
 export { startWebServer, WebSocketChannel } from './server/index.js';

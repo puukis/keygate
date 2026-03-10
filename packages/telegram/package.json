@@ -1,0 +1,23 @@
+{
+  "name": "@puukis/telegram",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Keygate Telegram bot adapter",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@puukis/core": "workspace:*",
+    "grammy": "^1.41.1",
+    "@grammyjs/runner": "^2.0.3",
+    "@grammyjs/transformer-throttler": "^1.2.1",
+    "dotenv": "^16.4.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0"
+  }
+}

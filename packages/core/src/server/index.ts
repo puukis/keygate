@@ -71,6 +71,7 @@ interface WSMessage {
     | 'set_discord_config'
     | 'set_slack_config'
     | 'set_whatsapp_config'
+    | 'set_telegram_config'
     | 'start_whatsapp_login'
     | 'cancel_whatsapp_login'
     | 'clear_session'
@@ -188,6 +189,10 @@ interface WSMessage {
   groups?: Record<string, { requireMention?: boolean; name?: string }>;
   groupRequireMentionDefault?: boolean;
   sendReadReceipts?: boolean;
+  telegramToken?: string;
+  clearTelegramToken?: boolean;
+  telegramDmPolicy?: 'pairing' | 'open' | 'closed';
+  telegramGroupMode?: 'closed' | 'open' | 'mention';
   force?: boolean;
   timeoutSeconds?: number;
   query?: string;
@@ -259,6 +264,12 @@ interface DiscordConfigView {
 
 interface SlackConfigView {
   configured: boolean;
+}
+
+interface TelegramConfigView {
+  configured: boolean;
+  dmPolicy: 'pairing' | 'open' | 'closed';
+  groupMode: 'closed' | 'open' | 'mention';
 }
 
 interface BrowserConfigView {
@@ -883,6 +894,28 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
               ws.send(JSON.stringify({
                 type: 'error',
                 error: error instanceof Error ? error.message : 'Failed to save WhatsApp configuration',
+              }));
+            }
+            break;
+          }
+
+          case 'set_telegram_config': {
+            try {
+              const telegram = await applyTelegramConfigUpdate(config, {
+                token: typeof msg.telegramToken === 'string' ? msg.telegramToken : undefined,
+                clearToken: msg.clearTelegramToken === true,
+                dmPolicy: msg.telegramDmPolicy,
+                groupMode: msg.telegramGroupMode,
+              });
+
+              ws.send(JSON.stringify({
+                type: 'telegram_config_updated',
+                telegram,
+              }));
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Failed to save Telegram configuration',
               }));
             }
             break;
@@ -2589,6 +2622,7 @@ export function buildStatusPayload(
     discord: buildDiscordConfigView(config),
     slack: buildSlackConfigView(config),
     whatsapp: buildWhatsAppConfigViewSync(config),
+    telegram: buildTelegramConfigView(config),
     browser: buildBrowserConfigViewFromConfig(config),
     skills,
     usage,
@@ -2643,6 +2677,7 @@ export function buildConnectedPayload(
     discord: buildDiscordConfigView(config),
     slack: buildSlackConfigView(config),
     whatsapp: buildWhatsAppConfigViewSync(config),
+    telegram: buildTelegramConfigView(config),
     browser: buildBrowserConfigViewFromConfig(config),
     skills,
   };
@@ -3146,6 +3181,72 @@ function buildDiscordConfigView(config: KeygateConfig): DiscordConfigView {
   return {
     configured: token.length > 0,
     prefix,
+  };
+}
+
+function buildTelegramConfigView(config: KeygateConfig): TelegramConfigView {
+  const token = (config.telegram?.token ?? process.env['TELEGRAM_BOT_TOKEN'] ?? '').trim();
+  return {
+    configured: token.length > 0,
+    dmPolicy: config.telegram?.dmPolicy ?? 'pairing',
+    groupMode: config.telegram?.groupMode ?? 'closed',
+  };
+}
+
+export async function applyTelegramConfigUpdate(
+  config: KeygateConfig,
+  update: {
+    token?: string;
+    clearToken?: boolean;
+    dmPolicy?: 'pairing' | 'open' | 'closed';
+    groupMode?: 'closed' | 'open' | 'mention';
+  }
+): Promise<TelegramConfigView> {
+  const envUpdates: Record<string, string> = {};
+
+  const nextToken = update.clearToken
+    ? ''
+    : (update.token?.trim() ?? (config.telegram?.token ?? process.env['TELEGRAM_BOT_TOKEN'] ?? '').trim());
+
+  if (update.clearToken || update.token !== undefined) {
+    envUpdates['TELEGRAM_BOT_TOKEN'] = nextToken;
+  }
+
+  if (update.dmPolicy !== undefined) {
+    envUpdates['TELEGRAM_DM_POLICY'] = update.dmPolicy;
+    config.telegram = { ...(config.telegram ?? buildDefaultTelegramConfig()), dmPolicy: update.dmPolicy };
+  }
+
+  if (update.groupMode !== undefined) {
+    envUpdates['TELEGRAM_GROUP_MODE'] = update.groupMode;
+    config.telegram = { ...(config.telegram ?? buildDefaultTelegramConfig()), groupMode: update.groupMode };
+  }
+
+  if (Object.keys(envUpdates).length > 0) {
+    await updateKeygateFile(envUpdates);
+  }
+
+  if (nextToken || update.dmPolicy || update.groupMode) {
+    if (!config.telegram) {
+      config.telegram = buildDefaultTelegramConfig();
+    }
+    if (nextToken) {
+      config.telegram.token = nextToken;
+      process.env['TELEGRAM_BOT_TOKEN'] = nextToken;
+    }
+  }
+
+  return buildTelegramConfigView(config);
+}
+
+function buildDefaultTelegramConfig(): NonNullable<KeygateConfig['telegram']> {
+  return {
+    token: '',
+    dmPolicy: 'pairing',
+    allowFrom: [],
+    groupMode: 'closed',
+    requireMentionDefault: true,
+    groupRules: {},
   };
 }
 

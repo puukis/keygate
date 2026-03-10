@@ -1,7 +1,7 @@
 // Core types for Keygate
 
 export type SecurityMode = 'safe' | 'spicy';
-export type ChannelType = 'web' | 'discord' | 'terminal' | 'slack' | 'whatsapp';
+export type ChannelType = 'web' | 'discord' | 'terminal' | 'slack' | 'whatsapp' | 'telegram';
 export type LLMProviderName = 'openai' | 'gemini' | 'ollama' | 'openai-codex';
 export type CodexReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 export type BrowserDomainPolicy = 'none' | 'allowlist' | 'blocklist';
@@ -302,6 +302,7 @@ export interface KeygateConfig {
     dmPolicy?: DmPolicy;
     allowFrom?: string[];
   };
+  telegram?: TelegramConfig;
   whatsapp?: WhatsAppConfig;
   gmail?: GmailConfig;
   memory?: {
@@ -337,6 +338,24 @@ export interface GmailConfig {
   redirectUri?: string;
   redirectPort?: number;
   defaults: GmailDefaultsConfig;
+}
+
+export interface TelegramGroupRule {
+  requireMention?: boolean;
+}
+
+export type TelegramGroupMode = 'closed' | 'open' | 'mention';
+
+export interface TelegramConfig {
+  token: string;
+  dmPolicy: DmPolicy;
+  allowFrom: string[];
+  groupMode: TelegramGroupMode;
+  requireMentionDefault: boolean;
+  groupRules: Record<string, TelegramGroupRule>;
+  webhookUrl?: string;
+  webhookPort?: number;
+  webhookPath?: string;
 }
 
 export interface WhatsAppGroupRule {

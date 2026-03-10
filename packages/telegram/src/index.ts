@@ -1,0 +1,234 @@
+import {
+  Gateway,
+  normalizeTelegramMessage,
+  loadConfigFromEnv,
+  loadEnvironment,
+  RoutingRuleStore,
+  RoutingService,
+  type KeygateConfig,
+} from '@puukis/core';
+import { Bot, type Context } from 'grammy';
+import { run } from '@grammyjs/runner';
+import { TelegramChannel, pendingConfirmations } from './channel.js';
+import { TypingIndicator } from './typing.js';
+import { UpdateDeduplicator } from './dedup.js';
+import { checkDmAccess } from './dm-access.js';
+import { isGroupAllowed } from './group-access.js';
+import { ingestTelegramMediaAttachments } from './media.js';
+import { buildSessionKey } from './session-key.js';
+import { registerBotCommands, parseTelegramCommand } from './commands.js';
+
+loadEnvironment();
+
+/**
+ * Start the Telegram bot.
+ * Returns a stop function that gracefully shuts the bot down.
+ */
+export async function startTelegramBot(config: KeygateConfig): Promise<{ stop(): Promise<void> }> {
+  const token = config.telegram?.token ?? process.env['TELEGRAM_BOT_TOKEN'];
+  if (!token) {
+    throw new Error('Telegram bot token not configured. Set TELEGRAM_BOT_TOKEN or provide in config.');
+  }
+
+  const telegramConfig = config.telegram!;
+  const gateway = Gateway.getInstance(config);
+  const router = new RoutingService(new RoutingRuleStore(), config.security.workspacePath);
+  const dedup = new UpdateDeduplicator();
+
+  const bot = new Bot<Context>(token);
+
+  // Resolve bot username for mention-gating
+  let botUsername = '';
+  try {
+    const me = await bot.api.getMe();
+    botUsername = me.username ?? '';
+    console.log(`🤖 Telegram bot ready! @${botUsername}`);
+  } catch (error) {
+    console.error('Failed to get Telegram bot info:', error);
+    throw error;
+  }
+
+  await registerBotCommands(bot.api);
+
+  // ── Inline keyboard callback handler (for confirmation dialogs) ──────────
+  bot.on('callback_query:data', async (ctx) => {
+    const data = ctx.callbackQuery.data;
+    const match = data.match(/^confirm:([^:]+):(allow_once|allow_always|cancel)$/);
+    if (match) {
+      const uuid = match[1]!;
+      const decision = match[2] as 'allow_once' | 'allow_always' | 'cancel';
+      const resolver = pendingConfirmations.get(uuid);
+      if (resolver) {
+        pendingConfirmations.delete(uuid);
+        resolver(decision);
+      }
+      await ctx.answerCallbackQuery().catch(() => {});
+    } else {
+      await ctx.answerCallbackQuery().catch(() => {});
+    }
+  });
+
+  // ── Main message handler ─────────────────────────────────────────────────
+  bot.on('message', async (ctx) => {
+    const msg = ctx.message;
+    if (!msg) return;
+
+    // Deduplicate
+    if (dedup.isDuplicate(ctx.update.update_id)) return;
+    dedup.markSeen(ctx.update.update_id);
+
+    // Only handle text or media messages
+    const hasText = typeof msg.text === 'string' && msg.text.length > 0;
+    const hasMedia = !!(msg.photo || msg.document || msg.voice || msg.video || msg.sticker);
+    if (!hasText && !hasMedia) return;
+
+    const chatType = msg.chat.type; // 'private' | 'group' | 'supergroup' | 'channel'
+    const isPrivate = chatType === 'private';
+    const isGroup = chatType === 'group' || chatType === 'supergroup';
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    if (!userId) return;
+
+    // Forum topic thread id
+    const isForumTopic = 'is_forum' in msg.chat && msg.chat.is_forum === true;
+    const topicId = isForumTopic && msg.message_thread_id ? msg.message_thread_id : undefined;
+
+    const messageText = msg.text ?? msg.caption ?? '';
+
+    // ── Group access check ──
+    if (isGroup) {
+      const access = isGroupAllowed(telegramConfig, chatId, messageText, botUsername);
+      if (!access.allowed) return;
+    }
+
+    // ── DM access check ──
+    if (isPrivate) {
+      const access = await checkDmAccess(telegramConfig, userId);
+      if (!access.allowed) {
+        if (access.pairingCode) {
+          await ctx.reply(
+            `🔐 DM pairing required. Your code: <code>${access.pairingCode}</code>\n` +
+            `Ask the owner to run: <code>keygate pairing approve telegram ${access.pairingCode}</code>`,
+            { parse_mode: 'HTML' },
+          ).catch(() => {});
+        }
+        return;
+      }
+    }
+
+    // Acknowledge with eyes reaction
+    try {
+      await ctx.react([{ type: 'emoji', emoji: '👀' }]);
+    } catch {
+      // Reactions require appropriate permissions; ignore failures
+    }
+
+    const sessionKey = buildSessionKey(chatId, topicId);
+
+    const typing = new TypingIndicator(bot.api, chatId, topicId);
+    typing.start();
+
+    try {
+      const route = await router.resolve({
+        channel: 'telegram',
+        chatId: sessionKey,
+        userId: String(userId),
+      });
+      const sessionId = route.sessionId;
+      await gateway.prepareSessionWorkspace(sessionId, route.workspacePath);
+
+      // Ingest media attachments
+      const attachments = await ingestTelegramMediaAttachments(
+        route.workspacePath,
+        sessionId,
+        ctx,
+        token,
+      );
+
+      // Determine effective content
+      let content = messageText;
+
+      // If mention-gated group, strip the mention already done in isGroupAllowed result
+      if (isGroup && telegramConfig.groupMode === 'mention') {
+        const access = isGroupAllowed(telegramConfig, chatId, messageText, botUsername);
+        content = access.contentAfterMention;
+      }
+
+      // Check if it's a slash command
+      const slashCommand = content.trim().startsWith('/') ? parseTelegramCommand(content.trim()) : null;
+      const effectiveContent = slashCommand ?? content;
+
+      if (!effectiveContent && attachments.length === 0) {
+        return;
+      }
+
+      const channel = new TelegramChannel(bot.api, chatId, msg.message_id, topicId);
+      const normalized = normalizeTelegramMessage(
+        String(msg.message_id),
+        sessionKey,
+        String(userId),
+        effectiveContent,
+        channel,
+        attachments.length > 0 ? attachments : undefined,
+        sessionId,
+      );
+
+      await gateway.processMessage(normalized);
+    } catch (error) {
+      console.error('Error processing Telegram message:', error);
+      await ctx.reply('❌ An error occurred while processing your request.').catch(() => {});
+    } finally {
+      typing.stop();
+    }
+  });
+
+  // ── Start bot ─────────────────────────────────────────────────────────────
+  const webhookUrl = telegramConfig.webhookUrl;
+
+  if (webhookUrl) {
+    // Webhook mode
+    const port = telegramConfig.webhookPort ?? 8787;
+    const path = telegramConfig.webhookPath ?? '/telegram/webhook';
+
+    await bot.api.setWebhook(webhookUrl + path);
+
+    const { createServer } = await import('node:http');
+    const { webhookCallback } = await import('grammy');
+    const handleUpdate = webhookCallback(bot, 'http');
+    const server = createServer(async (req, res) => {
+      if (req.url === path && req.method === 'POST') {
+        await handleUpdate(req, res);
+      } else {
+        res.writeHead(404).end();
+      }
+    });
+
+    await new Promise<void>((resolve) => server.listen(port, resolve));
+    console.log(`Telegram webhook listening on port ${port} at ${path}`);
+
+    return {
+      stop: async () => {
+        await bot.api.deleteWebhook().catch(() => {});
+        await new Promise<void>((resolve, reject) =>
+          server.close((err) => (err ? reject(err) : resolve()))
+        );
+      },
+    };
+  } else {
+    // Long polling mode (default)
+    const runner = run(bot);
+    console.log('Telegram bot started (long polling).');
+
+    return {
+      stop: async () => {
+        runner.isRunning() && (await runner.stop());
+      },
+    };
+  }
+}
+
+// CLI entry point
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const config = loadConfigFromEnv();
+  startTelegramBot(config).catch(console.error);
+}

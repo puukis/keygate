@@ -4,5 +4,6 @@ export {
   normalizeTerminalMessage,
   normalizeWhatsAppMessage,
   normalizeWebMessage,
+  normalizeTelegramMessage,
   BaseChannel,
 } from './normalize.js';

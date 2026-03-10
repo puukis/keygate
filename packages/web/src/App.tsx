@@ -80,6 +80,12 @@ interface SlackConfigState {
   configured: boolean;
 }
 
+interface TelegramConfigState {
+  configured: boolean;
+  dmPolicy: 'pairing' | 'open' | 'closed';
+  groupMode: 'closed' | 'open' | 'mention';
+}
+
 interface WhatsAppConfigState {
   linked: boolean;
   linkedPhone: string | null;
@@ -508,6 +514,24 @@ function parseSlackConfig(value: unknown): SlackConfigState | undefined {
     return undefined;
   }
   return { configured: payload['configured'] === true };
+}
+
+function parseTelegramConfig(value: unknown): TelegramConfigState | undefined {
+  const payload = asRecord(value);
+  if (!payload) {
+    return undefined;
+  }
+  const dmPolicyRaw = firstString(payload['dmPolicy']);
+  const dmPolicy: TelegramConfigState['dmPolicy'] =
+    dmPolicyRaw === 'open' || dmPolicyRaw === 'closed' ? dmPolicyRaw : 'pairing';
+  const groupModeRaw = firstString(payload['groupMode']);
+  const groupMode: TelegramConfigState['groupMode'] =
+    groupModeRaw === 'open' || groupModeRaw === 'mention' ? groupModeRaw : 'closed';
+  return {
+    configured: payload['configured'] === true,
+    dmPolicy,
+    groupMode,
+  };
 }
 
 function parseWhatsAppConfig(value: unknown): WhatsAppConfigState | undefined {
@@ -1259,6 +1283,12 @@ function App() {
   const [slackSigningSecretDraft, setSlackSigningSecretDraft] = useState('');
   const [slackClearToken, setSlackClearToken] = useState(false);
   const [slackSaving, setSlackSaving] = useState(false);
+  const [telegramConfig, setTelegramConfig] = useState<TelegramConfigState>({ configured: false, dmPolicy: 'pairing', groupMode: 'closed' });
+  const [telegramTokenDraft, setTelegramTokenDraft] = useState('');
+  const [telegramClearToken, setTelegramClearToken] = useState(false);
+  const [telegramDmPolicyDraft, setTelegramDmPolicyDraft] = useState<TelegramConfigState['dmPolicy']>('pairing');
+  const [telegramGroupModeDraft, setTelegramGroupModeDraft] = useState<TelegramConfigState['groupMode']>('closed');
+  const [telegramSaving, setTelegramSaving] = useState(false);
   const [whatsappConfig, setWhatsAppConfig] = useState<WhatsAppConfigState>(DEFAULT_WHATSAPP_CONFIG_STATE);
   const [whatsappAllowFromDraft, setWhatsAppAllowFromDraft] = useState('');
   const [whatsappDmPolicyDraft, setWhatsAppDmPolicyDraft] = useState<WhatsAppConfigState['dmPolicy']>('pairing');
@@ -1484,6 +1514,15 @@ function App() {
           setSlackClearToken(false);
         }
         setSlackSaving(false);
+        const telegramStateOnConnect = parseTelegramConfig(data['telegram']);
+        if (telegramStateOnConnect) {
+          setTelegramConfig(telegramStateOnConnect);
+          setTelegramDmPolicyDraft(telegramStateOnConnect.dmPolicy);
+          setTelegramGroupModeDraft(telegramStateOnConnect.groupMode);
+          setTelegramTokenDraft('');
+          setTelegramClearToken(false);
+        }
+        setTelegramSaving(false);
         const whatsappState = parseWhatsAppConfig(data['whatsapp']);
         if (whatsappState) {
           setWhatsAppConfig(whatsappState);
@@ -1895,6 +1934,19 @@ function App() {
           setWhatsAppReadReceiptsDraft(whatsappState.sendReadReceipts);
         }
         setWhatsAppSaving(false);
+        break;
+      }
+
+      case 'telegram_config_updated': {
+        const telegramStateUpdated = parseTelegramConfig(data['telegram']);
+        if (telegramStateUpdated) {
+          setTelegramConfig(telegramStateUpdated);
+          setTelegramDmPolicyDraft(telegramStateUpdated.dmPolicy);
+          setTelegramGroupModeDraft(telegramStateUpdated.groupMode);
+        }
+        setTelegramTokenDraft('');
+        setTelegramClearToken(false);
+        setTelegramSaving(false);
         break;
       }
 
@@ -2967,6 +3019,20 @@ function App() {
     }
   }, [slackBotTokenDraft, slackAppTokenDraft, slackSigningSecretDraft, slackClearToken, send]);
 
+  const handleTelegramSave = useCallback(() => {
+    setTelegramSaving(true);
+    const sent = send({
+      type: 'set_telegram_config',
+      telegramToken: telegramTokenDraft.trim().length > 0 ? telegramTokenDraft.trim() : undefined,
+      clearTelegramToken: telegramClearToken,
+      telegramDmPolicy: telegramDmPolicyDraft,
+      telegramGroupMode: telegramGroupModeDraft,
+    });
+    if (!sent) {
+      setTelegramSaving(false);
+    }
+  }, [telegramTokenDraft, telegramClearToken, telegramDmPolicyDraft, telegramGroupModeDraft, send]);
+
   const handleWhatsAppSave = useCallback(() => {
     let groups: WhatsAppConfigState['groups'];
     try {
@@ -3339,6 +3405,12 @@ function App() {
     slackSigningSecretDraft.trim().length > 0 ||
     slackClearToken;
 
+  const telegramHasChanges =
+    telegramTokenDraft.trim().length > 0 ||
+    telegramClearToken ||
+    telegramDmPolicyDraft !== telegramConfig.dmPolicy ||
+    telegramGroupModeDraft !== telegramConfig.groupMode;
+
   const whatsappHasChanges =
     whatsappDmPolicyDraft !== whatsappConfig.dmPolicy ||
     whatsappAllowFromDraft !== stringifyWhatsAppAllowlist(whatsappConfig.allowFrom) ||
@@ -3585,6 +3657,7 @@ function App() {
                 <div className="scheduler-job-item"><strong>Discord</strong><div className="config-note">{discordConfig.configured ? 'Configured' : 'Not configured'} · Prefix: {discordConfig.prefix}</div></div>
                 <div className="scheduler-job-item"><strong>Slack</strong><div className="config-note">{slackConfig.configured ? 'Configured' : 'Not configured'}</div></div>
                 <div className="scheduler-job-item"><strong>WhatsApp</strong><div className="config-note">{whatsappConfig.linked ? `Linked${whatsappConfig.linkedPhone ? ` (${whatsappConfig.linkedPhone})` : ''}` : 'Not linked'} · DM: {whatsappConfig.dmPolicy} · Groups: {whatsappConfig.groupMode}</div></div>
+                <div className="scheduler-job-item"><strong>Telegram</strong><div className="config-note">{telegramConfig.configured ? 'Configured' : 'Not configured'} · DM: {telegramConfig.dmPolicy} · Groups: {telegramConfig.groupMode}</div></div>
               </div>
               <div className="scheduler-actions">
                 <button className="btn-secondary" onClick={() => openConfigScreenAt('top')}>Open channel settings</button>
@@ -4600,6 +4673,89 @@ function App() {
                   {slackSaving ? 'Saving...' : 'Save Slack Config'}
                 </button>
                 <small className="config-note">Restart the Slack bot process to apply updated settings.</small>
+              </section>
+
+              <section className="config-section">
+                <h3>Telegram Bot</h3>
+                <p className="config-note">
+                  Status: {telegramConfig.configured ? 'Token configured' : 'Token not configured'}
+                </p>
+
+                <label className="llm-control config-control">
+                  <span>Bot Token</span>
+                  <input
+                    className="config-text-input"
+                    type="password"
+                    value={telegramTokenDraft}
+                    onChange={(event) => {
+                      setTelegramTokenDraft(event.target.value);
+                      if (event.target.value.trim().length > 0) {
+                        setTelegramClearToken(false);
+                      }
+                    }}
+                    placeholder={
+                      telegramConfig.configured
+                        ? 'Leave blank to keep current token'
+                        : 'Paste Telegram bot token'
+                    }
+                    autoComplete="off"
+                    disabled={!connected || activeIsStreaming || telegramSaving}
+                  />
+                </label>
+
+                <label className="llm-control config-control">
+                  <span>DM Policy</span>
+                  <select
+                    value={telegramDmPolicyDraft}
+                    onChange={(event) => setTelegramDmPolicyDraft(event.target.value as TelegramConfigState['dmPolicy'])}
+                    disabled={!connected || activeIsStreaming || telegramSaving}
+                  >
+                    <option value="pairing">Pairing (require approval)</option>
+                    <option value="open">Open (allow all)</option>
+                    <option value="closed">Closed (deny all)</option>
+                  </select>
+                </label>
+
+                <label className="llm-control config-control">
+                  <span>Group Mode</span>
+                  <select
+                    value={telegramGroupModeDraft}
+                    onChange={(event) => setTelegramGroupModeDraft(event.target.value as TelegramConfigState['groupMode'])}
+                    disabled={!connected || activeIsStreaming || telegramSaving}
+                  >
+                    <option value="closed">Closed (no group access)</option>
+                    <option value="open">Open (respond to all messages)</option>
+                    <option value="mention">Mention only (respond when @mentioned)</option>
+                  </select>
+                </label>
+
+                <label className="config-switch-row">
+                  <span className="config-switch-copy">
+                    <strong>Clear saved token</strong>
+                    <small>Remove Telegram token from local config on save.</small>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={telegramClearToken}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+                      setTelegramClearToken(checked);
+                      if (checked) {
+                        setTelegramTokenDraft('');
+                      }
+                    }}
+                    disabled={!connected || activeIsStreaming || telegramSaving || !telegramConfig.configured}
+                  />
+                </label>
+
+                <button
+                  className="btn-secondary"
+                  onClick={handleTelegramSave}
+                  disabled={!connected || activeIsStreaming || telegramSaving || !telegramHasChanges}
+                >
+                  {telegramSaving ? 'Saving...' : 'Save Telegram Config'}
+                </button>
+                <small className="config-note">Restart the Telegram bot process to apply updated settings.</small>
               </section>
 
               <section className="config-section">

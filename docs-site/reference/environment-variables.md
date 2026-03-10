@@ -72,6 +72,19 @@ Slack:
 
 WhatsApp does not use a static auth env variable. Login is handled through a linked-device QR flow and its long-lived auth state is stored under `~/.keygate/channels/whatsapp/auth/`.
 
+Telegram:
+
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_DM_POLICY`
+- `TELEGRAM_ALLOW_FROM`
+- `TELEGRAM_GROUP_MODE`
+- `TELEGRAM_REQUIRE_MENTION_DEFAULT`
+- `TELEGRAM_WEBHOOK_URL`
+- `TELEGRAM_WEBHOOK_PORT`
+- `TELEGRAM_WEBHOOK_PATH`
+
+`TELEGRAM_BOT_TOKEN` is the only required variable. All others default to safe values (`pairing` DM policy, `closed` group mode, long polling).
+
 ## Gmail OAuth variables
 
 - `KEYGATE_GMAIL_CLIENT_ID`

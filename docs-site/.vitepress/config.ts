@@ -30,6 +30,7 @@ export default defineConfig({
             { text: 'Channels', link: '/guide/channels' },
             { text: 'Device Nodes', link: '/guide/device-nodes' },
             { text: 'WhatsApp', link: '/guide/whatsapp' },
+            { text: 'Telegram', link: '/guide/telegram' },
             { text: 'Sessions & Automations', link: '/guide/sessions-and-automations' },
             { text: 'Gmail Automations', link: '/guide/gmail-automations' },
             { text: 'Providers & Models', link: '/guide/providers-and-models' },
