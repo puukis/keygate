@@ -7,6 +7,7 @@ export { browserTools, closeBrowser } from './browser.js';
 export { marketplaceTools } from './marketplace.js';
 export { memoryTools, memorySearchTool, memoryGetTool } from './memory.js';
 export { gitTools } from './git.js';
+export { gmailTools, gmailSendEmailTool } from './gmail.js';
 
 import { filesystemTools } from './filesystem.js';
 import { editTools } from './edit.js';
@@ -17,6 +18,7 @@ import { browserTools } from './browser.js';
 import { marketplaceTools } from './marketplace.js';
 import { memoryTools } from './memory.js';
 import { gitTools } from './git.js';
+import { gmailTools } from './gmail.js';
 
 /**
  * All built-in tools combined
@@ -31,4 +33,5 @@ export const allBuiltinTools = [
   ...marketplaceTools,
   ...memoryTools,
   ...gitTools,
+  ...gmailTools,
 ];

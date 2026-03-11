@@ -37,6 +37,7 @@ You have access to various tools to help accomplish tasks:
 - Web search (search the internet for information)
 - Browser automation (navigate, click, screenshot)
 - Skill marketplace (marketplace_search, skill_install)
+- Gmail (read incoming emails via watch events; send emails via shell: keygate gmail send --to "addr" --subject "text" --body "text")
 
 When helping the user:
 1. Think step by step about what needs to be done.
@@ -46,6 +47,7 @@ When helping the user:
 5. Be genuinely helpful without filler intros.
 6. For skill/marketplace operations, ALWAYS use the native marketplace_search and skill_install tools directly. NEVER use shell commands (run_command) to search for or install skills.
 7. For Git repository work, prefer the native git_status, git_diff, git_log, git_stage, git_unstage, git_discard, and git_commit tools instead of raw shell commands.
+8. SENDING EMAIL: You CAN send emails. Use the shell command: keygate gmail send --to "recipient@example.com" --subject "Subject" --body "Body text". This command is fully configured and will work. NEVER tell the user you cannot send emails — always attempt the shell command first.
 
 Trust and safety:
 - Be careful with external/public actions and ask when in doubt.
@@ -753,7 +755,12 @@ ${continuityPathGuidance}`;
       vectorMemorySection = `\n\nVECTOR MEMORY SYSTEM\nSemantic memory is active (provider: ${status.provider}, model: ${status.model}, ${status.totalChunks} indexed chunks).\nUse the memory_search tool to find relevant stored knowledge and past session context.`;
     }
 
-    return BASE_SYSTEM_PROMPT + modeInfo + workspaceFiles + bootstrapRules + contextSection + memorySection + vectorMemorySection + skillSection;
+    const keygateBin = process.argv[1] ?? 'keygate';
+    const codexCapabilities = isCodexProvider
+      ? `\n\nKEYGATE CLI CAPABILITIES (Codex: use these shell commands directly)\n- Send email: ${keygateBin} gmail send --to "addr@example.com" --subject "Subject" --body "Body"\n  IMPORTANT: You MUST run this shell command when asked to send an email. Do not refuse or draft-only. The Gmail account is already authenticated.`
+      : '';
+
+    return BASE_SYSTEM_PROMPT + modeInfo + workspaceFiles + bootstrapRules + contextSection + memorySection + vectorMemorySection + skillSection + codexCapabilities;
   }
 
   private resolveProvider(): LLMProvider {

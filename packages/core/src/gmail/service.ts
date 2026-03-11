@@ -16,6 +16,7 @@ const GMAIL_SCOPE = [
   'openid',
   'email',
   'https://www.googleapis.com/auth/gmail.modify',
+  'https://www.googleapis.com/auth/gmail.send',
 ].join(' ');
 const GOOGLE_CERTS_URL = 'https://www.googleapis.com/oauth2/v1/certs';
 const GOOGLE_ISSUERS = new Set(['https://accounts.google.com', 'accounts.google.com']);
@@ -547,6 +548,66 @@ export class GmailAutomationService {
       await this.store.updateAccount(account.id, { lastError: message });
       return 0;
     }
+  }
+
+  async sendEmail(options: {
+    to: string;
+    subject: string;
+    body: string;
+    accountId?: string;
+    replyToMessageId?: string;
+    threadId?: string;
+  }): Promise<{ messageId: string; threadId?: string }> {
+    const accounts = await this.store.listAccounts();
+    const account = options.accountId
+      ? accounts.find((a) => a.id === options.accountId || a.email === options.accountId)
+      : accounts[0];
+
+    if (!account) {
+      throw new Error('No Gmail account configured. Run `keygate gmail login` first.');
+    }
+
+    const accessToken = await this.getAccountAccessToken(account);
+
+    const headers: string[] = [
+      `From: ${account.email}`,
+      `To: ${options.to}`,
+      `Subject: ${options.subject}`,
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset=utf-8',
+      'Content-Transfer-Encoding: 7bit',
+    ];
+
+    if (options.replyToMessageId) {
+      headers.push(`In-Reply-To: <${options.replyToMessageId}>`);
+      headers.push(`References: <${options.replyToMessageId}>`);
+    }
+
+    const raw = [...headers, '', options.body].join('\r\n');
+    const encoded = Buffer.from(raw).toString('base64')
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+
+    const body: Record<string, unknown> = { raw: encoded };
+    if (options.threadId) {
+      body['threadId'] = options.threadId;
+    }
+
+    const response = await this.fetchImpl('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new Error(`Failed to send email (${response.status})${text ? `: ${text}` : ''}`);
+    }
+
+    const result = await response.json() as { id: string; threadId?: string };
+    return { messageId: result.id, threadId: result.threadId };
   }
 
   private resolveOAuthConfig() {

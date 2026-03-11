@@ -91,6 +91,27 @@ export async function runGmailCommand(args: ParsedArgs): Promise<void> {
       return;
     }
 
+    case 'send': {
+      const to = getFlagString(args.flags, 'to', '').trim();
+      const subject = getFlagString(args.flags, 'subject', '').trim();
+      const body = getFlagString(args.flags, 'body', '').trim();
+      if (!to || !subject || !body) {
+        throw new Error('Usage: keygate gmail send --to <email> --subject <text> --body <text> [--account <id|email>] [--reply-to <messageId>] [--thread <threadId>]');
+      }
+      const accountId = getOptionalFlagString(args.flags['account']);
+      const resolvedAccountId = accountId ? await resolveAccountId(gmail, accountId) : undefined;
+      const result = await gmail.sendEmail({
+        to,
+        subject,
+        body,
+        accountId: resolvedAccountId,
+        replyToMessageId: getOptionalFlagString(args.flags['reply-to']),
+        threadId: getOptionalFlagString(args.flags['thread']),
+      });
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
     case 'test': {
       const watchId = args.positional[2]?.trim() ?? '';
       if (!watchId) {
@@ -133,7 +154,7 @@ export async function runGmailCommand(args: ParsedArgs): Promise<void> {
     }
 
     default:
-      throw new Error('Usage: keygate gmail <login|list|watch|update|delete|test|renew> ...');
+      throw new Error('Usage: keygate gmail <login|list|watch|update|delete|test|renew|send> ...');
   }
 }
 
