@@ -7,6 +7,7 @@ import {
   resolveTokenStoreMode,
   type SecretStoreBackend,
   type StoredTokenSecrets,
+  type TokenStoreMode,
 } from './secretStore.js';
 
 const DEFAULT_TOKEN_NAMESPACE = 'openai-codex';
@@ -48,6 +49,13 @@ interface TokenFileRecord {
 }
 
 let fileLock: Promise<void> = Promise.resolve();
+
+interface SecretStoreResolutionContext {
+  configuredMode: TokenStoreMode;
+  disableKeychain: boolean;
+  persistedMode: SecretStoreBackend | null;
+  hasPersistedFileRecord: boolean;
+}
 
 function withLock<T>(fn: () => Promise<T>): Promise<T> {
   const next = fileLock.then(fn, fn);
@@ -190,22 +198,27 @@ async function readTokensInternal(tokenPath: string): Promise<StoredTokens | nul
   const configuredMode = resolveTokenStoreMode(process.env['KEYGATE_TOKEN_STORE']);
   const disableKeychain = isTruthyEnvValue(process.env['KEYGATE_DISABLE_KEYCHAIN']);
   const persistedMode = normalizeStorageMode(record.storage_mode);
-  const preferredMode = resolvePreferredMode(configuredMode, persistedMode);
-  let resolved = await resolveSecretStore({
-    tokenFilePath: tokenPath,
-    mode: preferredMode,
+  const hasPersistedFileRecord =
+    persistedMode === 'file'
+    || typeof record.access_token === 'string'
+    || typeof record.refresh_token === 'string';
+  const resolutionContext: SecretStoreResolutionContext = {
+    configuredMode,
     disableKeychain,
-  });
+    persistedMode,
+    hasPersistedFileRecord,
+  };
+  let resolved = await resolveSecretStoreWithExistingFileFallback(tokenPath, resolutionContext);
 
-  const legacySecrets = persistedMode === null ? extractSecretsFromRecord(record) : null;
+  const persistedFileSecrets = extractSecretsFromRecord(record);
 
-  if (legacySecrets && resolved.backend === 'keychain') {
+  if (persistedFileSecrets && resolved.backend === 'keychain') {
     try {
-      await resolved.store.write(legacySecrets);
+      await resolved.store.write(persistedFileSecrets);
       await writeTokenRecord(tokenPath, buildMetadataRecord(metadata, 'keychain'));
-      return toStoredTokens(metadata, legacySecrets, 'keychain');
+      return toStoredTokens(metadata, persistedFileSecrets, 'keychain');
     } catch (error) {
-      if (configuredMode !== 'auto') {
+      if (!canReuseExistingFileRecord(resolutionContext)) {
         throw error;
       }
 
@@ -215,19 +228,19 @@ async function readTokensInternal(tokenPath: string): Promise<StoredTokens | nul
         disableKeychain: true,
       });
       await writeTokenRecord(tokenPath, buildMetadataRecord(metadata, resolved.backend));
-      await resolved.store.write(legacySecrets);
-      return toStoredTokens(metadata, legacySecrets, resolved.backend);
+      await resolved.store.write(persistedFileSecrets);
+      return toStoredTokens(metadata, persistedFileSecrets, resolved.backend);
     }
   }
 
-  if (legacySecrets && resolved.backend === 'file') {
+  if (persistedFileSecrets && resolved.backend === 'file') {
     const shouldNormalizeLegacyRecord =
       record.version !== TOKEN_STORE_VERSION || record.storage_mode !== 'file';
     if (shouldNormalizeLegacyRecord) {
       await writeTokenRecord(tokenPath, buildMetadataRecord(metadata, 'file'));
-      await resolved.store.write(legacySecrets);
+      await resolved.store.write(persistedFileSecrets);
     }
-    return toStoredTokens(metadata, legacySecrets, 'file');
+    return toStoredTokens(metadata, persistedFileSecrets, 'file');
   }
 
   let secrets: StoredTokenSecrets | null = null;
@@ -271,13 +284,18 @@ async function writeTokensInternal(tokens: StoredTokens, tokenPath: string): Pro
   const existing = await readTokenRecord(tokenPath);
   const configuredMode = resolveTokenStoreMode(process.env['KEYGATE_TOKEN_STORE']);
   const disableKeychain = isTruthyEnvValue(process.env['KEYGATE_DISABLE_KEYCHAIN']);
-  const preferredMode = resolvePreferredMode(configuredMode, normalizeStorageMode(existing?.storage_mode));
-
-  let resolved = await resolveSecretStore({
-    tokenFilePath: tokenPath,
-    mode: preferredMode,
+  const persistedMode = normalizeStorageMode(existing?.storage_mode);
+  const resolutionContext: SecretStoreResolutionContext = {
+    configuredMode,
     disableKeychain,
-  });
+    persistedMode,
+    hasPersistedFileRecord:
+      persistedMode === 'file'
+      || typeof existing?.access_token === 'string'
+      || typeof existing?.refresh_token === 'string',
+  };
+
+  let resolved = await resolveSecretStoreWithExistingFileFallback(tokenPath, resolutionContext);
   const secrets: StoredTokenSecrets = {
     access_token: tokens.access_token,
     refresh_token: tokens.refresh_token,
@@ -289,7 +307,7 @@ async function writeTokensInternal(tokens: StoredTokens, tokenPath: string): Pro
       await writeTokenRecord(tokenPath, buildMetadataRecord(tokens, resolved.backend));
       return;
     } catch (error) {
-      if (configuredMode !== 'auto') {
+      if (!canReuseExistingFileRecord(resolutionContext)) {
         throw error;
       }
       resolved = await resolveSecretStore({
@@ -363,6 +381,39 @@ function resolvePreferredMode(
   }
 
   return 'auto';
+}
+
+async function resolveSecretStoreWithExistingFileFallback(
+  tokenPath: string,
+  context: SecretStoreResolutionContext,
+) {
+  const preferredMode = resolvePreferredMode(context.configuredMode, context.persistedMode);
+
+  try {
+    return await resolveSecretStore({
+      tokenFilePath: tokenPath,
+      mode: preferredMode,
+      disableKeychain: context.disableKeychain,
+    });
+  } catch (error) {
+    if (!canReuseExistingFileRecord(context)) {
+      throw error;
+    }
+
+    return resolveSecretStore({
+      tokenFilePath: tokenPath,
+      mode: 'file',
+      disableKeychain: true,
+    });
+  }
+}
+
+function canReuseExistingFileRecord(context: SecretStoreResolutionContext): boolean {
+  if (context.disableKeychain) {
+    return true;
+  }
+
+  return context.hasPersistedFileRecord;
 }
 
 function normalizeStorageMode(value: unknown): SecretStoreBackend | null {

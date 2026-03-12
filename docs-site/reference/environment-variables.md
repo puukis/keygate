@@ -88,6 +88,7 @@ Telegram:
 ## Gmail OAuth variables
 
 - `KEYGATE_GMAIL_CLIENT_ID`
+- `KEYGATE_GMAIL_CLIENT_SECRET`
 - `KEYGATE_GMAIL_AUTHORIZATION_ENDPOINT`
 - `KEYGATE_GMAIL_TOKEN_ENDPOINT`
 - `KEYGATE_GMAIL_REDIRECT_URI`
@@ -96,6 +97,25 @@ Telegram:
 Important detail:
 
 - Gmail watch defaults such as `pubsubTopic`, `pushBaseUrl`, `pushPathSecret`, `labelIds`, and `targetSessionId` live in `config.json`, not environment variables.
+
+## Token storage variables
+
+- `KEYGATE_TOKEN_STORE`
+- `KEYGATE_DISABLE_KEYCHAIN`
+
+`KEYGATE_TOKEN_STORE` controls where OAuth secrets are stored:
+
+- `auto`: prefer keychain when available, otherwise fall back to file storage
+- `keychain`: require secure keychain storage for new logins and new token stores
+- `file`: always store tokens in the local Keygate config file
+
+`KEYGATE_DISABLE_KEYCHAIN=true` forces file storage even if `KEYGATE_TOKEN_STORE=keychain`.
+
+Practical behavior:
+
+- Existing file-backed OAuth records continue to work even if `KEYGATE_TOKEN_STORE=keychain` is exported on a machine without working keychain support.
+- New logins still fail in `keychain` mode when the OS keychain or `keytar` integration is unavailable, because there is no secure backend to write into.
+- If you want portable behavior across headless shells, CI, containers, or Linux desktops without keychain support, set `KEYGATE_TOKEN_STORE=auto` or `KEYGATE_TOKEN_STORE=file`.
 
 ## Memory variables
 

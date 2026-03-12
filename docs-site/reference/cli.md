@@ -39,9 +39,25 @@ keygate auth login --provider openai-codex [--device-auth]
 keygate auth logout [--force]
 keygate auth status
 keygate gateway <open|close|status|restart>
+keygate ngrok <start|stop|status|restart|url>
 ```
 
-Use these for first-time setup, auth, the TUI, and the background gateway lifecycle.
+Use these for first-time setup, auth, the TUI, the background gateway lifecycle, and the macOS ngrok tunnel helper.
+
+Notes:
+
+- `keygate gateway` manages the Keygate server background process.
+- `keygate ngrok` manages a macOS LaunchAgent named `com.keygate.ngrok` that forwards `http://localhost:18790`.
+- `keygate ngrok url` prints only the current public URL.
+
+Examples:
+
+```bash
+keygate gateway open
+keygate ngrok start
+keygate ngrok status
+keygate ngrok url
+```
 
 ## Health, usage, and repair commands
 
@@ -103,6 +119,7 @@ These approve pending DM trust requests for external chat channels.
 ```bash
 keygate gmail login [--headless]
 keygate gmail list [--json]
+keygate gmail send --to <email> --subject <text> --body <text> [--account <id|email>] [--reply-to <messageId>] [--thread <threadId>]
 keygate gmail watch --session <id> [--account <id|email>] [--labels a,b] [--prompt-prefix text] [--disabled]
 keygate gmail update <watchId> [--session <id>] [--labels a,b] [--prompt-prefix text] [--enabled true|false]
 keygate gmail delete <watchId>
@@ -115,9 +132,12 @@ Typical flow:
 ```bash
 keygate gmail login
 keygate gmail list
+keygate gmail send --to team@example.com --subject "Status update" --body "Deployed successfully."
 keygate gmail watch --account you@example.com --session web:ops --labels INBOX,IMPORTANT
 keygate gmail test <watchId>
 ```
+
+`keygate gmail send` reports that Gmail accepted the message and returns the Gmail message id. Remote delivery to the recipient inbox can still be delayed, filtered to spam, or rejected later by the destination provider.
 
 ## Memory, skills, and plugins
 

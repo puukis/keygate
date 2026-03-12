@@ -48,7 +48,7 @@ export const gmailSendEmailTool: Tool = {
       });
       return {
         success: true,
-        output: `Email sent successfully. Message ID: ${result.messageId}${result.threadId ? `, Thread ID: ${result.threadId}` : ''}`,
+        output: `Email accepted by Gmail. Message ID: ${result.messageId}${result.threadId ? `, Thread ID: ${result.threadId}` : ''}`,
       };
     } catch (error) {
       return {

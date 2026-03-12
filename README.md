@@ -129,6 +129,30 @@ Notes:
 - This lifecycle is start/stop-on-demand only (no login/boot auto-start is configured).
 - `keygate gateway open` forces `KEYGATE_OPEN_CHAT_ON_START=false` for the managed process, so it will not auto-open a browser tab.
 
+### Ngrok Tunnel (macOS)
+
+```bash
+# Start a launchd-managed ngrok tunnel for the local Keygate web server
+keygate ngrok start
+
+# Inspect tunnel state and current public URL
+keygate ngrok status
+keygate ngrok url
+
+# Restart or stop the background tunnel
+keygate ngrok restart
+keygate ngrok stop
+```
+
+Operational notes:
+
+- `keygate ngrok` currently manages a macOS `launchd` user agent only.
+- The managed agent label is `com.keygate.ngrok`.
+- The tunnel always forwards `http://localhost:18790`.
+- The generated LaunchAgent lives at `~/Library/LaunchAgents/com.keygate.ngrok.plist`.
+- Logs are written to `~/.keygate/ngrok.log`.
+- Install and authenticate ngrok first (`ngrok config add-authtoken ...`) so the tunnel can establish successfully.
+
 ### Runtime Plugins
 
 ```bash
@@ -234,6 +258,7 @@ Safe mode uses Docker for `filesystem`, `shell`, and `sandbox` tool execution. I
 ```bash
 keygate gmail login
 keygate gmail list
+keygate gmail send --to you@example.com --subject "Status update" --body "Deployment finished successfully."
 keygate gmail watch --account you@example.com --session web:ops --labels INBOX,IMPORTANT
 keygate gmail test <watch-id>
 keygate gmail renew

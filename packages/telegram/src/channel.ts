@@ -16,6 +16,8 @@ export const pendingConfirmations = new Map<string, CallbackResolver>();
  */
 export class TelegramChannel extends BaseChannel {
   type = 'telegram' as const;
+  private currentReplyToMsgId: number;
+  private activeStreamReply: StreamReply | null = null;
 
   constructor(
     private readonly api: Api,
@@ -24,9 +26,11 @@ export class TelegramChannel extends BaseChannel {
     private readonly messageThreadId?: number,
   ) {
     super();
+    this.currentReplyToMsgId = replyToMsgId;
   }
 
   async send(content: string): Promise<void> {
+    console.log(`[TelegramChannel] send() called, content length=${content.length}`);
     const html = markdownToTelegramHtml(content);
     const chunks = chunkHtml(html || content, MAX_LEN);
 
@@ -38,7 +42,7 @@ export class TelegramChannel extends BaseChannel {
           opts['message_thread_id'] = this.messageThreadId;
         }
         if (isFirst) {
-          opts['reply_parameters'] = { message_id: this.replyToMsgId };
+          opts['reply_parameters'] = { message_id: this.currentReplyToMsgId };
           isFirst = false;
         }
         await this.api.sendMessage(this.chatId, chunk, opts as Parameters<Api['sendMessage']>[2]);
@@ -58,21 +62,37 @@ export class TelegramChannel extends BaseChannel {
   }
 
   async sendStream(stream: AsyncIterable<string>): Promise<void> {
+    console.log(`[TelegramChannel] sendStream() called`);
     const streamReply = new StreamReply(
       this.api,
       this.chatId,
-      this.replyToMsgId,
+      this.currentReplyToMsgId,
       this.messageThreadId,
     );
-    await streamReply.initialize();
+    this.activeStreamReply = streamReply;
+    const streamingEnabled = await streamReply.initialize();
 
-    let buffer = '';
-    for await (const chunk of stream) {
-      buffer += chunk;
-      await streamReply.update(buffer);
+    try {
+      let buffer = '';
+      for await (const chunk of stream) {
+        buffer += chunk;
+        if (streamingEnabled) {
+          await streamReply.update(buffer);
+        }
+      }
+
+      const finalContent = buffer || '(No response)';
+      const delivered = streamingEnabled
+        ? await streamReply.finalize(finalContent)
+        : false;
+
+      if (!delivered) {
+        console.warn('[TelegramChannel] stream reply fallback activated; sending standard message instead.');
+        await this.send(finalContent);
+      }
+    } finally {
+      this.activeStreamReply = null;
     }
-
-    await streamReply.finalize(buffer || '(No response)');
   }
 
   async requestConfirmation(prompt: string, details?: ConfirmationDetails): Promise<ConfirmationDecision> {
@@ -100,11 +120,16 @@ export class TelegramChannel extends BaseChannel {
       const opts: Record<string, unknown> = {
         parse_mode: 'HTML',
         reply_markup: keyboard,
+        reply_parameters: { message_id: this.currentReplyToMsgId },
       };
       if (this.messageThreadId !== undefined) {
         opts['message_thread_id'] = this.messageThreadId;
       }
-      await this.api.sendMessage(this.chatId, text, opts as Parameters<Api['sendMessage']>[2]);
+      const sent = await this.api.sendMessage(this.chatId, text, opts as Parameters<Api['sendMessage']>[2]);
+      this.currentReplyToMsgId = sent.message_id;
+      if (this.activeStreamReply) {
+        await this.activeStreamReply.continueBelow(sent.message_id);
+      }
     } catch {
       return 'cancel';
     }
@@ -118,7 +143,10 @@ export class TelegramChannel extends BaseChannel {
           pendingConfirmations.delete(uuid);
           resolve('cancel');
           void this.api
-            .sendMessage(this.chatId, '⏱️ Confirmation timed out.')
+            .sendMessage(this.chatId, '⏱️ Confirmation timed out.', {
+              reply_parameters: { message_id: this.currentReplyToMsgId },
+              ...(this.messageThreadId !== undefined ? { message_thread_id: this.messageThreadId } : {}),
+            } as Parameters<Api['sendMessage']>[2])
             .catch(() => {});
         }
       }, 60_000);

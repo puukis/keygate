@@ -1,10 +1,19 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const { runTuiCommand, runSkillsCommand, runDoctorCommand, runPluginsCommand, runPluginCliBridge, loadConfigFromEnv } = vi.hoisted(() => ({
+const {
+  runTuiCommand,
+  runSkillsCommand,
+  runDoctorCommand,
+  runPluginsCommand,
+  runNgrokCommand,
+  runPluginCliBridge,
+  loadConfigFromEnv,
+} = vi.hoisted(() => ({
   runTuiCommand: vi.fn(async () => undefined),
   runSkillsCommand: vi.fn(async () => undefined),
   runDoctorCommand: vi.fn(async () => undefined),
   runPluginsCommand: vi.fn(async () => undefined),
+  runNgrokCommand: vi.fn(async () => undefined),
   runPluginCliBridge: vi.fn(async () => false),
   loadConfigFromEnv: vi.fn(() => ({}) as any),
 }));
@@ -21,6 +30,9 @@ vi.mock('../commands/doctor.js', () => ({
 vi.mock('../commands/plugins.js', () => ({
   runPluginsCommand,
 }));
+vi.mock('../commands/ngrok.js', () => ({
+  runNgrokCommand,
+}));
 vi.mock('../../plugins/index.js', () => ({
   runPluginCliBridge,
 }));
@@ -36,6 +48,7 @@ describe('cli index', () => {
     runSkillsCommand.mockClear();
     runDoctorCommand.mockClear();
     runPluginsCommand.mockClear();
+    runNgrokCommand.mockClear();
     runPluginCliBridge.mockClear();
     loadConfigFromEnv.mockClear();
   });
@@ -64,6 +77,12 @@ describe('cli index', () => {
     expect(runPluginsCommand).toHaveBeenCalledTimes(1);
   });
 
+  it('routes ngrok command to runNgrokCommand', async () => {
+    const handled = await runCli(['ngrok', 'status']);
+    expect(handled).toBe(true);
+    expect(runNgrokCommand).toHaveBeenCalledTimes(1);
+  });
+
   it('prints tui command in help output', () => {
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     try {
@@ -72,6 +91,7 @@ describe('cli index', () => {
       expect(helpText).toContain('keygate tui');
       expect(helpText).toContain('keygate doctor');
       expect(helpText).toContain('keygate plugins');
+      expect(helpText).toContain('keygate ngrok');
       expect(helpText).toContain('web|discord|slack|whatsapp');
     } finally {
       consoleSpy.mockRestore();

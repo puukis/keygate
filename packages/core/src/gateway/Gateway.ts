@@ -223,6 +223,11 @@ export class Gateway extends EventEmitter<KeygateEvents> {
     if (!this.sessionWorkspacePaths.has(message.sessionId)) {
       this.sessionWorkspacePaths.set(message.sessionId, this.config.security.workspacePath);
     }
+
+    if (await this.tryHandleImmediateCommand(message)) {
+      return;
+    }
+
     const queue = this.getOrCreateQueue(message.sessionId);
     
     await queue.enqueue(async () => {
@@ -385,6 +390,11 @@ export class Gateway extends EventEmitter<KeygateEvents> {
         this.finishSessionRun(effectiveMessage.sessionId, run);
       }
     });
+  }
+
+  hasActiveRun(sessionId: string): boolean {
+    const run = this.activeRuns.get(sessionId);
+    return Boolean(run && !run.controller.signal.aborted);
   }
 
   getSkillsStatus(sessionId = 'default'): { loadedCount: number; eligibleCount: number; snapshotVersion: string } {
@@ -660,6 +670,17 @@ export class Gateway extends EventEmitter<KeygateEvents> {
       this.laneQueues.set(sessionId, queue);
     }
     return queue;
+  }
+
+  private async tryHandleImmediateCommand(message: NormalizedMessage): Promise<boolean> {
+    const session = this.getOrCreateSession(message);
+    const handled = await this.commandRouter.maybeHandleImmediate(session, message.channel, message.content);
+    if (handled) {
+      this.appendDebugEvent(message.sessionId, 'command.handled', 'Handled operator command immediately.', {
+        content: message.content,
+      });
+    }
+    return handled;
   }
 
   /**

@@ -24,6 +24,7 @@ export default defineConfig({
             { text: 'Installation', link: '/guide/installation' },
             { text: 'Architecture', link: '/guide/architecture' },
             { text: 'Web App', link: '/guide/web-app' },
+            { text: 'Ngrok Tunnel', link: '/guide/ngrok' },
             { text: 'Local Git Workspaces', link: '/guide/local-git-workspaces' },
             { text: 'Usage & Status', link: '/guide/usage-and-status' },
             { text: 'Plugins', link: '/guide/plugins' },

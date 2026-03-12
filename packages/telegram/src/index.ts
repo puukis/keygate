@@ -17,8 +17,32 @@ import { isGroupAllowed } from './group-access.js';
 import { ingestTelegramMediaAttachments } from './media.js';
 import { buildSessionKey } from './session-key.js';
 import { registerBotCommands, parseTelegramCommand } from './commands.js';
+import { createWriteStream, mkdirSync } from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 
 loadEnvironment();
+
+// ── Log file setup (stdout/stderr may be /dev/null in daemon mode) ─────────
+process.on('unhandledRejection', (reason) => {
+  console.error('[Telegram] unhandledRejection:', reason instanceof Error ? reason.stack : reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[Telegram] uncaughtException:', err.stack);
+});
+const keygateDir = path.join(os.homedir(), '.keygate');
+try { mkdirSync(keygateDir, { recursive: true }); } catch { /* ignore */ }
+const logFile = createWriteStream(path.join(keygateDir, 'telegram.log'), { flags: 'a' });
+const origLog = console.log.bind(console);
+const origWarn = console.warn.bind(console);
+const origError = console.error.bind(console);
+const writeLog = (level: string, args: unknown[]) => {
+  const line = `[${new Date().toISOString()}] [${level}] ${args.map(String).join(' ')}\n`;
+  logFile.write(line);
+};
+console.log = (...args: unknown[]) => { writeLog('INFO', args); origLog(...args); };
+console.warn = (...args: unknown[]) => { writeLog('WARN', args); origWarn(...args); };
+console.error = (...args: unknown[]) => { writeLog('ERROR', args); origError(...args); };
 
 /**
  * Start the Telegram bot.
@@ -36,6 +60,9 @@ export async function startTelegramBot(config: KeygateConfig): Promise<{ stop():
   const dedup = new UpdateDeduplicator();
 
   const bot = new Bot<Context>(token);
+
+  // Clear any stale webhook so polling works cleanly and allowed_updates is reset
+  await bot.api.deleteWebhook({ drop_pending_updates: false }).catch(() => {});
 
   // Resolve bot username for mention-gating
   let botUsername = '';
@@ -58,11 +85,23 @@ export async function startTelegramBot(config: KeygateConfig): Promise<{ stop():
       const uuid = match[1]!;
       const decision = match[2] as 'allow_once' | 'allow_always' | 'cancel';
       const resolver = pendingConfirmations.get(uuid);
+      const callbackText = decision === 'cancel'
+        ? 'Cancelled.'
+        : decision === 'allow_always'
+          ? 'Approved. Matching requests will stay allowed.'
+          : 'Approved. Continuing...';
       if (resolver) {
         pendingConfirmations.delete(uuid);
         resolver(decision);
+      } else {
+        console.warn(`[Telegram] callback_query: no pending confirmation for uuid=${uuid} (pendingCount=${pendingConfirmations.size})`);
       }
-      await ctx.answerCallbackQuery().catch(() => {});
+      await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } }).catch((e) => {
+        console.warn('[Telegram] failed to clear confirmation keyboard:', e);
+      });
+      await ctx.answerCallbackQuery({ text: resolver ? callbackText : 'This approval is no longer active.' }).catch((e) => {
+        console.error('[Telegram] answerCallbackQuery failed:', e);
+      });
     } else {
       await ctx.answerCallbackQuery().catch(() => {});
     }
@@ -175,7 +214,7 @@ export async function startTelegramBot(config: KeygateConfig): Promise<{ stop():
 
       await gateway.processMessage(normalized);
     } catch (error) {
-      console.error('Error processing Telegram message:', error);
+      console.error('[Telegram] Error processing message:', error instanceof Error ? error.stack : error);
       await ctx.reply('❌ An error occurred while processing your request.').catch(() => {});
     } finally {
       typing.stop();
@@ -185,12 +224,15 @@ export async function startTelegramBot(config: KeygateConfig): Promise<{ stop():
   // ── Start bot ─────────────────────────────────────────────────────────────
   const webhookUrl = telegramConfig.webhookUrl;
 
+  // The update types this bot needs to receive
+  const allowedUpdates = ['message', 'callback_query'] as const;
+
   if (webhookUrl) {
     // Webhook mode
     const port = telegramConfig.webhookPort ?? 8787;
     const path = telegramConfig.webhookPath ?? '/telegram/webhook';
 
-    await bot.api.setWebhook(webhookUrl + path);
+    await bot.api.setWebhook(webhookUrl + path, { allowed_updates: allowedUpdates });
 
     const { createServer } = await import('node:http');
     const { webhookCallback } = await import('grammy');
@@ -216,7 +258,11 @@ export async function startTelegramBot(config: KeygateConfig): Promise<{ stop():
     };
   } else {
     // Long polling mode (default)
-    const runner = run(bot);
+    // Explicitly specify allowed_updates so Telegram sends callback_query events
+    // even if a previous webhook session had a different configuration.
+    const runner = run(bot, {
+      runner: { fetch: { allowed_updates: allowedUpdates } },
+    });
     console.log('Telegram bot started (long polling).');
 
     return {

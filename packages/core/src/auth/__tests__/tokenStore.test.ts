@@ -142,6 +142,91 @@ describe('tokenStore', () => {
     expect(keytar.secrets.size).toBe(0);
   });
 
+  it('migrates existing file-backed tokens into keychain mode when keychain becomes available', async () => {
+    vi.stubEnv('KEYGATE_TOKEN_STORE', 'file');
+    await writeTokens({
+      access_token: 'existing-file-access',
+      refresh_token: 'existing-file-refresh',
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+    });
+
+    const keytar = createMockKeytar();
+    __setKeytarLoaderForTests(async () => keytar);
+    vi.stubEnv('KEYGATE_TOKEN_STORE', 'keychain');
+
+    const loaded = await readTokens();
+    expect(loaded?.storage_mode).toBe('keychain');
+    expect(loaded?.access_token).toBe('existing-file-access');
+    expect(loaded?.refresh_token).toBe('existing-file-refresh');
+
+    const rawRecord = await readTokenRecord();
+    expect(rawRecord?.storage_mode).toBe('keychain');
+    expect(rawRecord?.access_token).toBeUndefined();
+    expect(rawRecord?.refresh_token).toBeUndefined();
+    expect(keytar.secrets.size).toBe(2);
+  });
+
+  it('reads existing file-backed tokens when keychain mode is configured but unavailable', async () => {
+    vi.stubEnv('KEYGATE_TOKEN_STORE', 'file');
+    await writeTokens({
+      access_token: 'existing-file-access',
+      refresh_token: 'existing-file-refresh',
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+    });
+
+    __setKeytarLoaderForTests(async () => null);
+    vi.stubEnv('KEYGATE_TOKEN_STORE', 'keychain');
+
+    const loaded = await readTokens();
+    expect(loaded?.storage_mode).toBe('file');
+    expect(loaded?.access_token).toBe('existing-file-access');
+    expect(loaded?.refresh_token).toBe('existing-file-refresh');
+  });
+
+  it('updates existing file-backed tokens when keychain mode is configured but unavailable', async () => {
+    vi.stubEnv('KEYGATE_TOKEN_STORE', 'file');
+    await writeTokens({
+      access_token: 'existing-file-access',
+      refresh_token: 'existing-file-refresh',
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+    });
+
+    __setKeytarLoaderForTests(async () => null);
+    vi.stubEnv('KEYGATE_TOKEN_STORE', 'keychain');
+
+    await writeTokens({
+      access_token: 'updated-file-access',
+      refresh_token: 'updated-file-refresh',
+      expires_at: Math.floor(Date.now() / 1000) + 7200,
+    });
+
+    const rawRecord = await readTokenRecord();
+    expect(rawRecord?.storage_mode).toBe('file');
+    expect(rawRecord?.access_token).toBe('updated-file-access');
+    expect(rawRecord?.refresh_token).toBe('updated-file-refresh');
+  });
+
+  it('reads legacy inline tokens when keychain mode is configured but unavailable', async () => {
+    await writeTokenRecord({
+      access_token: 'legacy-file-access',
+      refresh_token: 'legacy-file-refresh',
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+    });
+
+    __setKeytarLoaderForTests(async () => null);
+    vi.stubEnv('KEYGATE_TOKEN_STORE', 'keychain');
+
+    const loaded = await readTokens();
+    expect(loaded?.storage_mode).toBe('file');
+    expect(loaded?.access_token).toBe('legacy-file-access');
+    expect(loaded?.refresh_token).toBe('legacy-file-refresh');
+
+    const rawRecord = await readTokenRecord();
+    expect(rawRecord?.storage_mode).toBe('file');
+    expect(rawRecord?.access_token).toBe('legacy-file-access');
+    expect(rawRecord?.refresh_token).toBe('legacy-file-refresh');
+  });
+
   it('deletes tokens', async () => {
     await writeTokens({
       access_token: 'to-delete',

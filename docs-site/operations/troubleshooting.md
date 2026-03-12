@@ -98,6 +98,9 @@ Actions:
 - check `keygate pairing pending telegram` if DM policy is `pairing`
 - approve pending pairing codes with `keygate pairing approve telegram <code>`
 - restart with `keygate channels telegram restart` after config changes
+- if you are running from a repo checkout, restart also refreshes the local `@puukis/core` build so Telegram does not keep using stale core logic
+- if approval buttons spin and then appear stuck, update/restart the Telegram runtime and retry; current builds acknowledge the tap and clear the inline keyboard immediately
+- if `/stop` seems delayed, update/restart the Telegram runtime; current builds cancel the active Telegram turn immediately instead of queueing the stop command behind it
 
 ## 5) Scheduler job not running
 
@@ -126,6 +129,23 @@ Actions:
 - run `pnpm docs:build`
 - fix reported dead links
 - verify `base` path for GitHub Pages
+
+## 7) Ngrok tunnel is not coming up
+
+Checks:
+
+- is `ngrok` installed locally?
+- has ngrok been authenticated with an authtoken?
+- is Keygate listening on `localhost:18790`?
+- does `launchctl print gui/$(id -u)/com.keygate.ngrok` show a crash or restart loop?
+
+Actions:
+
+- run `keygate gateway open`
+- run `keygate ngrok start`
+- inspect `keygate ngrok status`
+- tail `~/.keygate/ngrok.log`
+- query `http://127.0.0.1:4040/api/tunnels` to verify the public URL
 
 ## Escalation template
 

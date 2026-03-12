@@ -1,4 +1,4 @@
-import { createVerify } from 'node:crypto';
+import { createVerify, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { Buffer } from 'node:buffer';
 import type { KeygateConfig } from '../types.js';
@@ -568,22 +568,34 @@ export class GmailAutomationService {
     }
 
     const accessToken = await this.getAccountAccessToken(account);
-
+    const fromHeader = requireSingleLineHeaderValue('From', account.email);
+    const toHeader = requireSingleLineHeaderValue('To', options.to);
+    const subjectHeader = encodeSubjectHeader(options.subject);
+    const normalizedBody = normalizeEmailBodyInput(options.body);
+    const boundary = `keygate_${randomUUID().replace(/-/g, '')}`;
     const headers: string[] = [
-      `From: ${account.email}`,
-      `To: ${options.to}`,
-      `Subject: ${options.subject}`,
+      `From: ${fromHeader}`,
+      `To: ${toHeader}`,
+      `Subject: ${subjectHeader}`,
       'MIME-Version: 1.0',
-      'Content-Type: text/plain; charset=utf-8',
-      'Content-Transfer-Encoding: 7bit',
+      `Content-Type: multipart/alternative; boundary="${boundary}"`,
     ];
 
     if (options.replyToMessageId) {
-      headers.push(`In-Reply-To: <${options.replyToMessageId}>`);
-      headers.push(`References: <${options.replyToMessageId}>`);
+      const messageId = requireSingleLineHeaderValue('Reply-To message id', options.replyToMessageId);
+      headers.push(`In-Reply-To: <${messageId}>`);
+      headers.push(`References: <${messageId}>`);
     }
 
-    const raw = [...headers, '', options.body].join('\r\n');
+    const parts = [
+      `--${boundary}`,
+      ...buildMimeTextPart('text/plain', normalizedBody),
+      `--${boundary}`,
+      ...buildMimeTextPart('text/html', renderEmailHtml(normalizedBody)),
+      `--${boundary}--`,
+    ];
+
+    const raw = [...headers, '', ...parts].join('\r\n');
     const encoded = Buffer.from(raw).toString('base64')
       .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 
@@ -793,6 +805,94 @@ export class GmailAutomationService {
     };
     return certs;
   }
+}
+
+function requireSingleLineHeaderValue(label: string, value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error(`${label} is required.`);
+  }
+  if (/[\r\n]/.test(trimmed)) {
+    throw new Error(`${label} must be a single line.`);
+  }
+  return trimmed;
+}
+
+function encodeSubjectHeader(value: string): string {
+  const normalized = requireSingleLineHeaderValue('Subject', value);
+  return isPureAscii(normalized)
+    ? normalized
+    : `=?UTF-8?B?${Buffer.from(normalized, 'utf8').toString('base64')}?=`;
+}
+
+function isPureAscii(value: string): boolean {
+  return /^[\x20-\x7E]*$/.test(value);
+}
+
+function wrapBase64(value: string, width = 76): string {
+  if (!value) {
+    return '';
+  }
+
+  const chunks: string[] = [];
+  for (let index = 0; index < value.length; index += width) {
+    chunks.push(value.slice(index, index + width));
+  }
+  return chunks.join('\r\n');
+}
+
+function buildMimeTextPart(contentType: 'text/plain' | 'text/html', value: string): string[] {
+  const normalized = normalizeMimeBodyLines(value);
+  const headers = [`Content-Type: ${contentType}; charset="UTF-8"`];
+
+  if (isSevenBitClean(normalized)) {
+    return [...headers, '', normalized];
+  }
+
+  return [
+    ...headers,
+    'Content-Transfer-Encoding: base64',
+    '',
+    wrapBase64(Buffer.from(normalized, 'utf8').toString('base64')),
+  ];
+}
+
+function normalizeMimeBodyLines(value: string): string {
+  return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n/g, '\r\n');
+}
+
+function isSevenBitClean(value: string): boolean {
+  return /^[\x09\x0A\x0D\x20-\x7E]*$/.test(value);
+}
+
+function normalizeEmailBodyInput(value: string): string {
+  const trimmed = value.length === 0 ? value : value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  if (trimmed.includes('\n')) {
+    return trimmed;
+  }
+
+  // Shell-driven sends often pass literal escape sequences in a single-line
+  // argument. Interpret the common ones so the delivered email keeps its
+  // intended paragraph structure.
+  return trimmed
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\n')
+    .replace(/\\t/g, '\t');
+}
+
+function renderEmailHtml(value: string): string {
+  const html = escapeHtml(value)
+    .replace(/\n{2,}/g, '</p><p>')
+    .replace(/\n/g, '<br>');
+  return `<div dir="ltr"><p>${html}</p></div>`;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 function sanitizeAccountId(email: string): string {

@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { parseChannelAction, parseChannelName, runChannelsCommand } from '../commands/channels.js';
 import type { ParsedArgs } from '../argv.js';
 
@@ -227,5 +227,61 @@ describe('channels command', () => {
         pathExists: () => false,
       })
     ).rejects.toThrow('WhatsApp is not linked');
+  });
+
+  it('rebuilds core before starting the telegram source runtime', async () => {
+    const files = new Map<string, string>();
+    const existingPaths = new Set<string>([
+      '/repo/pnpm-workspace.yaml',
+      '/repo/packages/core/package.json',
+      '/repo/packages/telegram/src/index.ts',
+    ]);
+    const livePids = new Set<number>();
+    const runCommand = vi.fn(() => ({
+      status: 0,
+      stdout: '',
+      stderr: '',
+      error: undefined,
+    }));
+
+    await runChannelsCommand(makeArgs('telegram', 'start'), {
+      cwd: '/repo',
+      configDir: '/tmp/test-config',
+      env: { TELEGRAM_BOT_TOKEN: 'telegram-token' } as NodeJS.ProcessEnv,
+      log: () => undefined,
+      hasCommand: (command: string) => command === 'pnpm',
+      pathExists: (targetPath: string) => existingPaths.has(targetPath) || files.has(targetPath),
+      readFile: async (targetPath: string) => {
+        const value = files.get(targetPath);
+        if (value === undefined) {
+          throw new Error(`ENOENT: ${targetPath}`);
+        }
+        return value;
+      },
+      writeFile: async (targetPath: string, content: string) => {
+        files.set(targetPath, content);
+        existingPaths.add(targetPath);
+      },
+      mkdir: async () => undefined,
+      unlink: async (targetPath: string) => {
+        files.delete(targetPath);
+        existingPaths.delete(targetPath);
+      },
+      runCommand,
+      spawnDetached: () => {
+        livePids.add(7890);
+        return 7890;
+      },
+      kill: makeKillStub(livePids),
+      now: () => new Date('2026-03-11T22:00:00.000Z'),
+      runGatewayAction: async () => {
+        throw new Error('unexpected gateway call');
+      },
+    });
+
+    expect(runCommand).toHaveBeenCalledWith('pnpm', ['--filter', '@puukis/core', 'build'], {
+      cwd: '/repo',
+      env: { TELEGRAM_BOT_TOKEN: 'telegram-token' },
+    });
   });
 });

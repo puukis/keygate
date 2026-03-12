@@ -36,6 +36,13 @@ interface LaunchSpec {
   cwd: string;
 }
 
+interface CommandResult {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  error?: Error;
+}
+
 interface ChannelCommandDeps {
   configDir: string;
   cwd: string;
@@ -51,6 +58,7 @@ interface ChannelCommandDeps {
   spawnDetached: (spec: LaunchSpec) => number;
   kill: (pid: number, signal?: NodeJS.Signals | number) => void;
   runGatewayAction: (action: GatewayAction) => Promise<void>;
+  runCommand: (command: string, args: string[], options?: { cwd?: string; env?: NodeJS.ProcessEnv }) => CommandResult;
   hasCommand: (command: string) => boolean;
   now: () => Date;
 }
@@ -161,6 +169,19 @@ function createChannelDeps(overrides?: Partial<ChannelCommandDeps>): ChannelComm
         positional: ['gateway', action],
         flags: {},
       });
+    },
+    runCommand: (command: string, args: string[], options?: { cwd?: string; env?: NodeJS.ProcessEnv }) => {
+      const result = spawnSync(command, args, {
+        cwd: options?.cwd ?? process.cwd(),
+        env: options?.env ?? process.env,
+        encoding: 'utf8',
+      });
+      return {
+        status: result.status,
+        stdout: result.stdout ?? '',
+        stderr: result.stderr ?? '',
+        error: result.error,
+      };
     },
     hasCommand: (command: string) => {
       const args = command === 'pnpm' ? ['--version'] : ['--help'];
@@ -1274,6 +1295,7 @@ async function startTelegramChannel(deps: ChannelCommandDeps): Promise<void> {
     throw new Error('Telegram bot token is missing. Configure TELEGRAM_BOT_TOKEN before starting telegram channel.');
   }
 
+  await prepareTelegramRuntime(deps);
   const launchSpec = resolveTelegramLaunchSpec(deps);
   const pid = deps.spawnDetached(launchSpec);
 
@@ -1394,6 +1416,34 @@ function resolveTelegramLaunchSpec(deps: ChannelCommandDeps): LaunchSpec {
   throw new Error(
     'Unable to resolve telegram channel runtime. Build @puukis/telegram (`pnpm --filter @puukis/telegram build`) or set KEYGATE_TELEGRAM_START_COMMAND.'
   );
+}
+
+async function prepareTelegramRuntime(deps: ChannelCommandDeps): Promise<void> {
+  if (deps.env['KEYGATE_TELEGRAM_START_COMMAND']?.trim()) {
+    return;
+  }
+
+  const repoRoot = resolveRepoRoot(deps);
+  if (!repoRoot || !deps.hasCommand('pnpm')) {
+    return;
+  }
+
+  const corePackagePath = path.join(repoRoot, 'packages', 'core', 'package.json');
+  if (!deps.pathExists(corePackagePath)) {
+    return;
+  }
+
+  deps.log('Refreshing @puukis/core build for Telegram runtime...');
+  const result = deps.runCommand('pnpm', ['--filter', '@puukis/core', 'build'], {
+    cwd: repoRoot,
+    env: deps.env,
+  });
+  if (result.error || result.status !== 0) {
+    const detail = result.error
+      ? result.error.message
+      : result.stderr.trim() || result.stdout.trim() || `exit status ${result.status}`;
+    throw new Error(`Failed to build @puukis/core before starting telegram channel: ${detail}`);
+  }
 }
 
 function resolveTelegramLaunchCommand(deps: ChannelCommandDeps): string {

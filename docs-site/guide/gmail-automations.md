@@ -2,6 +2,8 @@
 
 Keygate can watch Gmail mailboxes and deliver matching events into normal session threads.
 
+It can also send one-off emails through the authenticated Gmail account.
+
 ## What Gmail automation includes
 
 - Google OAuth login
@@ -54,6 +56,36 @@ keygate gmail login --headless
 keygate gmail list
 keygate gmail list --json
 ```
+
+### Send an email
+
+```bash
+keygate gmail send \
+  --to recipient@example.com \
+  --subject "Status update" \
+  --body "Deployment finished successfully."
+```
+
+Optional flags:
+
+- `--account <id|email>` sends from a specific authenticated Gmail account when multiple accounts are configured
+- `--reply-to <messageId>` adds `In-Reply-To` and `References` headers for threaded replies
+- `--thread <threadId>` asks Gmail to attach the outgoing message to an existing Gmail thread
+
+What the result means:
+
+- Keygate reports success when Gmail accepts the message and returns a Gmail message id
+- that confirms the mail was handed to Gmail and placed in the sender's `SENT` mailbox
+- it does not guarantee the destination provider placed it in the recipient inbox
+- if the recipient does not see the email, check spam/junk on the destination mailbox and watch for later delivery-status notifications in the sender mailbox
+
+Composer behavior:
+
+- Keygate now sends multipart email with both plain-text and HTML parts
+- pure ASCII bodies are sent as normal 7bit MIME parts instead of base64 blobs, which makes outgoing mail look closer to a message composed in Gmail itself
+- single-line CLI bodies that contain literal `\\n` sequences are normalized into real line breaks before send
+- this matches Gmail compose behavior more closely and avoids mails arriving as one long line with backslash characters
+- agent-driven sends prefer the native Gmail send tool first and only fall back to shell-based `keygate gmail send` when needed
 
 ### Create a watch
 
@@ -126,3 +158,4 @@ That means Gmail-triggered work enters the same session history, tool flow, and 
 - Gmail `watch` is renewed automatically before expiration.
 - The doctor command reports account count, watch count, and renewal pressure.
 - When push notifications are duplicated, Keygate drops them using its Gmail dedupe store.
+- Outgoing email is composed as RFC-compliant UTF-8 MIME so non-ASCII subjects and bodies are encoded safely for delivery.

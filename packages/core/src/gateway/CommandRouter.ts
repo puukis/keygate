@@ -9,6 +9,32 @@ const KNOWN_REASONING = new Set(['low', 'medium', 'high', 'xhigh']);
 export class CommandRouter {
   constructor(private readonly gateway: Gateway) {}
 
+  async maybeHandleImmediate(session: Session, channel: Channel, rawContent: string): Promise<boolean> {
+    const content = rawContent.trim();
+    if (!content.startsWith('/')) {
+      return false;
+    }
+
+    const [commandToken] = content.slice(1).split(/\s+/g).filter(Boolean);
+    const command = (commandToken ?? '').toLowerCase();
+
+    if (command !== 'stop') {
+      return false;
+    }
+
+    const hadActiveRun = this.gateway.hasActiveRun(session.id);
+    this.gateway.cancelSessionRun(session.id, 'user');
+    await this.sendCommandReply(
+      session,
+      channel,
+      hadActiveRun
+        ? 'Stopped the active run for this session.'
+        : 'No active run is currently running for this session.',
+      'command.stop',
+    );
+    return true;
+  }
+
   async maybeHandle(session: Session, channel: Channel, rawContent: string): Promise<boolean> {
     const content = rawContent.trim();
     if (!content.startsWith('/')) {
@@ -42,9 +68,7 @@ export class CommandRouter {
         await this.sendCommandReply(session, channel, this.handleDebugCommand(session.id, args), 'command.debug');
         return true;
       case 'stop':
-        this.gateway.cancelSessionRun(session.id, 'user');
-        await this.sendCommandReply(session, channel, 'Stopped the active run for this session.', 'command.stop');
-        return true;
+        return this.maybeHandleImmediate(session, channel, rawContent);
       case 'new':
         this.gateway.clearSession(session.id);
         await this.sendCommandReply(session, channel, 'Started a fresh session in the current thread.', 'command.new');
