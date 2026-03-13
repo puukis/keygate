@@ -22,6 +22,7 @@ export type SkillEligibilityReason =
   | 'missing_config';
 export type SkillCommandDispatch = 'tool';
 export type SkillCommandArgMode = 'raw';
+export type RemoteAuthMode = 'off' | 'token';
 
 // ==================== Messages ====================
 
@@ -254,8 +255,16 @@ export interface KeygateConfig {
     };
   };
   server: {
+    host: string;
     port: number;
     apiToken: string;
+  };
+  remote: {
+    authMode: RemoteAuthMode;
+    tailscale: {
+      resetOnStop: boolean;
+    };
+    ssh: RemoteSshConfig;
   };
   browser: {
     domainPolicy: BrowserDomainPolicy;
@@ -384,6 +393,15 @@ export interface PluginEntryConfig {
   enabled?: boolean;
   env?: Record<string, string>;
   config?: Record<string, unknown>;
+}
+
+export interface RemoteSshConfig {
+  host?: string;
+  user?: string;
+  port: number;
+  localPort: number;
+  remotePort: number;
+  identityFile?: string;
 }
 
 export interface SkillMetadataKeygate {

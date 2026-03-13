@@ -4,6 +4,7 @@ import { UsageService } from '../../usage/index.js';
 import { SandboxManager } from '../../sandbox/index.js';
 import { NodeStore } from '../../nodes/index.js';
 import { GmailAutomationService } from '../../gmail/index.js';
+import { getRemoteStatusSummary } from './remote.js';
 import type { ParsedArgs } from '../argv.js';
 
 export async function runStatusCommand(args: ParsedArgs): Promise<void> {
@@ -22,11 +23,17 @@ export async function runStatusCommand(args: ParsedArgs): Promise<void> {
       nodes.listNodes(),
       gmail.getHealth(),
     ]);
+    const remote = await getRemoteStatusSummary(config);
 
     const payload = {
       mode: config.security.mode,
       spicyEnabled: config.security.spicyModeEnabled,
       spicyObedienceEnabled: config.security.spicyMaxObedienceEnabled === true,
+      server: {
+        host: config.server.host,
+        port: config.server.port,
+      },
+      remote,
       llm: session?.modelOverride ?? {
         provider: config.llm.provider,
         model: config.llm.model,
@@ -53,6 +60,11 @@ export async function runStatusCommand(args: ParsedArgs): Promise<void> {
       `Mode: ${payload.mode}`,
       `Spicy enabled: ${payload.spicyEnabled ? 'yes' : 'no'}`,
       `Spicy obedience: ${payload.spicyObedienceEnabled ? 'yes' : 'no'}`,
+      `Bind host: ${payload.server.host}:${payload.server.port}`,
+      `Remote auth: ${payload.remote.authMode}`,
+      `Tailscale remote: ${payload.remote.tailscale.state} (${payload.remote.tailscale.detail})`,
+      `SSH tunnel: ${payload.remote.ssh.state} (${payload.remote.ssh.detail})`,
+      `SSH local URL: ${payload.remote.ssh.localUrl}`,
       `Provider: ${payload.llm.provider}`,
       `Model: ${payload.llm.model}`,
       `Reasoning: ${payload.llm.reasoningEffort ?? 'default'}`,

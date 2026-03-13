@@ -31,7 +31,7 @@ docker compose --env-file .env.docker up --build
 
 Then open:
 
-- `http://localhost:18790`
+- `http://127.0.0.1:18790`
 
 ## Codex OAuth in Container
 

@@ -37,7 +37,7 @@ const SUCCESS = '\x1b[38;2;47;191;113m';
 const WARN = '\x1b[38;2;255;176;32m';
 const MUTED = '\x1b[38;2;139;127;119m';
 
-const DEFAULT_CHAT_URL = 'http://localhost:18790';
+const DEFAULT_CHAT_URL = 'http://127.0.0.1:18790';
 const DEFAULT_ALLOWED_BINARIES = ['git', 'ls', 'npm', 'cat', 'node', 'python3'];
 
 export async function runOnboardingCommand(args: ParsedArgs): Promise<void> {

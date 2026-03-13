@@ -1,4 +1,4 @@
-import { createServer } from 'node:http';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
@@ -320,6 +320,8 @@ const BROWSER_RETENTION_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const IMAGE_UPLOAD_RETENTION_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const IMAGE_UPLOAD_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const WEBHOOK_MAX_BODY_BYTES = 2 * 1024 * 1024;
+const OPERATOR_SESSION_COOKIE = 'keygate_operator_session';
+const OPERATOR_SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60;
 
 /**
  * WebSocket Channel adapter
@@ -503,6 +505,9 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
   });
   const routingService = new RoutingService(new RoutingRuleStore(), config.security.workspacePath);
   const nodeService = new NodeService();
+  const operatorSessions = new Map<string, { createdAt: number }>();
+  const operatorAuthEnabled = config.remote.authMode === 'token';
+  const protectedApiPrefixes = ['/api/browser/', '/api/uploads/'];
 
   const server = createServer((req, res) => {
     // CORS headers
@@ -516,31 +521,94 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
       return;
     }
 
-    const url = new URL(req.url ?? '/', 'http://localhost');
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+    const isProtectedApi =
+      url.pathname === '/api/status' ||
+      protectedApiPrefixes.some((prefix) => url.pathname === prefix.slice(0, -1) || url.pathname.startsWith(prefix));
+
+    if (url.pathname === '/api/auth/session') {
+      if (req.method === 'POST') {
+        if (!operatorAuthEnabled) {
+          clearOperatorSessionCookie(res, req);
+          res.writeHead(204);
+          res.end();
+          return;
+        }
+
+        if (!config.server.apiToken.trim()) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Operator token auth is enabled, but no server.apiToken is configured.' }));
+          return;
+        }
+
+        if (!requestMatchesBearerToken(req, config.server.apiToken)) {
+          writeUnauthorizedJson(res);
+          return;
+        }
+
+        const sessionToken = crypto.randomUUID();
+        operatorSessions.set(sessionToken, { createdAt: Date.now() });
+        res.setHeader('Set-Cookie', buildOperatorSessionCookie(sessionToken, req));
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+
+      if (req.method === 'DELETE') {
+        const sessionToken = getOperatorSessionToken(req);
+        if (sessionToken) {
+          operatorSessions.delete(sessionToken);
+        }
+        clearOperatorSessionCookie(res, req);
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method Not Allowed' }));
+      return;
+    }
+
+    if (isProtectedApi && operatorAuthEnabled && !isAuthorizedOperatorRequest(req, config, operatorSessions)) {
+      writeUnauthorizedJson(res);
+      return;
+    }
 
     // Simple REST endpoints
     if (url.pathname === '/api/status') {
-      void Promise.allSettled([
-        gateway.sandbox.getHealth(),
-        nodeService.listNodes(),
-        gmailService.getHealth(),
-      ]).then((results) => {
-        const sandboxHealth = results[0]?.status === 'fulfilled' ? results[0].value : undefined;
-        const nodes = results[1]?.status === 'fulfilled' ? results[1].value : undefined;
-        const gmailHealth = results[2]?.status === 'fulfilled' ? results[2].value : undefined;
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(buildStatusPayload(gateway, config, {
-          sandboxHealth,
-          nodes,
-          gmailHealth,
-        })));
-      }).catch((error) => {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-          status: 'error',
-          error: error instanceof Error ? error.message : 'Failed to build status payload',
-        }));
-      });
+      void (async () => {
+        try {
+          const results = await Promise.allSettled([
+            gateway.sandbox.getHealth(),
+            nodeService.listNodes(),
+            gmailService.getHealth(),
+          ]);
+          if (res.writableEnded || res.destroyed) {
+            return;
+          }
+
+          const sandboxHealth = results[0]?.status === 'fulfilled' ? results[0].value : undefined;
+          const nodes = results[1]?.status === 'fulfilled' ? results[1].value : undefined;
+          const gmailHealth = results[2]?.status === 'fulfilled' ? results[2].value : undefined;
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(buildStatusPayload(gateway, config, {
+            sandboxHealth,
+            nodes,
+            gmailHealth,
+          })));
+        } catch (error) {
+          if (res.writableEnded || res.destroyed) {
+            return;
+          }
+
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            status: 'error',
+            error: error instanceof Error ? error.message : 'Failed to build status payload',
+          }));
+        }
+      })();
       return;
     }
 
@@ -589,8 +657,32 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
     res.end('Not Found');
   });
 
-  const wss = new WebSocketServer({ server });
+  const wss = new WebSocketServer({ noServer: true });
   const channels = new Map<string, WebSocketChannel>();
+
+  server.on('upgrade', (req, socket, head) => {
+    try {
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+      if (url.pathname !== '/ws') {
+        socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+
+      if (operatorAuthEnabled && !isAuthorizedOperatorRequest(req, config, operatorSessions)) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        wss.emit('connection', ws, req);
+      });
+    } catch {
+      socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
+      socket.destroy();
+    }
+  });
 
   wss.on('connection', (ws) => {
     const sessionId = crypto.randomUUID();
@@ -2560,8 +2652,8 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
     broadcast(wss, { type: 'debug_event', ...event });
   });
 
-  server.listen(config.server.port, () => {
-    console.log(`🌐 Keygate Web Server running on http://localhost:${config.server.port}`);
+  server.listen(config.server.port, config.server.host, () => {
+    console.log(`🌐 Keygate Web Server running on http://${config.server.host}:${config.server.port}`);
 
     if (options.onListening) {
       void Promise.resolve(options.onListening()).catch((error) => {
@@ -2573,6 +2665,7 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
   server.on('close', () => {
     clearInterval(browserCleanupInterval);
     clearInterval(uploadCleanupInterval);
+    operatorSessions.clear();
     gmailService.stop();
   });
 
@@ -2592,6 +2685,120 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
       });
     },
   };
+}
+
+function isAuthorizedOperatorRequest(
+  req: IncomingMessage,
+  config: KeygateConfig,
+  operatorSessions: Map<string, { createdAt: number }>
+): boolean {
+  if (config.remote.authMode !== 'token') {
+    return true;
+  }
+
+  const expectedToken = config.server.apiToken.trim();
+  if (!expectedToken) {
+    return false;
+  }
+
+  if (requestMatchesBearerToken(req, expectedToken)) {
+    return true;
+  }
+
+  const sessionToken = getOperatorSessionToken(req);
+  if (!sessionToken) {
+    return false;
+  }
+
+  return operatorSessions.has(sessionToken);
+}
+
+function requestMatchesBearerToken(req: IncomingMessage, expectedToken: string): boolean {
+  const header = typeof req.headers['authorization'] === 'string' ? req.headers['authorization'] : '';
+  const token = header.startsWith('Bearer ') ? header.slice('Bearer '.length).trim() : '';
+  return token.length > 0 && token === expectedToken.trim();
+}
+
+function getOperatorSessionToken(req: IncomingMessage): string | null {
+  const cookies = parseCookieHeader(req.headers['cookie']);
+  const token = cookies[OPERATOR_SESSION_COOKIE];
+  return typeof token === 'string' && token.trim().length > 0 ? token : null;
+}
+
+function parseCookieHeader(header: string | undefined): Record<string, string> {
+  if (!header) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    header
+      .split(';')
+      .map((segment) => segment.trim())
+      .filter((segment) => segment.length > 0)
+      .map((segment) => {
+        const separatorIndex = segment.indexOf('=');
+        if (separatorIndex < 0) {
+          return [segment, ''];
+        }
+        const key = segment.slice(0, separatorIndex).trim();
+        const value = segment.slice(separatorIndex + 1).trim();
+        return [key, decodeURIComponentSafe(value)];
+      })
+  );
+}
+
+function decodeURIComponentSafe(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function buildOperatorSessionCookie(token: string, req: IncomingMessage): string {
+  const parts = [
+    `${OPERATOR_SESSION_COOKIE}=${encodeURIComponent(token)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${OPERATOR_SESSION_MAX_AGE_SECONDS}`,
+  ];
+
+  if (isSecureRequest(req)) {
+    parts.push('Secure');
+  }
+
+  return parts.join('; ');
+}
+
+function clearOperatorSessionCookie(res: ServerResponse, req: IncomingMessage): void {
+  const parts = [
+    `${OPERATOR_SESSION_COOKIE}=`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    'Max-Age=0',
+  ];
+
+  if (isSecureRequest(req)) {
+    parts.push('Secure');
+  }
+
+  res.setHeader('Set-Cookie', parts.join('; '));
+}
+
+function isSecureRequest(req: IncomingMessage): boolean {
+  const forwardedProto = req.headers['x-forwarded-proto'];
+  if (typeof forwardedProto === 'string' && forwardedProto.toLowerCase().includes('https')) {
+    return true;
+  }
+
+  return Boolean((req.socket as { encrypted?: boolean }).encrypted);
+}
+
+function writeUnauthorizedJson(res: ServerResponse): void {
+  res.writeHead(401, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: 'Unauthorized' }));
 }
 
 function broadcast(wss: WebSocketServer, data: object): void {
@@ -2633,6 +2840,9 @@ export function buildStatusPayload(
     mode: gateway.getSecurityMode(),
     spicyEnabled: gateway.getSpicyModeEnabled(),
     spicyObedienceEnabled: gateway.getSpicyMaxObedienceEnabled(),
+    remote: {
+      authMode: config.remote?.authMode ?? 'off',
+    },
     llm: gateway.getLLMState(),
     discord: buildDiscordConfigView(config),
     slack: buildSlackConfigView(config),
@@ -2688,6 +2898,9 @@ export function buildConnectedPayload(
     mode: gateway.getSecurityMode(),
     spicyEnabled: gateway.getSpicyModeEnabled(),
     spicyObedienceEnabled: gateway.getSpicyMaxObedienceEnabled(),
+    remote: {
+      authMode: config.remote?.authMode ?? 'off',
+    },
     llm: llmState,
     discord: buildDiscordConfigView(config),
     slack: buildSlackConfigView(config),

@@ -184,6 +184,20 @@ describe('loadConfigFromEnv', () => {
   it('applies default browser config values when env is unset', () => {
     const config = loadConfigFromEnv();
 
+    expect(config.server.host).toBe('127.0.0.1');
+    expect(config.server.port).toBe(18790);
+    expect(config.remote).toEqual({
+      authMode: 'off',
+      tailscale: { resetOnStop: false },
+      ssh: {
+        host: undefined,
+        user: undefined,
+        port: 22,
+        localPort: 28790,
+        remotePort: 18790,
+        identityFile: undefined,
+      },
+    });
     expect(config.browser.domainPolicy).toBe('none');
     expect(config.browser.domainAllowlist).toEqual([]);
     expect(config.browser.domainBlocklist).toEqual([]);
@@ -269,6 +283,75 @@ describe('loadConfigFromEnv', () => {
     expect(config.skills?.allowBundled).toEqual(['repo-triage']);
     expect(config.skills?.install.nodeManager).toBe('pnpm');
     expect(config.skills?.entries['repo-triage']?.env?.['TEST_ENV']).toBe('1');
+  });
+
+  it('reads persisted server and remote config from config.json', async () => {
+    const configDir = path.dirname(getKeygateFilePath());
+    await fs.mkdir(configDir, { recursive: true });
+    await fs.writeFile(
+      path.join(configDir, 'config.json'),
+      JSON.stringify({
+        server: {
+          host: '127.0.0.2',
+          port: 28790,
+          apiToken: 'persisted-token',
+        },
+        remote: {
+          authMode: 'token',
+          tailscale: {
+            resetOnStop: true,
+          },
+          ssh: {
+            host: 'gateway.example',
+            user: 'ops',
+            port: 2222,
+            localPort: 30000,
+            remotePort: 28790,
+            identityFile: '~/.ssh/keygate',
+          },
+        },
+      }),
+      'utf8',
+    );
+
+    const config = loadConfigFromEnv();
+    expect(config.server).toEqual({
+      host: '127.0.0.2',
+      port: 28790,
+      apiToken: 'persisted-token',
+    });
+    expect(config.remote).toEqual({
+      authMode: 'token',
+      tailscale: { resetOnStop: true },
+      ssh: {
+        host: 'gateway.example',
+        user: 'ops',
+        port: 2222,
+        localPort: 30000,
+        remotePort: 28790,
+        identityFile: '~/.ssh/keygate',
+      },
+    });
+  });
+
+  it('lets KEYGATE_SERVER_HOST override the persisted bind host', async () => {
+    const configDir = path.dirname(getKeygateFilePath());
+    await fs.mkdir(configDir, { recursive: true });
+    await fs.writeFile(
+      path.join(configDir, 'config.json'),
+      JSON.stringify({
+        server: {
+          host: '127.0.0.2',
+          apiToken: 'persisted-token',
+        },
+      }),
+      'utf8',
+    );
+    vi.stubEnv('KEYGATE_SERVER_HOST', '0.0.0.0');
+
+    const config = loadConfigFromEnv();
+    expect(config.server.host).toBe('0.0.0.0');
+    expect(config.server.apiToken).toBe('persisted-token');
   });
 
   it('loads default whatsapp config when config.json omits it', () => {

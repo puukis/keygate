@@ -2,7 +2,14 @@
 
 Keygate can manage a persistent ngrok tunnel for the local web app on macOS.
 
-This is useful when you need a public HTTPS URL that forwards into the local Keygate server on port `18790`.
+Use this when you need a public HTTPS URL.
+
+For routine operator access, prefer:
+
+- [/guide/tailscale-remote](/guide/tailscale-remote) for private tailnet access
+- [/guide/ssh-tunnels](/guide/ssh-tunnels) for local SSH forwards
+
+This guide covers the public-tunnel helper path only.
 
 ## What the command manages
 
@@ -10,7 +17,7 @@ When you run `keygate ngrok start`, Keygate writes and manages a user LaunchAgen
 
 - LaunchAgent label: `com.keygate.ngrok`
 - LaunchAgent path: `~/Library/LaunchAgents/com.keygate.ngrok.plist`
-- Forward target: `http://localhost:18790`
+- Forward target: `http://127.0.0.1:18790`
 - ngrok inspector API: `http://127.0.0.1:4040`
 - Log file: `~/.keygate/ngrok.log`
 
@@ -89,7 +96,7 @@ That means the tunnel stays supervised by `launchd` once it has been started.
 ## Operational notes
 
 - `keygate ngrok` currently manages a macOS-only background service.
-- The tunnel is only as useful as the local service behind it. If nothing is listening on `localhost:18790`, the public URL will return connection failures.
+- The tunnel is only as useful as the local service behind it. If nothing is listening on `127.0.0.1:18790`, the public URL will return connection failures.
 - `keygate ngrok status` may show the tunnel as running before the public URL is visible for a brief moment. In that case, retry `keygate ngrok url`.
 - The public URL can change when the tunnel reconnects, especially on free ngrok plans.
 

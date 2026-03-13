@@ -1,6 +1,13 @@
 # Ngrok
 
-Keygate now includes a CLI-managed macOS ngrok background service.
+Keygate includes a CLI-managed macOS ngrok background service.
+
+Use this when you need a public internet URL.
+
+For routine operator access, prefer `docs/REMOTE_ACCESS.md` and use:
+
+- Tailscale for private tailnet access
+- managed SSH tunnels for local operator forwarding
 
 ## Command surface
 
@@ -16,7 +23,7 @@ keygate ngrok stop
 
 - LaunchAgent label: `com.keygate.ngrok`
 - LaunchAgent path: `~/Library/LaunchAgents/com.keygate.ngrok.plist`
-- Forward target: `http://localhost:18790`
+- Forward target: `http://127.0.0.1:18790`
 - Log file: `~/.keygate/ngrok.log`
 - Inspector API: `http://127.0.0.1:4040/api/tunnels`
 

@@ -44,7 +44,12 @@ function createConfig(workspacePath: string): KeygateConfig {
   return {
     llm: { provider: 'ollama', model: 'llama3', apiKey: '', ollama: { host: 'http://127.0.0.1:11434' } },
     security: { mode: 'safe', spicyModeEnabled: false, workspacePath, allowedBinaries: ['node'] },
-    server: { port: 18790 },
+    server: { host: '127.0.0.1', port: 18790, apiToken: '' },
+    remote: {
+      authMode: 'off',
+      tailscale: { resetOnStop: false },
+      ssh: { port: 22, localPort: 28790, remotePort: 18790 },
+    },
     browser: {
       domainPolicy: 'none', domainAllowlist: [], domainBlocklist: [], traceRetentionDays: 7,
       mcpPlaywrightVersion: '0.0.64', artifactsPath: path.join(workspacePath, '.keygate-browser-runs'),

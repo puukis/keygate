@@ -6,6 +6,7 @@ const {
   runDoctorCommand,
   runPluginsCommand,
   runNgrokCommand,
+  runRemoteCommand,
   runPluginCliBridge,
   loadConfigFromEnv,
 } = vi.hoisted(() => ({
@@ -14,6 +15,7 @@ const {
   runDoctorCommand: vi.fn(async () => undefined),
   runPluginsCommand: vi.fn(async () => undefined),
   runNgrokCommand: vi.fn(async () => undefined),
+  runRemoteCommand: vi.fn(async () => undefined),
   runPluginCliBridge: vi.fn(async () => false),
   loadConfigFromEnv: vi.fn(() => ({}) as any),
 }));
@@ -33,6 +35,9 @@ vi.mock('../commands/plugins.js', () => ({
 vi.mock('../commands/ngrok.js', () => ({
   runNgrokCommand,
 }));
+vi.mock('../commands/remote.js', () => ({
+  runRemoteCommand,
+}));
 vi.mock('../../plugins/index.js', () => ({
   runPluginCliBridge,
 }));
@@ -49,6 +54,7 @@ describe('cli index', () => {
     runDoctorCommand.mockClear();
     runPluginsCommand.mockClear();
     runNgrokCommand.mockClear();
+    runRemoteCommand.mockClear();
     runPluginCliBridge.mockClear();
     loadConfigFromEnv.mockClear();
   });
@@ -83,6 +89,12 @@ describe('cli index', () => {
     expect(runNgrokCommand).toHaveBeenCalledTimes(1);
   });
 
+  it('routes remote command to runRemoteCommand', async () => {
+    const handled = await runCli(['remote', 'ssh', 'status']);
+    expect(handled).toBe(true);
+    expect(runRemoteCommand).toHaveBeenCalledTimes(1);
+  });
+
   it('prints tui command in help output', () => {
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     try {
@@ -92,6 +104,7 @@ describe('cli index', () => {
       expect(helpText).toContain('keygate doctor');
       expect(helpText).toContain('keygate plugins');
       expect(helpText).toContain('keygate ngrok');
+      expect(helpText).toContain('keygate remote tailscale');
       expect(helpText).toContain('web|discord|slack|whatsapp');
     } finally {
       consoleSpy.mockRestore();

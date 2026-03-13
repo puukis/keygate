@@ -13,6 +13,7 @@ import { Gateway } from '../../gateway/index.js';
 import { Database } from '../../db/index.js';
 import { ensureCodexInstalled } from '../codexInstall.js';
 import { runGatewayCommand } from './gateway.js';
+import { getRemoteStatusSummary } from './remote.js';
 import type { ParsedArgs } from '../argv.js';
 
 export type DoctorSeverity = 'pass' | 'warn' | 'fail';
@@ -97,6 +98,50 @@ export async function runDoctorChecks(options: { repair?: boolean } = {}): Promi
       detail: config.server.apiToken.trim().length > 0
         ? 'configured'
         : 'server.apiToken is empty; operator-only routes are exposed without an API token',
+    });
+    checks.push({
+      id: 'server.bind_host',
+      title: 'Gateway bind host',
+      severity: config.server.host === '127.0.0.1' ? 'pass' : 'warn',
+      detail: config.server.host === '127.0.0.1'
+        ? 'bound to 127.0.0.1'
+        : `configured host=${config.server.host}; 127.0.0.1 is recommended for remote access v1`,
+    });
+    checks.push({
+      id: 'remote.auth_mode',
+      title: 'Remote operator auth mode',
+      severity: config.remote.authMode === 'token' ? 'pass' : 'warn',
+      detail: `remote.authMode=${config.remote.authMode}`,
+    });
+
+    const remote = await getRemoteStatusSummary(config);
+    checks.push({
+      id: 'remote.tailscale',
+      title: 'Tailscale remote transport',
+      severity: !remote.tailscale.available
+        ? 'warn'
+        : remote.tailscale.state === 'unknown'
+          ? 'warn'
+          : 'pass',
+      detail: remote.tailscale.detail,
+    });
+    checks.push({
+      id: 'remote.ssh_profile',
+      title: 'SSH tunnel profile',
+      severity: remote.ssh.profileComplete ? 'pass' : 'warn',
+      detail: remote.ssh.profileComplete
+        ? `configured (${remote.ssh.localUrl})`
+        : remote.ssh.detail,
+    });
+    checks.push({
+      id: 'remote.ssh_runtime',
+      title: 'SSH tunnel runtime',
+      severity: !remote.ssh.available
+        ? 'warn'
+        : remote.ssh.state === 'unknown'
+          ? 'warn'
+          : 'pass',
+      detail: remote.ssh.detail,
     });
 
     try {

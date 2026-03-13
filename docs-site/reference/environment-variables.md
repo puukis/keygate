@@ -21,10 +21,23 @@ Use these to choose the default provider/model and to supply provider credential
 
 ## Server and gateway variables
 
+- `KEYGATE_SERVER_HOST`
 - `PORT`
 - `KEYGATE_SERVER_API_TOKEN`
 
-`KEYGATE_SERVER_API_TOKEN` is the operator token used for authenticated plugin HTTP routes and secured remote API access.
+Remote access notes:
+
+- `KEYGATE_SERVER_HOST` overrides `server.host` and defaults to `127.0.0.1`.
+- `KEYGATE_SERVER_API_TOKEN` is the shared operator token used for authenticated plugin HTTP routes and secured remote API access.
+- `remote.authMode` does not have its own environment variable in v1. Turn remote operator auth on through `config.json` or by starting `keygate remote tailscale ...` or `keygate remote ssh ...`.
+
+Typical examples:
+
+```dotenv
+KEYGATE_SERVER_HOST=127.0.0.1
+PORT=18790
+KEYGATE_SERVER_API_TOKEN=replace-me
+```
 
 ## Safe-mode sandbox variables
 

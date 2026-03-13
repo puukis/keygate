@@ -1,6 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import { WebSocket } from 'ws';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -45,13 +46,34 @@ function createConfig(workspacePath: string, port: number): KeygateConfig {
   return {
     llm: { provider: 'ollama', model: 'llama3', apiKey: '', ollama: { host: 'http://127.0.0.1:11434' } },
     security: { mode: 'safe', spicyModeEnabled: false, workspacePath, allowedBinaries: ['node'] },
-    server: { port },
+    server: { host: '127.0.0.1', port, apiToken: '' },
+    remote: {
+      authMode: 'off',
+      tailscale: { resetOnStop: false },
+      ssh: { port: 22, localPort: 28790, remotePort: 18790 },
+    },
     browser: {
       domainPolicy: 'none', domainAllowlist: [], domainBlocklist: [], traceRetentionDays: 7,
       mcpPlaywrightVersion: '0.0.64', artifactsPath: path.join(workspacePath, '.keygate-browser-runs'),
     },
     skills: { load: { watch: false, watchDebounceMs: 250, extraDirs: [], pluginDirs: [] }, entries: {}, install: { nodeManager: 'npm' } },
     discord: { token: '', prefix: '!keygate ' },
+  };
+}
+
+function createProtectedConfig(workspacePath: string, port: number): KeygateConfig {
+  return {
+    ...createConfig(workspacePath, port),
+    server: {
+      host: '127.0.0.1',
+      port,
+      apiToken: 'test-operator-token',
+    },
+    remote: {
+      authMode: 'token',
+      tailscale: { resetOnStop: false },
+      ssh: { port: 22, localPort: 28790, remotePort: 18790 },
+    },
   };
 }
 
@@ -89,7 +111,7 @@ describe('server e2e api flows', () => {
     handles.push(handle);
     await listeningPromise;
 
-    const ws = await connectWs(`ws://127.0.0.1:${port}`);
+    const ws = await connectWs(`ws://127.0.0.1:${port}/ws`);
     const connected = await waitForType(ws, 'connected');
     const webSessionId = `web:${connected.sessionId}`;
 
@@ -178,7 +200,7 @@ describe('server e2e api flows', () => {
     handles.push(handle);
     await listeningPromise;
 
-    const ws = await connectWs(`ws://127.0.0.1:${port}`);
+    const ws = await connectWs(`ws://127.0.0.1:${port}/ws`);
     const connected = await waitForType(ws, 'connected');
 
     ws.send(JSON.stringify({ type: 'message', content: 'bootstrap session' }));
@@ -220,7 +242,7 @@ describe('server e2e api flows', () => {
     handles.push(handle);
     await listeningPromise;
 
-    const ws = await connectWs(`ws://127.0.0.1:${port}`);
+    const ws = await connectWs(`ws://127.0.0.1:${port}/ws`);
     await waitForType(ws, 'connected');
 
     ws.send(JSON.stringify({ type: 'message', content: '/status' }));
@@ -230,13 +252,136 @@ describe('server e2e api flows', () => {
     ws.close();
     await fs.rm(workspace, { recursive: true, force: true });
   }, 20_000);
+
+  it('requires operator auth for the protected operator surface when remote auth is enabled', async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'keygate-e2e-auth-'));
+    const port = 19400 + Math.floor(Math.random() * 200);
+
+    let listeningResolve: (() => void) | null = null;
+    const listeningPromise = new Promise<void>((resolve) => { listeningResolve = resolve; });
+
+    const handle = startWebServer(createProtectedConfig(workspace, port), { onListening: () => listeningResolve?.() });
+    handles.push(handle);
+    await listeningPromise;
+
+    const unauthorizedStatus = await fetch(`http://127.0.0.1:${port}/api/status`);
+    expect(unauthorizedStatus.status).toBe(401);
+
+    const unauthorizedBrowser = await fetch(`http://127.0.0.1:${port}/api/browser/latest?sessionId=web%3Atest`, {
+      method: 'HEAD',
+    });
+    expect(unauthorizedBrowser.status).toBe(401);
+
+    const unauthorizedUpload = await fetch(`http://127.0.0.1:${port}/api/uploads/image?sessionId=web%3Atest&id=missing`, {
+      method: 'HEAD',
+    });
+    expect(unauthorizedUpload.status).toBe(401);
+
+    await expect(getWebSocketUpgradeStatus(`http://127.0.0.1:${port}/ws`)).resolves.toBe(401);
+
+    const webhookResponse = await fetch(`http://127.0.0.1:${port}/api/webhooks/missing`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ping: true }),
+    });
+    expect(webhookResponse.status).not.toBe(401);
+
+    const gmailPushResponse = await fetch(`http://127.0.0.1:${port}/api/gmail/push`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: { data: 'test' } }),
+    });
+    expect(gmailPushResponse.status).toBe(401);
+    await expect(gmailPushResponse.json()).resolves.toMatchObject({
+      message: 'Missing Google OIDC bearer token',
+    });
+
+    const pluginResponse = await fetch(`http://127.0.0.1:${port}/api/plugins/missing`);
+    expect(pluginResponse.status).toBe(404);
+
+    const loginResponse = await fetch(`http://127.0.0.1:${port}/api/auth/session`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer test-operator-token',
+      },
+    });
+    expect(loginResponse.status).toBe(204);
+    const cookie = loginResponse.headers.get('set-cookie');
+    expect(cookie).toContain('keygate_operator_session=');
+    const authorizedBrowser = await fetch(`http://127.0.0.1:${port}/api/browser/latest?sessionId=web%3Atest`, {
+      method: 'HEAD',
+      headers: {
+        Cookie: cookie ?? '',
+      },
+    });
+    expect(authorizedBrowser.status).not.toBe(401);
+
+    const ws = await connectWs(`ws://127.0.0.1:${port}/ws`, {
+      headers: {
+        Cookie: cookie ?? '',
+      },
+    });
+    await waitForType(ws, 'connected');
+    ws.close();
+
+    const logoutResponse = await fetch(`http://127.0.0.1:${port}/api/auth/session`, {
+      method: 'DELETE',
+      headers: {
+        Cookie: cookie ?? '',
+      },
+    });
+    expect(logoutResponse.status).toBe(204);
+
+    const afterLogout = await fetch(`http://127.0.0.1:${port}/api/browser/latest?sessionId=web%3Atest`, {
+      method: 'HEAD',
+      headers: {
+        Cookie: cookie ?? '',
+      },
+    });
+    expect(afterLogout.status).toBe(401);
+
+    await fs.rm(workspace, { recursive: true, force: true });
+  }, 20_000);
 });
 
 type WsWithBuffer = WebSocket & { __buffer?: any[] };
 
-async function connectWs(url: string): Promise<WsWithBuffer> {
+async function connectWs(
+  url: string,
+  options?: { headers?: Record<string, string> },
+): Promise<WsWithBuffer> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(url) as WsWithBuffer;
+    const ws = new WebSocket(url, options) as WsWithBuffer;
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      try {
+        ws.close();
+      } catch {
+        // ignore
+      }
+      reject(new Error('WebSocket connection timed out'));
+    }, 4_000);
+    const settleReject = (error: Error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      reject(error);
+    };
+    const settleResolve = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      resolve(ws);
+    };
+
     ws.__buffer = [];
     ws.on('message', (raw: Buffer) => {
       try {
@@ -246,8 +391,16 @@ async function connectWs(url: string): Promise<WsWithBuffer> {
       }
     });
 
-    ws.once('open', () => resolve(ws));
-    ws.once('error', reject);
+    ws.once('open', settleResolve);
+    ws.once('unexpected-response', (_request, response) => {
+      settleReject(new Error(`Unexpected server response: ${response.statusCode}`));
+    });
+    ws.once('close', (code) => {
+      settleReject(new Error(`WebSocket closed before connect: ${code}`));
+    });
+    ws.once('error', (error) => {
+      settleReject(error instanceof Error ? error : new Error(String(error)));
+    });
   });
 }
 
@@ -267,4 +420,33 @@ async function waitForType(ws: WsWithBuffer, type: string): Promise<any> {
   }
 
   throw new Error(`Timed out waiting for WS type: ${type}`);
+}
+
+async function getWebSocketUpgradeStatus(url: string): Promise<number> {
+  const parsed = new URL(url);
+
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({
+      protocol: parsed.protocol,
+      hostname: parsed.hostname,
+      port: parsed.port,
+      path: parsed.pathname,
+      headers: {
+        Connection: 'Upgrade',
+        Upgrade: 'websocket',
+        'Sec-WebSocket-Version': '13',
+        'Sec-WebSocket-Key': Buffer.from('keygate-test').toString('base64'),
+      },
+    });
+
+    req.once('response', (response) => {
+      resolve(response.statusCode ?? 0);
+      response.resume();
+    });
+    req.once('upgrade', () => {
+      resolve(101);
+    });
+    req.once('error', reject);
+    req.end();
+  });
 }

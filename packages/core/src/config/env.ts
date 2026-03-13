@@ -35,6 +35,11 @@ const DEFAULT_BROWSER_TRACE_RETENTION_DAYS = 7;
 const DEFAULT_MCP_PLAYWRIGHT_VERSION = '0.0.64';
 const DEFAULT_DM_POLICY: DmPolicy = 'pairing';
 const DEFAULT_WHATSAPP_GROUP_MODE: WhatsAppGroupMode = 'closed';
+const DEFAULT_SERVER_HOST = '127.0.0.1';
+const DEFAULT_REMOTE_AUTH_MODE = 'off';
+const DEFAULT_REMOTE_SSH_PORT = 22;
+const DEFAULT_REMOTE_SSH_LOCAL_PORT = 28790;
+const DEFAULT_REMOTE_SSH_REMOTE_PORT = 18790;
 const DEFAULT_BROWSER_ARTIFACTS_DIRNAME = '.keygate-browser-runs';
 const DEFAULT_SKILLS_WATCH = true;
 const DEFAULT_SKILLS_WATCH_DEBOUNCE_MS = 250;
@@ -128,6 +133,8 @@ export function loadEnvironment(): void {
 
 export function loadConfigFromEnv(): KeygateConfig {
   const persistedConfig = loadPersistedConfigObject();
+  const persistedServerConfig = loadPersistedServerConfig(persistedConfig);
+  const persistedRemoteConfig = loadPersistedRemoteConfig(persistedConfig);
   const persistedSkillsConfig = loadPersistedSkillsConfig(persistedConfig);
   const persistedPluginsConfig = loadPersistedPluginsConfig(persistedConfig);
   const persistedWhatsAppConfig = loadPersistedWhatsAppConfig(persistedConfig);
@@ -182,9 +189,11 @@ export function loadConfigFromEnv(): KeygateConfig {
       },
     },
     server: {
-      port: parseInt(process.env['PORT'] ?? '18790', 10),
-      apiToken: process.env['KEYGATE_SERVER_API_TOKEN'] ?? loadPersistedServerApiToken(persistedConfig),
+      host: process.env['KEYGATE_SERVER_HOST']?.trim() || persistedServerConfig.host,
+      port: parseInt(process.env['PORT'] ?? String(persistedServerConfig.port), 10),
+      apiToken: process.env['KEYGATE_SERVER_API_TOKEN'] ?? persistedServerConfig.apiToken,
     },
+    remote: persistedRemoteConfig,
     browser: {
       domainPolicy,
       domainAllowlist,
@@ -1015,6 +1024,31 @@ function buildDefaultWhatsAppConfig(): WhatsAppConfig {
   };
 }
 
+function buildDefaultServerConfig(): KeygateConfig['server'] {
+  return {
+    host: DEFAULT_SERVER_HOST,
+    port: 18790,
+    apiToken: '',
+  };
+}
+
+function buildDefaultRemoteConfig(): KeygateConfig['remote'] {
+  return {
+    authMode: DEFAULT_REMOTE_AUTH_MODE,
+    tailscale: {
+      resetOnStop: false,
+    },
+    ssh: {
+      host: undefined,
+      user: undefined,
+      port: DEFAULT_REMOTE_SSH_PORT,
+      localPort: DEFAULT_REMOTE_SSH_LOCAL_PORT,
+      remotePort: DEFAULT_REMOTE_SSH_REMOTE_PORT,
+      identityFile: undefined,
+    },
+  };
+}
+
 function buildDefaultSandboxConfig(): KeygateConfig['security']['sandbox'] {
   return {
     backend: 'docker',
@@ -1067,6 +1101,19 @@ function normalizeSandboxScope(value: unknown): SandboxScope | undefined {
   return undefined;
 }
 
+function normalizeRemoteAuthMode(value: unknown): KeygateConfig['remote']['authMode'] | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'off' || normalized === 'token') {
+    return normalized;
+  }
+
+  return undefined;
+}
+
 function normalizeOptionalString(value: unknown): string | undefined {
   if (typeof value !== 'string') {
     return undefined;
@@ -1079,6 +1126,15 @@ function normalizeOptionalString(value: unknown): string | undefined {
 function toFiniteNumber(value: unknown): number {
   const numeric = typeof value === 'number' ? value : Number.parseFloat(String(value ?? ''));
   return Number.isFinite(numeric) ? numeric : Number.NaN;
+}
+
+function normalizePersistedPort(value: unknown, fallback: number): number {
+  const parsed = toFiniteNumber(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  return Math.max(1, Math.floor(parsed));
 }
 
 function normalizeStringArray(value: unknown): string[] {
@@ -1186,14 +1242,67 @@ function normalizePluginEntries(value: unknown): Record<string, PluginEntryConfi
   return result;
 }
 
-function loadPersistedServerApiToken(parsedConfig: Record<string, unknown>): string {
-  const server = parsedConfig['server'];
-  if (!server || typeof server !== 'object' || Array.isArray(server)) {
-    return '';
+function loadPersistedServerConfig(
+  parsedConfig: Record<string, unknown> | null = loadPersistedConfigObject()
+): KeygateConfig['server'] {
+  const defaults = buildDefaultServerConfig();
+  if (!parsedConfig || typeof parsedConfig !== 'object') {
+    return defaults;
   }
 
-  const apiToken = (server as Record<string, unknown>)['apiToken'];
-  return typeof apiToken === 'string' ? apiToken : '';
+  const server = parsedConfig['server'];
+  if (!server || typeof server !== 'object' || Array.isArray(server)) {
+    return defaults;
+  }
+
+  const source = server as Record<string, unknown>;
+  return {
+    host: normalizeOptionalString(source['host']) ?? defaults.host,
+    port: normalizePersistedPort(source['port'], defaults.port),
+    apiToken: typeof source['apiToken'] === 'string' ? source['apiToken'] : defaults.apiToken,
+  };
+}
+
+export function loadPersistedRemoteConfig(
+  parsedConfig: Record<string, unknown> | null = loadPersistedConfigObject()
+): KeygateConfig['remote'] {
+  const defaults = buildDefaultRemoteConfig();
+  if (!parsedConfig || typeof parsedConfig !== 'object') {
+    return defaults;
+  }
+
+  const remote = parsedConfig['remote'];
+  if (!remote || typeof remote !== 'object' || Array.isArray(remote)) {
+    return defaults;
+  }
+
+  const source = remote as Record<string, unknown>;
+  const tailscaleSource =
+    source['tailscale'] && typeof source['tailscale'] === 'object' && !Array.isArray(source['tailscale'])
+      ? source['tailscale'] as Record<string, unknown>
+      : {};
+  const sshSource =
+    source['ssh'] && typeof source['ssh'] === 'object' && !Array.isArray(source['ssh'])
+      ? source['ssh'] as Record<string, unknown>
+      : {};
+
+  return {
+    authMode: normalizeRemoteAuthMode(source['authMode']) ?? defaults.authMode,
+    tailscale: {
+      resetOnStop:
+        typeof tailscaleSource['resetOnStop'] === 'boolean'
+          ? tailscaleSource['resetOnStop']
+          : defaults.tailscale.resetOnStop,
+    },
+    ssh: {
+      host: normalizeOptionalString(sshSource['host']) ?? defaults.ssh.host,
+      user: normalizeOptionalString(sshSource['user']) ?? defaults.ssh.user,
+      port: normalizePersistedPort(sshSource['port'], defaults.ssh.port),
+      localPort: normalizePersistedPort(sshSource['localPort'], defaults.ssh.localPort),
+      remotePort: normalizePersistedPort(sshSource['remotePort'], defaults.ssh.remotePort),
+      identityFile: normalizeOptionalString(sshSource['identityFile']) ?? defaults.ssh.identityFile,
+    },
+  };
 }
 
 function parseBooleanEnv(value: string | undefined): boolean | undefined {

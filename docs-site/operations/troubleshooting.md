@@ -136,7 +136,7 @@ Checks:
 
 - is `ngrok` installed locally?
 - has ngrok been authenticated with an authtoken?
-- is Keygate listening on `localhost:18790`?
+- is Keygate listening on `127.0.0.1:18790`?
 - does `launchctl print gui/$(id -u)/com.keygate.ngrok` show a crash or restart loop?
 
 Actions:
@@ -146,6 +146,68 @@ Actions:
 - inspect `keygate ngrok status`
 - tail `~/.keygate/ngrok.log`
 - query `http://127.0.0.1:4040/api/tunnels` to verify the public URL
+
+## 8) Remote login screen keeps coming back
+
+Checks:
+
+- does `keygate status` show `Remote auth: token`?
+- are you entering the current `server.apiToken`?
+- did the gateway restart and clear the browser session cookie?
+- are you reaching the correct transport URL?
+
+Actions:
+
+- re-run `keygate remote tailscale status` or `keygate remote ssh status`
+- confirm the configured token in `~/.keygate/config.json` or `KEYGATE_SERVER_API_TOKEN`
+- sign in again through the web login form
+- if you intentionally rotated the token, refresh the page and use the new token
+
+## 9) Tailscale remote access is unavailable
+
+Checks:
+
+- is `tailscale` installed?
+- is the machine joined to the expected tailnet?
+- does `tailscale serve status` show an HTTPS target?
+- is Keygate running on `127.0.0.1:18790`?
+
+Actions:
+
+- run `tailscale version`
+- run `tailscale status --json`
+- run `keygate remote tailscale restart`
+- if stop/start behaves strangely, consider `remote.tailscale.resetOnStop=true` and stop/start again
+
+## 10) Managed SSH tunnel is not forwarding correctly
+
+Checks:
+
+- is the SSH profile complete?
+- does the SSH key path exist and match the host access policy?
+- is the remote Keygate gateway listening on `127.0.0.1:18790`?
+- does the background service show `running` in `keygate remote ssh status`?
+
+Actions:
+
+- inspect `keygate remote ssh config`
+- update the profile with `keygate remote ssh config --host ... --user ... --identity-file ...`
+- restart the tunnel with `keygate remote ssh restart`
+- on Linux, inspect `systemctl --user status keygate-remote-ssh.service`
+- on macOS, inspect `launchctl print gui/$(id -u)/dev.keygate.remote.ssh`
+
+## 11) Public tunnel docs do not match the recommended setup
+
+Checks:
+
+- are you trying to use ngrok for routine private operator access?
+- do you actually need a public URL?
+
+Actions:
+
+- prefer `keygate remote tailscale ...` when both machines can join the same tailnet
+- prefer `keygate remote ssh ...` when you already have SSH reachability
+- use ngrok only when you intentionally need public internet reachability
 
 ## Escalation template
 

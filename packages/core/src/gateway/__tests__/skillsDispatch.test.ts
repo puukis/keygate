@@ -44,7 +44,12 @@ function createConfig(workspacePath: string): KeygateConfig {
       workspacePath,
       allowedBinaries: ['node'],
     },
-    server: { port: 18790 },
+    server: { host: '127.0.0.1', port: 18790, apiToken: '' },
+    remote: {
+      authMode: 'off',
+      tailscale: { resetOnStop: false },
+      ssh: { port: 22, localPort: 28790, remotePort: 18790 },
+    },
     browser: {
       domainPolicy: 'none',
       domainAllowlist: [],

@@ -236,7 +236,7 @@ function printWebChannelConfig(deps: ChannelCommandDeps): void {
   const port = resolveWebPort(deps.env['PORT']);
   const autoOpen = shouldAutoOpenChat(deps.env['KEYGATE_OPEN_CHAT_ON_START']);
   const explicitUrl = deps.env['KEYGATE_CHAT_URL']?.trim();
-  const chatUrl = explicitUrl && explicitUrl.length > 0 ? explicitUrl : `http://localhost:${port}`;
+  const chatUrl = explicitUrl && explicitUrl.length > 0 ? explicitUrl : `http://127.0.0.1:${port}`;
 
   deps.log('Channel: web');
   deps.log(`Port: ${port}`);

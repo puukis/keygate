@@ -19,6 +19,7 @@ import { runUsageCommand } from './commands/usage.js';
 import { runSandboxCommand } from './commands/sandbox.js';
 import { runGmailCommand } from './commands/gmail.js';
 import { runNgrokCommand } from './commands/ngrok.js';
+import { runRemoteCommand } from './commands/remote.js';
 import { loadConfigFromEnv } from '../config/env.js';
 import { runPluginCliBridge } from '../plugins/index.js';
 
@@ -102,6 +103,9 @@ export async function runCli(argv: string[]): Promise<boolean> {
     case 'ngrok':
       await runNgrokCommand(args);
       return true;
+    case 'remote':
+      await runRemoteCommand(args);
+      return true;
     case 'plugins':
       await runPluginsCommand(args);
       return true;
@@ -128,6 +132,9 @@ Usage:
   keygate uninstall [--yes] [--remove-config] [--remove-workspace]
   keygate update [--check-only]
   keygate gateway <open|close|status|restart>
+  keygate remote tailscale <start|stop|status|restart|url>
+  keygate remote ssh config --host <host> [--user <user>] [--port <port>] [--local-port <port>] [--remote-port <port>] [--identity-file <path>]
+  keygate remote ssh <start|stop|status|restart|url>
   keygate ngrok <start|stop|status|restart|url>
   keygate channels <web|discord|slack|whatsapp> <start|stop|restart|status|config|login|logout>
   keygate mcp browser <install|status|remove|update>
@@ -145,6 +152,8 @@ Notes:
   - openai-codex uses ChatGPT OAuth through Codex app-server.
   - No OpenAI API key is required for openai-codex.
   - gateway uses native OS managers (systemd/launchd/Task Scheduler) for background lifecycle.
-  - ngrok uses a macOS launchd LaunchAgent and forwards http://localhost:18790.
+  - remote tailscale uses tailnet-only HTTPS exposure to http://127.0.0.1:18790.
+  - remote ssh creates a managed local tunnel that serves Keygate on http://127.0.0.1:28790 by default.
+  - ngrok uses a macOS launchd LaunchAgent and forwards http://127.0.0.1:18790.
 `);
 }

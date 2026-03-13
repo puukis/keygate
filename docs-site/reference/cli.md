@@ -39,21 +39,29 @@ keygate auth login --provider openai-codex [--device-auth]
 keygate auth logout [--force]
 keygate auth status
 keygate gateway <open|close|status|restart>
+keygate remote tailscale <start|stop|status|restart|url>
+keygate remote ssh config --host <host> [--user <user>] [--port <port>] [--local-port <port>] [--remote-port <port>] [--identity-file <path>]
+keygate remote ssh <start|stop|status|restart|url>
 keygate ngrok <start|stop|status|restart|url>
 ```
 
-Use these for first-time setup, auth, the TUI, the background gateway lifecycle, and the macOS ngrok tunnel helper.
+Use these for first-time setup, auth, the TUI, the background gateway lifecycle, private remote access, and the macOS ngrok tunnel helper.
 
 Notes:
 
 - `keygate gateway` manages the Keygate server background process.
-- `keygate ngrok` manages a macOS LaunchAgent named `com.keygate.ngrok` that forwards `http://localhost:18790`.
+- `keygate remote tailscale` manages tailnet-only HTTPS access to the local gateway.
+- `keygate remote ssh` manages a persisted SSH local-forward tunnel and exposes the remote gateway locally on `http://127.0.0.1:28790` by default.
+- `keygate ngrok` manages a macOS LaunchAgent named `com.keygate.ngrok` that forwards `http://127.0.0.1:18790`.
 - `keygate ngrok url` prints only the current public URL.
 
 Examples:
 
 ```bash
 keygate gateway open
+keygate remote tailscale start
+keygate remote ssh config --host gateway.example.com --user ops
+keygate remote ssh start
 keygate ngrok start
 keygate ngrok status
 keygate ngrok url
@@ -70,9 +78,9 @@ keygate sandbox <list|explain|recreate> [--scope <key>] [--workspace <path>] [--
 
 What each does:
 
-- `keygate doctor`: run environment, auth, Docker sandbox, node, Gmail, channel, and plugin diagnostics
+- `keygate doctor`: run environment, auth, Docker sandbox, node, Gmail, remote access, channel, and plugin diagnostics
 - `keygate doctor --repair`: perform safe repairs such as orphaned sandbox cleanup and due Gmail watch renewal
-- `keygate status`: print the current provider/model, security posture, session debug state, usage totals, sandbox health, node health, and Gmail watch health
+- `keygate status`: print the current bind host, remote auth mode, remote transport state, provider/model, security posture, session debug state, usage totals, sandbox health, node health, and Gmail watch health
 - `keygate usage`: show turn/token/cost aggregates for a time window
 - `keygate sandbox list`: list active Docker sandboxes
 - `keygate sandbox explain`: describe the scope, labels, and workspace mapping for one sandbox

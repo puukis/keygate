@@ -31,7 +31,7 @@ keygate auth login --provider openai-codex --device-auth
 keygate serve
 ```
 
-Open web UI (`http://localhost:18790`) and send:
+Open web UI (`http://127.0.0.1:18790`) and send:
 
 ```text
 What files are in the current workspace?

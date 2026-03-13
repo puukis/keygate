@@ -32,7 +32,8 @@ When GitHub Pages is enabled for this repository, `.github/workflows/deploy-docs
 
 ## Features
 
-- **Multi-Channel**: Connect via Web UI (`localhost:18790`), Discord, Slack, or WhatsApp
+- **Multi-Channel**: Connect via Web UI (`127.0.0.1:18790`), Discord, Slack, or WhatsApp
+- **Built-in Remote Gateway Access**: Managed Tailscale tailnet exposure and managed SSH local-forward tunnels, both secured with token-gated operator auth
 - **Shared Operator Commands**: `/help`, `/status`, `/model`, `/compact`, `/debug`, `/stop`, `/new`, and `/reset` across chat surfaces, with native Discord slash commands and Slack `/agent*` commands
 - **WhatsApp Linked-Device Channel**: QR-based login, DM pairing, group allowlists, mention gating, and screenshot follow-up delivery
 - **DM Pairing Trust Model**: Unknown Slack/Discord/WhatsApp DMs are gated by pairing codes (configurable open/closed/pairing)
@@ -129,7 +130,40 @@ Notes:
 - This lifecycle is start/stop-on-demand only (no login/boot auto-start is configured).
 - `keygate gateway open` forces `KEYGATE_OPEN_CHAT_ON_START=false` for the managed process, so it will not auto-open a browser tab.
 
+### Remote Gateway Access
+
+Keygate now includes two CLI-managed remote-access paths:
+
+- Tailscale tailnet-only HTTPS exposure on the gateway host
+- managed SSH local-forward tunnels on operator machines
+
+The recommended path is Tailscale first, SSH second, ngrok only when you explicitly need a public internet URL.
+
+```bash
+# Tailnet-only remote operator access
+keygate remote tailscale start
+keygate remote tailscale status
+keygate remote tailscale url
+
+# Configure and run an SSH local-forward tunnel
+keygate remote ssh config --host gateway.example.com --user ops --identity-file ~/.ssh/id_ed25519
+keygate remote ssh start
+keygate remote ssh status
+keygate remote ssh url
+```
+
+Operational notes:
+
+- Keygate binds the gateway to `127.0.0.1` by default.
+- Starting a managed remote transport automatically enables token-based operator auth if it was still off.
+- If no operator token exists yet, Keygate generates one and prints it once during the start command.
+- Tailscale exposure stays private to your tailnet.
+- The managed SSH tunnel exposes the remote gateway locally on `http://127.0.0.1:28790` by default.
+- Webhooks, Gmail push intake, and plugin-route auth keep their existing auth model.
+
 ### Ngrok Tunnel (macOS)
+
+Use ngrok when you need a public URL. It is not the recommended default for routine operator access.
 
 ```bash
 # Start a launchd-managed ngrok tunnel for the local Keygate web server
@@ -148,7 +182,7 @@ Operational notes:
 
 - `keygate ngrok` currently manages a macOS `launchd` user agent only.
 - The managed agent label is `com.keygate.ngrok`.
-- The tunnel always forwards `http://localhost:18790`.
+- The tunnel always forwards `http://127.0.0.1:18790`.
 - The generated LaunchAgent lives at `~/Library/LaunchAgents/com.keygate.ngrok.plist`.
 - Logs are written to `~/.keygate/ngrok.log`.
 - Install and authenticate ngrok first (`ngrok config add-authtoken ...`) so the tunnel can establish successfully.
@@ -235,6 +269,10 @@ keygate doctor --repair
 
 These surfaces now report:
 
+- bind host and port
+- remote auth mode
+- Tailscale remote-access state
+- SSH tunnel profile and runtime state
 - provider/model and reasoning state
 - session-scoped model overrides
 - debug mode state
@@ -277,7 +315,7 @@ The web app **Automations** screen now includes:
 │                     Chat Interfaces                         │
 │   ┌─────────────────┐           ┌─────────────────────┐     │
 │   │   Web UI        │           │   Discord Bot       │     │
-│   │ localhost:18790 │           │   !keygate {msg}    │     │
+│   │ 127.0.0.1:18790 │           │   !keygate {msg}    │     │
 │   └────────┬────────┘           └──────────┬──────────┘     │
 │            │                               │                │
 │            └───────────────┬───────────────┘                │
@@ -312,11 +350,13 @@ Existing `~/.config/keygate/` installs are copied into the new home dotdir on fi
 
 Primary files:
 - `config.json` - LLM provider, model, security settings
+- `config.json` - also stores remote access state (`server.host`, `remote.*`, persisted SSH profile)
 - `.env` - API keys and environment overrides
 
 Startup behavior:
 - `KEYGATE_OPEN_CHAT_ON_START=true` opens chat UI automatically when `keygate` starts
-- `KEYGATE_CHAT_URL=http://localhost:18790` controls which chat page is opened
+- `KEYGATE_CHAT_URL=http://127.0.0.1:18790` controls which chat page is opened
+- `KEYGATE_SERVER_HOST=127.0.0.1` overrides the bind host without editing `config.json`
 - `SPICY_MAX_OBEDIENCE_ENABLED=false` enables a spicy-only max-obedience toggle by default (still best-effort; provider hard blocks can remain)
 
 DM trust + pairing:

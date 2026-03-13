@@ -680,6 +680,92 @@
   justify-content: center;
 }
 
+.auth-gate {
+  grid-column: 1 / -1;
+  min-height: calc(100vh - 120px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background:
+    radial-gradient(circle at top left, rgba(111, 162, 255, 0.16), transparent 32%),
+    radial-gradient(circle at bottom right, rgba(87, 193, 140, 0.14), transparent 28%);
+}
+
+.auth-gate-loading {
+  background:
+    radial-gradient(circle at top left, rgba(111, 162, 255, 0.12), transparent 32%),
+    radial-gradient(circle at bottom right, rgba(111, 162, 255, 0.08), transparent 28%);
+}
+
+.auth-card {
+  width: min(460px, 100%);
+  padding: 28px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--surface-solid) 92%, transparent);
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.16);
+  display: grid;
+  gap: 14px;
+}
+
+.auth-eyebrow {
+  margin: 0;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent-600);
+}
+
+.auth-card h2 {
+  margin: 0;
+  font-size: 1.7rem;
+}
+
+.auth-copy {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.auth-form {
+  display: grid;
+  gap: 10px;
+}
+
+.auth-label {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.auth-input {
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface-solid);
+  color: var(--text-primary);
+  font-size: 0.95rem;
+}
+
+.auth-input:focus {
+  outline: none;
+  border-color: var(--accent-500);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-500) 22%, transparent);
+}
+
+.auth-error {
+  margin: 0;
+  color: var(--danger-600);
+  font-size: 0.84rem;
+}
+
+.auth-submit {
+  justify-content: center;
+}
+
 @media (max-width: 1120px) {
   .app-main {
     grid-template-columns: auto minmax(0, 1fr);
@@ -742,5 +828,14 @@
   .config-drawer {
     width: 100%;
     border-left: none;
+  }
+
+  .auth-gate {
+    min-height: auto;
+    padding: 18px;
+  }
+
+  .auth-card {
+    padding: 20px;
   }
 }

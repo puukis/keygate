@@ -6,23 +6,36 @@ interface UseWebSocketResult {
   connecting: boolean;
 }
 
+interface UseWebSocketOptions {
+  enabled?: boolean;
+  reconnectDelayMs?: number;
+  onDisconnected?: (details: { everConnected: boolean }) => void;
+}
+
 export function useWebSocket(
   url: string,
-  onMessage: (data: Record<string, unknown>) => void
+  onMessage: (data: Record<string, unknown>) => void,
+  options: UseWebSocketOptions = {},
 ): UseWebSocketResult {
   const [connected, setConnected] = useState(false);
-  const [connecting, setConnecting] = useState(true);
+  const [connecting, setConnecting] = useState(options.enabled !== false);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | undefined>(undefined);
   const connectTimeoutRef = useRef<number | undefined>(undefined);
   const mountedRef = useRef(false);
+  const enabledRef = useRef(options.enabled !== false);
+  const everConnectedRef = useRef(false);
   const onMessageRef = useRef(onMessage);
+  const onDisconnectedRef = useRef(options.onDisconnected);
+  const reconnectDelayMs = options.reconnectDelayMs ?? 3000;
 
   // Keep onMessage ref updated
   onMessageRef.current = onMessage;
+  onDisconnectedRef.current = options.onDisconnected;
+  enabledRef.current = options.enabled !== false;
 
   const connect = useCallback(() => {
-    if (!mountedRef.current) {
+    if (!mountedRef.current || !enabledRef.current) {
       return;
     }
 
@@ -37,6 +50,7 @@ export function useWebSocket(
         return;
       }
       console.log('WebSocket connected');
+      everConnectedRef.current = true;
       setConnected(true);
       setConnecting(false);
     };
@@ -62,15 +76,15 @@ export function useWebSocket(
       console.log('WebSocket disconnected');
       setConnected(false);
       setConnecting(false);
+      onDisconnectedRef.current?.({ everConnected: everConnectedRef.current });
 
-      // Reconnect after 3 seconds
       reconnectTimeoutRef.current = window.setTimeout(() => {
-        if (!mountedRef.current) {
+        if (!mountedRef.current || !enabledRef.current) {
           return;
         }
         console.log('Attempting to reconnect...');
         connect();
-      }, 3000);
+      }, reconnectDelayMs);
     };
 
     ws.onerror = (error) => {
@@ -79,11 +93,17 @@ export function useWebSocket(
       }
       console.error('WebSocket error:', error);
     };
-  }, [url]);
+  }, [reconnectDelayMs, url]);
 
   useEffect(() => {
     mountedRef.current = true;
-    connectTimeoutRef.current = window.setTimeout(connect, 0);
+    if (options.enabled !== false) {
+      setConnecting(true);
+      connectTimeoutRef.current = window.setTimeout(connect, 0);
+    } else {
+      setConnected(false);
+      setConnecting(false);
+    }
 
     return () => {
       mountedRef.current = false;
@@ -121,7 +141,7 @@ export function useWebSocket(
         }
       }
     };
-  }, [connect]);
+  }, [connect, options.enabled]);
 
   const send = useCallback((data: object): boolean => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {

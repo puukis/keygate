@@ -71,6 +71,38 @@ sudo setfacl -m u:keygate:rwx /path/to/project
 
 ---
 
+## Remote Operator Access
+
+Keygate Remote Gateway Access v1 is designed around a local-only default:
+
+- the gateway binds to `127.0.0.1` by default
+- Tailscale uses tailnet-only exposure
+- SSH uses local forwards to `127.0.0.1` on the operator machine
+
+When remote access is enabled, the main operator surface is token-gated.
+
+Protected surfaces:
+
+- `/api/status`
+- `/api/browser/*`
+- `/api/uploads/*`
+- `/ws`
+
+Key details:
+
+- Keygate reuses `server.apiToken` as the shared operator token
+- the web app exchanges that token for an HttpOnly session cookie
+- webhook, Gmail push, and plugin-route auth stay on their existing route-specific auth behavior
+
+Recommendations:
+
+- keep `server.host=127.0.0.1`
+- rotate `server.apiToken` if it is exposed
+- prefer Tailscale over public tunnels when possible
+- use ngrok only when you intentionally need public internet reachability
+
+---
+
 ## 🚨 Threat Model
 
 ### Prompt Injection

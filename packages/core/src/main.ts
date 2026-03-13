@@ -12,7 +12,7 @@ import { ensureWorkspaceGitRepo } from './workspace/gitWorkspace.js';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 
-const DEFAULT_CHAT_SITE_URL = 'http://localhost:18790';
+const DEFAULT_CHAT_SITE_URL = 'http://127.0.0.1:18790';
 const DISABLED_ENV_VALUES = new Set(['0', 'false', 'no', 'off']);
 
 async function main(): Promise<void> {

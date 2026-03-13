@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef, type FormEvent } from 'react';
 import { ChatView } from './components/ChatView';
 import { LiveActivityLog } from './components/LiveActivityLog';
 import { SecurityBadge } from './components/SecurityBadge';
@@ -48,6 +48,7 @@ type CodexReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 type ConfirmationDecision = 'allow_once' | 'allow_always' | 'cancel';
 type BrowserDomainPolicy = 'none' | 'allowlist' | 'blocklist';
 type ConfigSectionTarget = 'top' | 'marketplace' | 'mcp-browser' | 'plugins';
+type OperatorAuthMode = 'off' | 'token';
 
 interface BrowserConfigState {
   installed: boolean;
@@ -574,6 +575,47 @@ function parseWhatsAppConfig(value: unknown): WhatsAppConfigState | undefined {
     groupRequireMentionDefault: payload['groupRequireMentionDefault'] !== false,
     sendReadReceipts: payload['sendReadReceipts'] !== false,
   };
+}
+
+function parseRemoteAuthMode(value: unknown): OperatorAuthMode | undefined {
+  const payload = asRecord(value);
+  const authMode = firstString(payload?.['authMode']);
+  return authMode === 'token' ? 'token' : authMode === 'off' ? 'off' : undefined;
+}
+
+export interface OperatorSurfaceProbeResult {
+  authState: 'authorized' | 'unauthorized';
+  authMode?: OperatorAuthMode;
+}
+
+export function resolveOperatorSurfaceProbe(
+  responseStatus: number,
+  payload?: Record<string, unknown>,
+): OperatorSurfaceProbeResult {
+  if (responseStatus === 401) {
+    return {
+      authState: 'unauthorized',
+      authMode: 'token',
+    };
+  }
+
+  if (responseStatus >= 200 && responseStatus < 300) {
+    return {
+      authState: 'authorized',
+      authMode: parseRemoteAuthMode(payload?.['remote']) ?? 'off',
+    };
+  }
+
+  return {
+    authState: 'authorized',
+  };
+}
+
+export function shouldProbeOperatorSurfaceOnDisconnect(
+  authMode: OperatorAuthMode,
+  everConnected: boolean,
+): boolean {
+  return authMode === 'token' || everConnected;
 }
 
 function parseBrowserConfig(value: unknown): BrowserConfigState | undefined {
@@ -1266,6 +1308,11 @@ function App() {
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() => (
     resolveTheme(readThemePreference(), getSystemTheme())
   ));
+  const [authState, setAuthState] = useState<'checking' | 'authorized' | 'unauthorized'>('checking');
+  const [operatorAuthMode, setOperatorAuthMode] = useState<OperatorAuthMode>('off');
+  const [operatorTokenDraft, setOperatorTokenDraft] = useState('');
+  const [authSubmitting, setAuthSubmitting] = useState(false);
+  const [authError, setAuthError] = useState('');
 
   const [llm, setLlm] = useState<LLMState>({ provider: 'openai', model: 'gpt-4o', reasoningEffort: 'medium' });
   const [discordConfig, setDiscordConfig] = useState<DiscordConfigState>({
@@ -1490,6 +1537,13 @@ function App() {
         setMode(data['mode'] as SecurityMode);
         setSpicyEnabled(data['spicyEnabled'] as boolean);
         setSpicyObedienceEnabled(data['spicyObedienceEnabled'] === true);
+        setAuthState('authorized');
+        setAuthError('');
+
+        const remoteAuthMode = parseRemoteAuthMode(data['remote']);
+        if (remoteAuthMode) {
+          setOperatorAuthMode(remoteAuthMode);
+        }
 
         const llmState = data['llm'] as LLMState | undefined;
         if (llmState?.provider && llmState?.model) {
@@ -2541,7 +2595,42 @@ function App() {
     selectedSessionId,
   ]);
 
-  const { send, connected, connecting } = useWebSocket(getWebSocketUrl(), handleMessage);
+  const probeOperatorSurface = useCallback(async () => {
+    try {
+      const response = await fetch('/api/status', {
+        credentials: 'same-origin',
+        cache: 'no-store',
+      });
+      const payload = response.ok
+        ? await response.json() as Record<string, unknown>
+        : undefined;
+      const next = resolveOperatorSurfaceProbe(response.status, payload);
+      if (next.authMode) {
+        setOperatorAuthMode(next.authMode);
+      }
+      setAuthState(next.authState);
+      setAuthError('');
+    } catch {
+      setAuthState('authorized');
+    }
+  }, []);
+
+  useEffect(() => {
+    if (authState !== 'checking') {
+      return;
+    }
+
+    void probeOperatorSurface();
+  }, [authState, probeOperatorSurface]);
+
+  const { send, connected, connecting } = useWebSocket(getWebSocketUrl(), handleMessage, {
+    enabled: authState === 'authorized',
+    onDisconnected: ({ everConnected }) => {
+      if (shouldProbeOperatorSurfaceOnDisconnect(operatorAuthMode, everConnected)) {
+        void probeOperatorSurface();
+      }
+    },
+  });
 
   useEffect(() => {
     if (!connected) {
@@ -2959,6 +3048,62 @@ function App() {
   const handleThemeToggle = useCallback(() => {
     setThemePreference((previous) => getNextThemePreferenceForToggle(previous, resolvedTheme));
   }, [resolvedTheme]);
+
+  const handleOperatorLogin = useCallback(async (event?: FormEvent<HTMLFormElement>) => {
+    event?.preventDefault();
+
+    const token = operatorTokenDraft.trim();
+    if (!token) {
+      setAuthError('Enter the operator token.');
+      return;
+    }
+
+    setAuthSubmitting(true);
+    setAuthError('');
+
+    try {
+      const response = await fetch('/api/auth/session', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        credentials: 'same-origin',
+      });
+
+      if (response.status === 401) {
+        setAuthError('The operator token was rejected.');
+        return;
+      }
+
+      if (!response.ok) {
+        throw new Error(`Login failed with status ${response.status}`);
+      }
+
+      setOperatorAuthMode('token');
+      setOperatorTokenDraft('');
+      setAuthState('authorized');
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : 'Login failed.');
+    } finally {
+      setAuthSubmitting(false);
+    }
+  }, [operatorTokenDraft]);
+
+  const handleOperatorLogout = useCallback(async () => {
+    setAuthSubmitting(true);
+    try {
+      await fetch('/api/auth/session', {
+        method: 'DELETE',
+        credentials: 'same-origin',
+      });
+    } catch {
+      // Best-effort cookie clearing only.
+    } finally {
+      setAuthSubmitting(false);
+      setAuthState('unauthorized');
+      setAuthError('');
+    }
+  }, []);
 
   const openConfigScreenAt = useCallback((target: ConfigSectionTarget) => {
     setActiveScreen('config');
@@ -3463,6 +3608,26 @@ function App() {
   const themeToggleLabel = resolvedTheme === 'dark' ? 'Light mode' : 'Dark mode';
   const resolvedThemeLabel = resolvedTheme === 'dark' ? 'Dark' : 'Light';
   const activeScreenLabel = ACTIVE_SCREEN_LABELS[activeScreen];
+  const connectionStateClass =
+    authState === 'checking'
+      ? 'connecting'
+      : connected
+        ? 'connected'
+        : connecting
+          ? 'connecting'
+          : authState === 'unauthorized'
+            ? 'disconnected'
+            : 'disconnected';
+  const connectionLabel =
+    authState === 'checking'
+      ? 'Checking access...'
+      : authState === 'unauthorized'
+        ? 'Authentication required'
+        : connected
+          ? 'Connected'
+          : connecting
+            ? 'Connecting...'
+            : 'Disconnected';
 
   const renderComingSoonScreen = (title: string, description: string) => (
     <div className="placeholder-screen">
@@ -3470,6 +3635,45 @@ function App() {
       <div className="placeholder-card">
         <h3>Coming Soon</h3>
         <p>{description}</p>
+      </div>
+    </div>
+  );
+
+  const renderOperatorAuthGate = () => (
+    <div className="auth-gate">
+      <div className="auth-card">
+        <p className="auth-eyebrow">Remote Gateway Access</p>
+        <h2>Operator token required</h2>
+        <p className="auth-copy">
+          This Keygate operator surface is protected. Enter the configured `server.apiToken` to continue.
+        </p>
+        <form className="auth-form" onSubmit={handleOperatorLogin}>
+          <label className="auth-label" htmlFor="operator-token">Operator token</label>
+          <input
+            id="operator-token"
+            className="auth-input"
+            type="password"
+            value={operatorTokenDraft}
+            onChange={(event) => setOperatorTokenDraft(event.target.value)}
+            autoComplete="current-password"
+            spellCheck={false}
+            disabled={authSubmitting}
+          />
+          {authError ? <p className="auth-error">{authError}</p> : null}
+          <button type="submit" className="btn-primary auth-submit" disabled={authSubmitting}>
+            {authSubmitting ? 'Signing in…' : 'Sign in'}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+
+  const renderOperatorCheckingGate = () => (
+    <div className="auth-gate auth-gate-loading">
+      <div className="auth-card">
+        <p className="auth-eyebrow">Remote Gateway Access</p>
+        <h2>Checking operator access</h2>
+        <p className="auth-copy">Waiting for the local Keygate gateway to confirm whether login is required.</p>
       </div>
     </div>
   );
@@ -3553,13 +3757,23 @@ function App() {
           />
         </div>
         <div className="header-right">
-          <div className={`connection-status ${connected ? 'connected' : connecting ? 'connecting' : 'disconnected'}`}>
+          <div className={`connection-status ${connectionStateClass}`}>
             <span className="status-dot" />
-            {connected ? 'Connected' : connecting ? 'Connecting...' : 'Disconnected'}
+            {connectionLabel}
           </div>
           <span className="header-screen-label">
             {activeScreenLabel}
           </span>
+          {operatorAuthMode === 'token' && authState === 'authorized' ? (
+            <button
+              className="btn-secondary"
+              onClick={handleOperatorLogout}
+              disabled={authSubmitting}
+              title="Sign out from the protected operator surface"
+            >
+              Log out
+            </button>
+          ) : null}
           <button
             className="btn-secondary"
             onClick={handleThemeToggle}
@@ -3596,12 +3810,16 @@ function App() {
       </header>
 
       <main className="app-main">
-        <SessionSidebar
-          activeTab={activeScreen}
-          onSelectTab={setActiveScreen}
-          onAction={handleSidebarAction}
-        />
-        <section className="chat-shell">
+        {authState === 'checking' ? renderOperatorCheckingGate() : null}
+        {authState === 'unauthorized' ? renderOperatorAuthGate() : null}
+        {authState === 'authorized' ? (
+          <>
+            <SessionSidebar
+              activeTab={activeScreen}
+              onSelectTab={setActiveScreen}
+              onAction={handleSidebarAction}
+            />
+            <section className="chat-shell">
           {activeScreen === 'chat' && (
             <>
               <div className="chat-toolbar">
@@ -4950,17 +5168,19 @@ function App() {
               onFetchLog={() => send({ type: 'git_log' })}
             />
           )}
-        </section>
+            </section>
 
-        <LiveActivityLog
-          events={activeToolEvents}
-          latestScreenshot={activeLatestScreenshot}
-          collapsed={activityCollapsed}
-          onToggleCollapsed={() => setActivityCollapsed((prev) => !prev)}
-        />
+            <LiveActivityLog
+              events={activeToolEvents}
+              latestScreenshot={activeLatestScreenshot}
+              collapsed={activityCollapsed}
+              onToggleCollapsed={() => setActivityCollapsed((prev) => !prev)}
+            />
+          </>
+        ) : null}
       </main>
 
-      {pendingConfirmation && (
+      {authState === 'authorized' && pendingConfirmation && (
         <ConfirmationModal
           prompt={pendingConfirmation.prompt}
           details={pendingConfirmation.details}

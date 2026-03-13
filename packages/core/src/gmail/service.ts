@@ -388,7 +388,7 @@ export class GmailAutomationService {
   async handlePushRequest(rawBody: string, authHeader: string | undefined, requestUrl: string): Promise<GmailPushResult> {
     const secret = this.config.gmail?.defaults.pushPathSecret?.trim();
     if (secret) {
-      const url = new URL(requestUrl, 'http://localhost');
+      const url = new URL(requestUrl, 'http://127.0.0.1');
       if (url.searchParams.get('secret') !== secret) {
         return {
           accepted: false,
@@ -723,7 +723,7 @@ export class GmailAutomationService {
       return `${base}/api/gmail/push${secret ? `?secret=${encodeURIComponent(secret)}` : ''}`;
     }
 
-    const url = new URL(requestUrl, 'http://localhost');
+    const url = new URL(requestUrl, 'http://127.0.0.1');
     return url.toString();
   }
 

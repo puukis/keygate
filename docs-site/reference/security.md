@@ -84,6 +84,12 @@ Pairing is the safest default for external inbound traffic. Use allowlists when 
 
 ## Operator auth and remote surfaces
 
+Remote Gateway Access v1 assumes a local-only default:
+
+- the gateway binds to `127.0.0.1` by default
+- Tailscale exposure stays private to the tailnet
+- managed SSH access stays on `127.0.0.1` on the operator machine
+
 Set `server.apiToken` or `KEYGATE_SERVER_API_TOKEN` when any operator-only HTTP surface is exposed.
 
 That token is especially important for:
@@ -91,6 +97,20 @@ That token is especially important for:
 - plugin HTTP routes using `auth: "operator"`
 - remote deployments
 - multi-user or team-operated environments
+
+When `remote.authMode="token"`, Keygate protects the main operator surface:
+
+- `/api/status`
+- `/api/browser/*`
+- `/api/uploads/*`
+- `/ws`
+
+Important detail:
+
+- static assets stay public so the SPA can boot and show the login form
+- the browser exchanges the token for an HttpOnly session cookie through `POST /api/auth/session`
+- `DELETE /api/auth/session` clears the operator session cookie
+- `/api/webhooks/*`, `/api/gmail/push`, and `/api/plugins/*` keep their existing route-specific auth behavior
 
 The doctor command warns when operator auth is missing in situations that expose risk.
 
@@ -125,7 +145,9 @@ Good practice:
 
 - [ ] safe mode is the default
 - [ ] Docker is installed and healthy on safe-mode hosts
+- [ ] `server.host=127.0.0.1` unless a wider bind is truly required
 - [ ] `server.apiToken` is configured for remote/operator setups
+- [ ] `remote.authMode=token` is enabled before starting a managed remote transport
 - [ ] external DM policy is `pairing` unless there is a strong reason otherwise
 - [ ] high-risk node capabilities are enabled only where needed
 - [ ] Gmail push uses a secret and public URL only when required

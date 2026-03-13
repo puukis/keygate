@@ -115,7 +115,14 @@ function createConfig(overrides: Partial<KeygateConfig['browser']> = {}): Keygat
       allowedBinaries: ['git'],
     },
     server: {
+      host: '127.0.0.1',
       port: 18790,
+      apiToken: '',
+    },
+    remote: {
+      authMode: 'off',
+      tailscale: { resetOnStop: false },
+      ssh: { port: 22, localPort: 28790, remotePort: 18790 },
     },
     browser: {
       domainPolicy: 'none',

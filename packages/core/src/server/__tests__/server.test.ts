@@ -1012,7 +1012,7 @@ async function invokeUpload(args: {
     'content-type': args.contentType,
   };
 
-  const url = new URL(`http://localhost/api/uploads/image?sessionId=${encodeURIComponent(args.sessionId)}`);
+  const url = new URL(`http://127.0.0.1/api/uploads/image?sessionId=${encodeURIComponent(args.sessionId)}`);
   const response = createMockResponse();
 
   const pending = handleImageUploadRequest(req as any, response.res as any, url, args.workspacePath);
@@ -1029,7 +1029,7 @@ async function invokeServeUpload(args: {
   attachmentId: string;
 }): Promise<MockResponseResult> {
   const url = new URL(
-    `http://localhost/api/uploads/image?sessionId=${encodeURIComponent(args.sessionId)}&id=${encodeURIComponent(args.attachmentId)}`
+    `http://127.0.0.1/api/uploads/image?sessionId=${encodeURIComponent(args.sessionId)}&id=${encodeURIComponent(args.attachmentId)}`
   );
   const response = createMockResponse();
 

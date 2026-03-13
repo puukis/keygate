@@ -56,6 +56,25 @@ Not every field must be present. A typical advanced config looks like this:
       "degradeWithoutDocker": true
     }
   },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 18790,
+    "apiToken": "replace-me"
+  },
+  "remote": {
+    "authMode": "token",
+    "tailscale": {
+      "resetOnStop": false
+    },
+    "ssh": {
+      "host": "gateway.example.com",
+      "user": "ops",
+      "port": 22,
+      "localPort": 28790,
+      "remotePort": 18790,
+      "identityFile": "~/.ssh/id_ed25519"
+    }
+  },
   "gmail": {
     "clientId": "YOUR_GOOGLE_OAUTH_CLIENT_ID",
     "authorizationEndpoint": "https://accounts.google.com/o/oauth2/v2/auth",
@@ -155,10 +174,55 @@ Meaning of the sandbox fields:
 
 Important server settings:
 
+- `server.host`
 - `PORT`
 - `server.apiToken` or `KEYGATE_SERVER_API_TOKEN`
 
-Set `server.apiToken` when you expose operator-only plugin HTTP routes or remote web/API surfaces.
+Recommended defaults:
+
+- `server.host="127.0.0.1"`
+- `server.port=18790`
+- `remote.authMode="off"` until you intentionally enable a managed remote transport
+
+When remote access is enabled, `server.apiToken` protects:
+
+- `/api/status`
+- `/api/browser/*`
+- `/api/uploads/*`
+- `/ws`
+
+Structured remote config:
+
+```json
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 18790,
+    "apiToken": "replace-me"
+  },
+  "remote": {
+    "authMode": "token",
+    "tailscale": {
+      "resetOnStop": false
+    },
+    "ssh": {
+      "host": "gateway.example.com",
+      "user": "ops",
+      "port": 22,
+      "localPort": 28790,
+      "remotePort": 18790,
+      "identityFile": "~/.ssh/id_ed25519"
+    }
+  }
+}
+```
+
+Meaning:
+
+- `server.host`: bind address used by `keygate serve` and the managed gateway service
+- `remote.authMode`: `off` or `token`
+- `remote.tailscale.resetOnStop`: whether `keygate remote tailscale stop` should run a full serve reset
+- `remote.ssh.*`: persisted SSH tunnel profile used by `keygate remote ssh ...`
 
 ### Channel credentials and policy
 
