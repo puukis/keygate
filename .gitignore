@@ -50,7 +50,10 @@ test-results/
 scripts/bump-release.sh
 
 .playwright-cli/
+.playwright-mcp/
 
 .codex/
 
 .github/skills/
+
+.claude/

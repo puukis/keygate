@@ -1,3 +1,4 @@
+/* ─── SLASH COMMAND MENU ─────────────────────────────────── */
 .slash-command-menu {
   position: absolute;
   bottom: 100%;
@@ -6,10 +7,13 @@
   max-height: 240px;
   overflow-y: auto;
   background: var(--surface-elevated);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: var(--shadow-soft);
-  margin-bottom: 6px;
+  border: 0.5px solid var(--border);
+  border-bottom: none;
+  border-radius: 10px 10px 0 0;
+  box-shadow:
+    0 -8px 32px rgba(0, 0, 0, 0.4),
+    0 0 0 0.5px var(--accent-border);
+  margin-bottom: 0;
   padding: 4px;
   z-index: 50;
 }
@@ -20,44 +24,55 @@
   gap: 10px;
   width: 100%;
   padding: 8px 10px;
-  border: none;
+  border: 0.5px solid transparent;
   border-radius: 6px;
   background: transparent;
   color: var(--text-primary);
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   cursor: pointer;
   text-align: left;
+  transition: background 0.12s, border-color 0.12s, transform 0.12s;
 }
 
 .slash-command-item:hover,
 .slash-command-item-active {
-  background: color-mix(in srgb, var(--accent) 12%, var(--surface-solid));
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+}
+
+.slash-command-item:hover {
+  transform: translateX(2px);
 }
 
 .slash-command-name {
   font-weight: 600;
   font-family: var(--font-mono);
+  font-size: 0.78rem;
   color: var(--accent);
   white-space: nowrap;
+  letter-spacing: 0.02em;
 }
 
 .slash-command-desc {
   flex: 1;
   min-width: 0;
   color: var(--text-secondary);
+  font-size: 0.78rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .slash-command-badge {
-  font-size: 0.65rem;
-  font-weight: 600;
+  font-size: 0.6rem;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.1em;
+  font-family: var(--font-mono);
   color: var(--text-tertiary);
   background: var(--surface-muted);
-  border-radius: 4px;
-  padding: 2px 5px;
+  border: 0.5px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 6px;
   white-space: nowrap;
 }
