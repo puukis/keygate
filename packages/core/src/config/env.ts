@@ -41,6 +41,11 @@ const DEFAULT_REMOTE_SSH_PORT = 22;
 const DEFAULT_REMOTE_SSH_LOCAL_PORT = 28790;
 const DEFAULT_REMOTE_SSH_REMOTE_PORT = 18790;
 const DEFAULT_BROWSER_ARTIFACTS_DIRNAME = '.keygate-browser-runs';
+const DEFAULT_WEBCHAT_GUEST_PATH = '/webchat';
+const DEFAULT_WEBCHAT_WS_PATH = '/webchat/ws';
+const DEFAULT_CANVAS_BASE_PATH = '/__keygate__/canvas';
+const DEFAULT_CANVAS_A2UI_PATH = '/__keygate__/a2ui';
+const DEFAULT_CANVAS_WS_PATH = '/__keygate__/canvas/ws';
 const DEFAULT_SKILLS_WATCH = true;
 const DEFAULT_SKILLS_WATCH_DEBOUNCE_MS = 250;
 const DEFAULT_SKILLS_NODE_MANAGER: NodeManager = 'npm';
@@ -143,6 +148,25 @@ export function loadConfigFromEnv(): KeygateConfig {
   const pricingOverrides = loadPersistedPricingOverrides(persistedConfig);
   const provider = normalizeProvider(process.env['LLM_PROVIDER']);
   const workspacePath = resolveWorkspacePath(process.env['WORKSPACE_PATH']);
+  const defaultMemoryConfig = buildDefaultMemoryConfig(workspacePath);
+  const defaultMemoryBackend = defaultMemoryConfig.backend ?? {
+    active: 'lancedb',
+    lancedbPath: path.join(workspacePath, '.keygate-memory-lancedb'),
+    enableSqliteFallback: true,
+  };
+  const defaultMemoryBatch = defaultMemoryConfig.batch ?? {
+    enabled: true,
+    provider: 'openai' as const,
+    waitForCompletion: false,
+    pollIntervalMs: 2_000,
+    timeoutMs: 10 * 60 * 1000,
+    minBatchSize: 64,
+  };
+  const defaultMemoryMultimodal = defaultMemoryConfig.multimodal ?? {
+    enabled: true,
+    modalities: ['image', 'audio', 'pdf'] as Array<'image' | 'audio' | 'pdf'>,
+    maxFileBytes: 10 * 1024 * 1024,
+  };
   const spicyModeEnabled = process.env['SPICY_MODE_ENABLED'] === 'true';
   const spicyMaxObedienceEnabled =
     spicyModeEnabled && process.env['SPICY_MAX_OBEDIENCE_ENABLED'] === 'true';
@@ -202,12 +226,23 @@ export function loadConfigFromEnv(): KeygateConfig {
       mcpPlaywrightVersion,
       artifactsPath,
     },
+    webchat: buildDefaultWebChatConfig(),
+    canvas: buildDefaultCanvasConfig(workspacePath),
+    media: buildDefaultMediaConfig(),
     telegram: loadTelegramConfig(),
     discord: {
       token: process.env['DISCORD_TOKEN'] ?? '',
       prefix: discordPrefix,
       dmPolicy: normalizeDmPolicy(process.env['DISCORD_DM_POLICY']),
       allowFrom: parseIdList(process.env['DISCORD_ALLOW_FROM']),
+      voice: {
+        enabled: parseBooleanEnv(process.env['KEYGATE_DISCORD_VOICE_ENABLED']) ?? false,
+        silenceDurationMs: parsePositiveInteger(process.env['KEYGATE_DISCORD_VOICE_SILENCE_MS'], 1000),
+        minSegmentMs: parsePositiveInteger(process.env['KEYGATE_DISCORD_VOICE_MIN_SEGMENT_MS'], 350),
+        playbackVolume: parseBoundedNumber(process.env['KEYGATE_DISCORD_VOICE_PLAYBACK_VOLUME'], 1, 0, 2),
+        ttsEnabled: parseBooleanEnv(process.env['KEYGATE_DISCORD_VOICE_TTS_ENABLED']) ?? true,
+        controlChannelMode: process.env['KEYGATE_DISCORD_VOICE_CONTROL_MODE']?.trim() === 'thread' ? 'thread' : 'reply',
+      },
     },
     slack: {
       botToken: process.env['SLACK_BOT_TOKEN'] ?? '',
@@ -244,7 +279,26 @@ export function loadConfigFromEnv(): KeygateConfig {
       temporalDecay: process.env['KEYGATE_MEMORY_TEMPORAL_DECAY'] === 'true',
       temporalHalfLifeDays: parseInt(process.env['KEYGATE_MEMORY_TEMPORAL_HALF_LIFE'] ?? '30', 10),
       mmr: process.env['KEYGATE_MEMORY_MMR'] === 'true',
+      backend: {
+        active: normalizeMemoryBackend(process.env['KEYGATE_MEMORY_BACKEND']) ?? defaultMemoryBackend.active,
+        lancedbPath: process.env['KEYGATE_MEMORY_LANCEDB_PATH']?.trim() || defaultMemoryBackend.lancedbPath,
+        enableSqliteFallback: parseBooleanEnv(process.env['KEYGATE_MEMORY_ENABLE_SQLITE_FALLBACK']) ?? defaultMemoryBackend.enableSqliteFallback,
+      },
+      batch: {
+        enabled: parseBooleanEnv(process.env['KEYGATE_MEMORY_BATCH_ENABLED']) ?? defaultMemoryBatch.enabled,
+        provider: 'openai',
+        waitForCompletion: parseBooleanEnv(process.env['KEYGATE_MEMORY_BATCH_WAIT']) ?? defaultMemoryBatch.waitForCompletion,
+        pollIntervalMs: parsePositiveInteger(process.env['KEYGATE_MEMORY_BATCH_POLL_MS'], defaultMemoryBatch.pollIntervalMs),
+        timeoutMs: parsePositiveInteger(process.env['KEYGATE_MEMORY_BATCH_TIMEOUT_MS'], defaultMemoryBatch.timeoutMs),
+        minBatchSize: parsePositiveInteger(process.env['KEYGATE_MEMORY_BATCH_MIN_SIZE'], defaultMemoryBatch.minBatchSize),
+      },
+      multimodal: {
+        enabled: parseBooleanEnv(process.env['KEYGATE_MEMORY_MULTIMODAL_ENABLED']) ?? defaultMemoryMultimodal.enabled,
+        modalities: parseMemoryModalities(process.env['KEYGATE_MEMORY_MULTIMODAL_MODALITIES']) ?? defaultMemoryMultimodal.modalities,
+        maxFileBytes: parsePositiveInteger(process.env['KEYGATE_MEMORY_MULTIMODAL_MAX_FILE_BYTES'], defaultMemoryMultimodal.maxFileBytes),
+      },
     },
+    actions: buildDefaultChannelActionsConfig(),
   };
 }
 
@@ -1059,6 +1113,138 @@ function buildDefaultSandboxConfig(): KeygateConfig['security']['sandbox'] {
   };
 }
 
+function buildDefaultWebChatConfig(): KeygateConfig['webchat'] {
+  return {
+    enabled: true,
+    tokenSecret: process.env['KEYGATE_WEBCHAT_TOKEN_SECRET']?.trim() || getDeviceId(),
+    guestPath: DEFAULT_WEBCHAT_GUEST_PATH,
+    websocketPath: DEFAULT_WEBCHAT_WS_PATH,
+    defaultExpiryMinutes: 60,
+    maxExpiryMinutes: 60 * 24 * 7,
+    maxConnectionsPerLink: 2,
+    maxMessagesPerMinute: 60,
+    maxUploadsPerLink: 25,
+    capabilities: {
+      canCancelRun: true,
+      canUploadAttachments: true,
+      canVotePolls: true,
+    },
+  };
+}
+
+function buildDefaultCanvasConfig(workspacePath: string): KeygateConfig['canvas'] {
+  return {
+    enabled: true,
+    rootDir: path.join(workspacePath, 'canvas'),
+    basePath: DEFAULT_CANVAS_BASE_PATH,
+    a2uiPath: DEFAULT_CANVAS_A2UI_PATH,
+    websocketPath: DEFAULT_CANVAS_WS_PATH,
+    liveReload: true,
+  };
+}
+
+function buildDefaultMediaConfig(): KeygateConfig['media'] {
+  return {
+    enabled: true,
+    cacheDir: path.join(getConfigDir(), 'media-cache'),
+    openai: {
+      transcriptionModel: process.env['KEYGATE_MEDIA_OPENAI_TRANSCRIPTION_MODEL']?.trim() || 'gpt-4o-mini-transcribe',
+      imageModel: process.env['KEYGATE_MEDIA_OPENAI_IMAGE_MODEL']?.trim() || 'gpt-4.1-mini',
+      ttsModel: process.env['KEYGATE_MEDIA_OPENAI_TTS_MODEL']?.trim() || 'gpt-4o-mini-tts',
+      ttsVoice: process.env['KEYGATE_MEDIA_OPENAI_TTS_VOICE']?.trim() || 'alloy',
+    },
+    fallbacks: {
+      ffmpegBinary: process.env['KEYGATE_MEDIA_FFMPEG_BIN']?.trim() || 'ffmpeg',
+      ffprobeBinary: process.env['KEYGATE_MEDIA_FFPROBE_BIN']?.trim() || 'ffprobe',
+      whisperBinary: process.env['KEYGATE_MEDIA_WHISPER_BIN']?.trim() || 'whisper',
+      whisperCliBinary: process.env['KEYGATE_MEDIA_WHISPER_CLI_BIN']?.trim() || 'whisper-cli',
+    },
+    maxAttachmentBytes: parsePositiveInteger(process.env['KEYGATE_MEDIA_MAX_ATTACHMENT_BYTES'], 25 * 1024 * 1024),
+    maxPdfPages: parsePositiveInteger(process.env['KEYGATE_MEDIA_MAX_PDF_PAGES'], 8),
+    maxImageDescriptionTokens: parsePositiveInteger(process.env['KEYGATE_MEDIA_MAX_IMAGE_TOKENS'], 600),
+  };
+}
+
+function buildDefaultMemoryConfig(workspacePath: string): NonNullable<KeygateConfig['memory']> {
+  return {
+    provider: 'auto',
+    model: undefined,
+    vectorWeight: 0.7,
+    textWeight: 0.3,
+    maxResults: 6,
+    minScore: 0.35,
+    autoIndex: true,
+    indexSessions: true,
+    temporalDecay: false,
+    temporalHalfLifeDays: 30,
+    mmr: false,
+    backend: {
+      active: 'lancedb',
+      lancedbPath: path.join(workspacePath, '.keygate-memory-lancedb'),
+      enableSqliteFallback: true,
+    },
+    batch: {
+      enabled: true,
+      provider: 'openai',
+      waitForCompletion: false,
+      pollIntervalMs: 2_000,
+      timeoutMs: 10 * 60 * 1000,
+      minBatchSize: 64,
+    },
+    multimodal: {
+      enabled: true,
+      modalities: ['image', 'audio', 'pdf'],
+      maxFileBytes: 10 * 1024 * 1024,
+    },
+  };
+}
+
+function buildDefaultChannelActionsConfig(): KeygateConfig['actions'] {
+  return {
+    webchat: {
+      send: true,
+      edit: true,
+      delete: true,
+      react: true,
+      poll: true,
+    },
+    discord: {
+      send: true,
+      read: true,
+      edit: true,
+      delete: true,
+      react: true,
+      reactions: true,
+      poll: true,
+      threadCreate: true,
+      threadList: true,
+      threadReply: true,
+    },
+    slack: {
+      send: true,
+      edit: true,
+      delete: true,
+      react: true,
+      threadReply: true,
+    },
+    telegram: {
+      send: true,
+      edit: true,
+      delete: true,
+      react: true,
+      poll: true,
+      topicCreate: true,
+      threadReply: true,
+    },
+    whatsapp: {
+      send: true,
+      react: true,
+      poll: true,
+      reply: true,
+    },
+  };
+}
+
 function buildDefaultGmailConfig(): GmailConfig {
   return {
     authorizationEndpoint: 'https://accounts.google.com/o/oauth2/v2/auth',
@@ -1095,6 +1281,19 @@ function normalizeSandboxScope(value: unknown): SandboxScope | undefined {
 
   const normalized = value.trim().toLowerCase();
   if (normalized === 'session' || normalized === 'agent') {
+    return normalized;
+  }
+
+  return undefined;
+}
+
+function normalizeMemoryBackend(value: unknown): 'sqlite-vec' | 'lancedb' | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'sqlite-vec' || normalized === 'lancedb') {
     return normalized;
   }
 
@@ -1320,6 +1519,37 @@ function parseBooleanEnv(value: string | undefined): boolean | undefined {
   }
 
   return undefined;
+}
+
+function parseBoundedNumber(
+  value: string | undefined,
+  fallback: number,
+  min: number,
+  max: number
+): number {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return fallback;
+  }
+
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function parseMemoryModalities(value: string | undefined): Array<'image' | 'audio' | 'pdf'> | undefined {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return undefined;
+  }
+
+  const normalized = value
+    .split(',')
+    .map((entry) => entry.trim().toLowerCase())
+    .filter((entry): entry is 'image' | 'audio' | 'pdf' => entry === 'image' || entry === 'audio' || entry === 'pdf');
+
+  return normalized.length > 0 ? Array.from(new Set(normalized)) : undefined;
 }
 
 export function loadTelegramConfig(): TelegramConfig | undefined {

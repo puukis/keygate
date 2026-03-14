@@ -1,10 +1,12 @@
 import {
   Gateway,
+  getChannelActionRegistry,
   normalizeTelegramMessage,
   loadConfigFromEnv,
   loadEnvironment,
   RoutingRuleStore,
   RoutingService,
+  type ChannelActionName,
   type KeygateConfig,
 } from '@puukis/core';
 import { Bot, type Context } from 'grammy';
@@ -60,6 +62,7 @@ export async function startTelegramBot(config: KeygateConfig): Promise<{ stop():
   const dedup = new UpdateDeduplicator();
 
   const bot = new Bot<Context>(token);
+  registerTelegramActionAdapter(bot, config);
 
   // Clear any stale webhook so polling works cleanly and allowed_updates is reset
   await bot.api.deleteWebhook({ drop_pending_updates: false }).catch(() => {});
@@ -271,6 +274,159 @@ export async function startTelegramBot(config: KeygateConfig): Promise<{ stop():
       },
     };
   }
+}
+
+function registerTelegramActionAdapter(bot: Bot<Context>, config: KeygateConfig): void {
+  const gate = config.actions?.telegram ?? {
+    send: true,
+    react: true,
+    edit: true,
+    delete: true,
+    poll: true,
+    topicCreate: true,
+    threadReply: true,
+  };
+  const actions: ChannelActionName[] = [];
+  if (gate.send !== false) actions.push('send');
+  if (gate.react !== false) actions.push('react');
+  if (gate.edit !== false) actions.push('edit');
+  if (gate.delete !== false) actions.push('delete');
+  if (gate.poll !== false) actions.push('poll');
+  if (gate.topicCreate !== false) actions.push('topic-create');
+  if (gate.threadReply !== false) actions.push('thread-reply');
+
+  getChannelActionRegistry().register({
+    channel: 'telegram',
+    actions,
+    handle: async (ctx) => {
+      const chatId = parseTelegramChatId(ctx.params['chatId']);
+      const messageId = typeof ctx.params['messageId'] === 'number'
+        ? Math.floor(ctx.params['messageId'])
+        : Number.parseInt(String(ctx.params['messageId'] ?? ''), 10);
+      const threadId = typeof ctx.params['threadId'] === 'number'
+        ? Math.floor(ctx.params['threadId'])
+        : Number.parseInt(String(ctx.params['threadId'] ?? ''), 10);
+      const content = typeof ctx.params['content'] === 'string' ? ctx.params['content'].trim() : '';
+
+      if (!chatId) {
+        return { ok: false, channel: 'telegram', error: 'Telegram actions require chatId.' };
+      }
+
+      if (ctx.action === 'send') {
+        const sent = await bot.api.sendMessage(chatId, content || '(No response)');
+        return {
+          ok: true,
+          channel: 'telegram',
+          externalMessageId: String(sent.message_id),
+          payload: { content },
+        };
+      }
+
+      if (ctx.action === 'thread-reply') {
+        if (!Number.isFinite(threadId)) {
+          return { ok: false, channel: 'telegram', error: 'Telegram thread-reply requires threadId.' };
+        }
+        const sent = await bot.api.sendMessage(chatId, content || '(No response)', {
+          message_thread_id: threadId,
+        });
+        return {
+          ok: true,
+          channel: 'telegram',
+          externalMessageId: String(sent.message_id),
+          threadId: String(threadId),
+          payload: { content, threadId },
+        };
+      }
+
+      if (ctx.action === 'topic-create') {
+        const name = typeof ctx.params['name'] === 'string' && ctx.params['name'].trim().length > 0
+          ? ctx.params['name'].trim()
+          : `Topic ${new Date().toLocaleString()}`;
+        const topic = await (bot.api as any).createForumTopic(chatId, name);
+        return {
+          ok: true,
+          channel: 'telegram',
+          threadId: String(topic.message_thread_id),
+          payload: { name, threadId: topic.message_thread_id },
+        };
+      }
+
+      if (ctx.action === 'poll') {
+        const question = typeof ctx.params['question'] === 'string' ? ctx.params['question'].trim() : '';
+        const options = Array.isArray(ctx.params['options'])
+          ? ctx.params['options'].filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+          : [];
+        if (!question || options.length < 2) {
+          return { ok: false, channel: 'telegram', error: 'Telegram poll requires a question and at least two options.' };
+        }
+        const sent = await bot.api.sendPoll(chatId, question, options, {
+          allows_multiple_answers: ctx.params['multiple'] === true,
+        });
+        return {
+          ok: true,
+          channel: 'telegram',
+          externalMessageId: String(sent.message_id),
+          pollId: sent.poll.id,
+          payload: { question, options, multiple: ctx.params['multiple'] === true },
+        };
+      }
+
+      if (!Number.isFinite(messageId)) {
+        return { ok: false, channel: 'telegram', error: `${ctx.action} requires messageId.` };
+      }
+
+      if (ctx.action === 'edit') {
+        await bot.api.editMessageText(chatId, messageId, content || '(No response)');
+        return {
+          ok: true,
+          channel: 'telegram',
+          externalMessageId: String(messageId),
+          payload: { content },
+        };
+      }
+
+      if (ctx.action === 'delete') {
+        await bot.api.deleteMessage(chatId, messageId);
+        return {
+          ok: true,
+          channel: 'telegram',
+          externalMessageId: String(messageId),
+          payload: { deleted: true },
+        };
+      }
+
+      if (ctx.action === 'react') {
+        const emoji = typeof ctx.params['emoji'] === 'string' ? ctx.params['emoji'].trim() : '';
+        if (!emoji) {
+          return { ok: false, channel: 'telegram', error: 'Telegram react requires emoji.' };
+        }
+        await (bot.api as any).setMessageReaction(chatId, messageId, [{ type: 'emoji', emoji }]);
+        return {
+          ok: true,
+          channel: 'telegram',
+          externalMessageId: String(messageId),
+          payload: { emoji },
+        };
+      }
+
+      return { ok: false, channel: 'telegram', error: `${ctx.action} is not supported for Telegram.` };
+    },
+  });
+}
+
+function parseTelegramChatId(value: unknown): number | string | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.floor(value);
+  }
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const numeric = Number(trimmed);
+  return Number.isFinite(numeric) ? Math.floor(numeric) : trimmed;
 }
 
 // CLI entry point

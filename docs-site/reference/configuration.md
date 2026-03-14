@@ -189,6 +189,7 @@ When remote access is enabled, `server.apiToken` protects:
 - `/api/status`
 - `/api/browser/*`
 - `/api/uploads/*`
+- `/api/webchat/*`
 - `/ws`
 
 Structured remote config:
@@ -219,6 +220,141 @@ Structured remote config:
 
 Meaning:
 
+### WebChat
+
+Structured config:
+
+```json
+{
+  "webchat": {
+    "enabled": true,
+    "guestPath": "/webchat",
+    "websocketPath": "/webchat/ws",
+    "defaultExpiryMinutes": 60,
+    "maxExpiryMinutes": 10080,
+    "maxConnectionsPerLink": 2,
+    "maxMessagesPerMinute": 60,
+    "maxUploadsPerLink": 25
+  }
+}
+```
+
+Use this block to control guest link expiry, concurrency, and rate limits.
+
+### Canvas
+
+Structured config:
+
+```json
+{
+  "canvas": {
+    "enabled": true,
+    "rootDir": "/path/to/workspace/canvas",
+    "basePath": "/__keygate__/canvas",
+    "a2uiPath": "/__keygate__/a2ui",
+    "websocketPath": "/__keygate__/canvas/ws",
+    "liveReload": true
+  }
+}
+```
+
+- `rootDir` is the workspace directory served as live canvas assets
+- `basePath` and `a2uiPath` are operator-visible routes exposed by the gateway
+- `websocketPath` is the canvas bridge transport used by browser and macOS hosts
+- `liveReload` enables file-watch reloads for workspace canvas development
+
+### Media
+
+Structured config:
+
+```json
+{
+  "media": {
+    "enabled": true,
+    "cacheDir": "~/.keygate/media-cache",
+    "maxAttachmentBytes": 26214400,
+    "maxPdfPages": 20,
+    "maxImageDescriptionTokens": 300,
+    "openai": {
+      "imageModel": "gpt-4.1-mini",
+      "transcriptionModel": "gpt-4o-mini-transcribe",
+      "ttsModel": "gpt-4o-mini-tts",
+      "ttsVoice": "alloy"
+    },
+    "fallbacks": {
+      "ffmpegBinary": "ffmpeg",
+      "ffprobeBinary": "ffprobe",
+      "whisperCliBinary": "whisper"
+    }
+  }
+}
+```
+
+- `openai.*` controls the preferred vision, transcription, and TTS models
+- `fallbacks.*` points to optional local binaries used when OpenAI is unavailable or unsuitable
+- `maxAttachmentBytes` and `maxPdfPages` cap preprocessing cost before the prompt build stage
+
+### Discord voice
+
+Structured config:
+
+```json
+{
+  "discord": {
+    "voice": {
+      "enabled": true
+    }
+  }
+}
+```
+
+Use this block to gate Discord voice features independently from the text bot runtime.
+
+### Channel action gates
+
+Structured config:
+
+```json
+{
+  "actions": {
+    "webchat": true,
+    "discord": true,
+    "slack": true,
+    "telegram": true,
+    "whatsapp": true
+  }
+}
+```
+
+Disable a channel here when you want inbound chat for that runtime but do not want agent- or operator-dispatched native actions.
+
+### Memory backend
+
+Structured config:
+
+```json
+{
+  "memory": {
+    "backend": {
+      "active": "lancedb",
+      "lancedbPath": "~/.keygate/memory-lancedb"
+    },
+    "batch": {
+      "enabled": false
+    },
+    "multimodal": {
+      "enabled": true,
+      "modalities": ["image", "audio", "pdf"]
+    }
+  }
+}
+```
+
+- `memory.backend.active` selects the current vector backend
+- `memory.backend.lancedbPath` controls the LanceDB dataset location
+- `memory.batch.enabled` enables remote batch embedding mode reporting
+- `memory.multimodal.modalities` is the operator-facing declaration of which attachment-derived modalities should feed indexing
+
 - `server.host`: bind address used by `keygate serve` and the managed gateway service
 - `remote.authMode`: `off` or `token`
 - `remote.tailscale.resetOnStop`: whether `keygate remote tailscale stop` should run a full serve reset
@@ -245,6 +381,7 @@ WhatsApp:
 
 - linked-device auth store
 - DM policy
+- silent pending approval queue for `pairing`
 - allowlist
 - group mode
 - per-group mention rules
@@ -268,6 +405,8 @@ Example WhatsApp block:
   }
 }
 ```
+
+With `dmPolicy: "pairing"`, WhatsApp blocks unknown DMs silently and records a pending request for the operator to approve from the CLI. It does not send pairing codes back into chats automatically.
 
 ### Browser MCP
 

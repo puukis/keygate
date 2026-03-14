@@ -26,11 +26,11 @@ describe('VectorStore', () => {
     store.close();
   });
 
-  it('upserts and retrieves chunks', () => {
+  it('upserts and retrieves chunks', async () => {
     const store = new VectorStore(3, dbPath);
 
     store.upsertFile('MEMORY.md', 'hash1', Date.now(), 100, 'memory');
-    store.upsertChunks([
+    await store.upsertChunks([
       {
         id: 'chunk-1',
         path: 'MEMORY.md',
@@ -48,10 +48,10 @@ describe('VectorStore', () => {
     store.close();
   });
 
-  it('performs vector search', () => {
+  it('performs vector search', async () => {
     const store = new VectorStore(3, dbPath);
 
-    store.upsertChunks([
+    await store.upsertChunks([
       {
         id: 'chunk-1',
         path: 'MEMORY.md',
@@ -75,16 +75,16 @@ describe('VectorStore', () => {
     ]);
 
     // Query closest to chunk-1
-    const results = store.vectorSearch([1, 0.1, 0], { limit: 5 });
+    const results = await store.vectorSearch([1, 0.1, 0], { limit: 5 });
     expect(results.length).toBe(2);
     expect(results[0].path).toBe('MEMORY.md');
     store.close();
   });
 
-  it('performs keyword search via FTS5', () => {
+  it('performs keyword search via FTS5', async () => {
     const store = new VectorStore(3, dbPath);
 
-    store.upsertChunks([
+    await store.upsertChunks([
       {
         id: 'chunk-1',
         path: 'MEMORY.md',
@@ -113,10 +113,10 @@ describe('VectorStore', () => {
     store.close();
   });
 
-  it('filters by source', () => {
+  it('filters by source', async () => {
     const store = new VectorStore(3, dbPath);
 
-    store.upsertChunks([
+    await store.upsertChunks([
       {
         id: 'chunk-1',
         path: 'MEMORY.md',
@@ -139,18 +139,18 @@ describe('VectorStore', () => {
       },
     ]);
 
-    const memoryOnly = store.vectorSearch([1, 0, 0], { limit: 5, source: 'memory' });
+    const memoryOnly = await store.vectorSearch([1, 0, 0], { limit: 5, source: 'memory' });
     expect(memoryOnly.every((r) => r.source === 'memory')).toBe(true);
 
-    const sessionOnly = store.vectorSearch([1, 0, 0], { limit: 5, source: 'session' });
+    const sessionOnly = await store.vectorSearch([1, 0, 0], { limit: 5, source: 'session' });
     expect(sessionOnly.every((r) => r.source === 'session')).toBe(true);
     store.close();
   });
 
-  it('deletes chunks by path', () => {
+  it('deletes chunks by path', async () => {
     const store = new VectorStore(3, dbPath);
 
-    store.upsertChunks([
+    await store.upsertChunks([
       {
         id: 'chunk-1',
         path: 'MEMORY.md',
@@ -164,7 +164,7 @@ describe('VectorStore', () => {
     ]);
 
     expect(store.totalChunks()).toBe(1);
-    store.deleteByPath('MEMORY.md');
+    await store.deleteByPath('MEMORY.md');
     expect(store.totalChunks()).toBe(0);
     store.close();
   });

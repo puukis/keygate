@@ -55,6 +55,11 @@ final class GatewayService: ObservableObject {
 
     // Tool activity
     @Published var activeTools: [String: String] = [:] // sessionId -> tool name
+    @Published var runtimeStatus: RuntimeStatusPayload?
+    @Published var canvasSurfaces: [CanvasStatePayload] = []
+    @Published var recentChannelActions: [ChannelActionPayload] = []
+    @Published var channelPolls: [ChannelPollPayload] = []
+    @Published var activeVoiceSessions: [VoiceSessionPayload] = []
 
     // Confirmations
     @Published var pendingConfirmation: PendingConfirmation?
@@ -75,6 +80,7 @@ final class GatewayService: ObservableObject {
     let port: Int
     private let nodeRuntime = MacNodeRuntime()
     private var nodeHeartbeatTask: Task<Void, Never>?
+    private var statusRefreshTask: Task<Void, Never>?
 
     private init() {
         self.host = ProcessInfo.processInfo.environment["KEYGATE_HOST"] ?? "127.0.0.1"
@@ -118,13 +124,18 @@ final class GatewayService: ObservableObject {
         ws.onConnect = { [weak self] in
             self?.connectionState = .connected
             self?.logger.info("Gateway connected")
-            Task { await self?.refreshNodeRegistration(forceHeartbeat: false) }
+            Task {
+                await self?.refreshNodeRegistration(forceHeartbeat: false)
+                await self?.refreshRuntimeStatus()
+                self?.startStatusRefreshLoop()
+            }
         }
 
         ws.onDisconnect = { [weak self] in
             self?.connectionState = .disconnected
             self?.logger.info("Gateway disconnected — will retry")
             self?.nodeHeartbeatTask?.cancel()
+            self?.statusRefreshTask?.cancel()
             if let current = self?.nodeRecord {
                 self?.nodeRecord = NodeRecord(
                     id: current.id,
@@ -154,6 +165,7 @@ final class GatewayService: ObservableObject {
 
     func disconnect() {
         nodeHeartbeatTask?.cancel()
+        statusRefreshTask?.cancel()
         client?.disconnect()
         client = nil
         connectionState = .disconnected
@@ -185,13 +197,13 @@ final class GatewayService: ObservableObject {
         cancelSession(activeId)
     }
 
-    func uploadImageAttachment(fileURL: URL, sessionId: String) async throws -> Attachment {
+    func uploadAttachment(fileURL: URL, sessionId: String) async throws -> Attachment {
         let payload = try Data(contentsOf: fileURL)
         if payload.isEmpty {
             throw NSError(domain: "GatewayService", code: 1, userInfo: [NSLocalizedDescriptionKey: "Attachment payload is empty."])
         }
 
-        var components = URLComponents(url: baseURL.appendingPathComponent("api/uploads/image"), resolvingAgainstBaseURL: false)
+        var components = URLComponents(url: baseURL.appendingPathComponent("api/uploads/attachment"), resolvingAgainstBaseURL: false)
         components?.queryItems = [URLQueryItem(name: "sessionId", value: sessionId)]
         guard let uploadURL = components?.url else {
             throw NSError(domain: "GatewayService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to build upload URL."])
@@ -207,7 +219,7 @@ final class GatewayService: ObservableObject {
         }
 
         guard (200..<300).contains(httpResponse.statusCode) else {
-            let uploadError = decodeServerUploadError(responseData) ?? "Image upload failed (\(httpResponse.statusCode))."
+            let uploadError = decodeServerUploadError(responseData) ?? "Attachment upload failed (\(httpResponse.statusCode))."
             throw NSError(domain: "GatewayService", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: uploadError])
         }
 
@@ -296,6 +308,20 @@ final class GatewayService: ObservableObject {
     func refreshDebugEvents() {
         guard let activeSession = SessionStore.shared.activeSessionId ?? sessionId else { return }
         send(.debugEvents(sessionId: normalizeSessionId(activeSession)))
+    }
+
+    func refreshRuntimeStatusNow() {
+        Task { await refreshRuntimeStatus() }
+    }
+
+    func activeCanvasSurfaces(for sessionId: String?) -> [CanvasStatePayload] {
+        guard let sessionId else { return canvasSurfaces }
+        let normalized = normalizeSessionId(sessionId)
+        return canvasSurfaces.filter { normalizeSessionId($0.sessionId) == normalized }
+    }
+
+    func openCanvasSurface(_ surface: CanvasStatePayload) {
+        CanvasWindowManager.shared.present(surface: surface, baseURL: baseURL, reveal: true)
     }
 
     // MARK: - Message handling
@@ -503,6 +529,72 @@ final class GatewayService: ObservableObject {
                 )
             }
 
+        case .canvasState(let payload):
+            let normalized = CanvasStatePayload(
+                sessionId: normalizeSessionId(payload.sessionId),
+                surfaceId: payload.surfaceId,
+                path: payload.path,
+                mode: payload.mode,
+                state: payload.state,
+                statusText: payload.statusText
+            )
+            let isNewSurface = !canvasSurfaces.contains(where: { $0.id == normalized.id })
+            upsertCanvasSurface(normalized)
+            CanvasWindowManager.shared.present(surface: normalized, baseURL: baseURL, reveal: isNewSurface)
+
+        case .canvasClose(let payload):
+            let sessionId = normalizeSessionId(payload.sessionId)
+            removeCanvasSurface(sessionId: sessionId, surfaceId: payload.surfaceId)
+            CanvasWindowManager.shared.close(sessionId: sessionId, surfaceId: payload.surfaceId)
+
+        case .channelAction(let payload):
+            recordChannelAction(ChannelActionPayload(
+                sessionId: normalizeSessionId(payload.sessionId),
+                channel: payload.channel,
+                action: payload.action,
+                ok: payload.ok,
+                actionId: payload.actionId,
+                accountId: payload.accountId,
+                externalMessageId: payload.externalMessageId,
+                threadId: payload.threadId,
+                pollId: payload.pollId,
+                error: payload.error,
+                payload: payload.payload
+            ))
+
+        case .channelPoll(let payload):
+            upsertChannelPoll(ChannelPollPayload(
+                id: payload.id,
+                sessionId: normalizeSessionId(payload.sessionId),
+                channel: payload.channel,
+                externalMessageId: payload.externalMessageId,
+                question: payload.question,
+                options: payload.options,
+                multiple: payload.multiple,
+                status: payload.status,
+                metadata: payload.metadata,
+                votes: payload.votes,
+                createdAt: payload.createdAt,
+                updatedAt: payload.updatedAt
+            ))
+
+        case .channelPollVote(let payload):
+            applyChannelPollVote(ChannelPollVotePayload(
+                sessionId: normalizeSessionId(payload.sessionId),
+                pollId: payload.pollId,
+                voterId: payload.voterId,
+                optionIds: payload.optionIds
+            ))
+
+        case .voiceSession(let payload):
+            upsertVoiceSession(VoiceSessionPayload(
+                sessionId: normalizeSessionId(payload.sessionId),
+                guildId: payload.guildId,
+                channelId: payload.channelId,
+                status: payload.status,
+                error: payload.error
+            ))
+
         case .debugEvents(let payload):
             let normalized = normalizeSessionId(payload.sessionId)
             if normalized == SessionStore.shared.activeSessionId || normalized == sessionId {
@@ -541,6 +633,111 @@ final class GatewayService: ObservableObject {
             return preferred
         }
         return "application/octet-stream"
+    }
+
+    private func startStatusRefreshLoop() {
+        statusRefreshTask?.cancel()
+        statusRefreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(30))
+                guard let self, !Task.isCancelled else { return }
+                await self.refreshRuntimeStatus()
+            }
+        }
+    }
+
+    private func refreshRuntimeStatus() async {
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/status"))
+        request.httpMethod = "GET"
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
+                return
+            }
+
+            let payload = try JSONDecoder().decode(RuntimeStatusPayload.self, from: data)
+            runtimeStatus = payload
+            if let sessions = payload.voice?.sessions {
+                activeVoiceSessions = sessions.map {
+                    VoiceSessionPayload(
+                        sessionId: normalizeSessionId($0.sessionId),
+                        guildId: $0.guildId,
+                        channelId: $0.channelId,
+                        status: $0.status,
+                        error: $0.error
+                    )
+                }
+            }
+        } catch {
+            logger.debug("Failed to refresh runtime status: \(error.localizedDescription)")
+        }
+    }
+
+    private func upsertCanvasSurface(_ payload: CanvasStatePayload) {
+        if let index = canvasSurfaces.firstIndex(where: { $0.id == payload.id }) {
+            canvasSurfaces[index] = payload
+        } else {
+            canvasSurfaces.append(payload)
+        }
+        canvasSurfaces.sort { $0.id < $1.id }
+    }
+
+    private func removeCanvasSurface(sessionId: String, surfaceId: String) {
+        canvasSurfaces.removeAll { normalizeSessionId($0.sessionId) == sessionId && $0.surfaceId == surfaceId }
+    }
+
+    private func recordChannelAction(_ payload: ChannelActionPayload) {
+        recentChannelActions.insert(payload, at: 0)
+        if recentChannelActions.count > 40 {
+            recentChannelActions.removeLast(recentChannelActions.count - 40)
+        }
+    }
+
+    private func upsertChannelPoll(_ payload: ChannelPollPayload) {
+        if let index = channelPolls.firstIndex(where: { $0.id == payload.id }) {
+            channelPolls[index] = payload
+        } else {
+            channelPolls.append(payload)
+        }
+        channelPolls.sort { $0.updatedAt > $1.updatedAt }
+    }
+
+    private func applyChannelPollVote(_ payload: ChannelPollVotePayload) {
+        guard let index = channelPolls.firstIndex(where: { $0.id == payload.pollId }) else { return }
+
+        var votes = channelPolls[index].votes.filter { $0.voterId != payload.voterId }
+        votes.append(ChannelPollVoteEntry(voterId: payload.voterId, optionIds: payload.optionIds))
+        let current = channelPolls[index]
+        channelPolls[index] = ChannelPollPayload(
+            id: current.id,
+            sessionId: current.sessionId,
+            channel: current.channel,
+            externalMessageId: current.externalMessageId,
+            question: current.question,
+            options: current.options,
+            multiple: current.multiple,
+            status: current.status,
+            metadata: current.metadata,
+            votes: votes,
+            createdAt: current.createdAt,
+            updatedAt: ISO8601DateFormatter().string(from: Date())
+        )
+    }
+
+    private func upsertVoiceSession(_ payload: VoiceSessionPayload) {
+        if payload.status == "left" {
+            activeVoiceSessions.removeAll { $0.guildId == payload.guildId && $0.channelId == payload.channelId }
+            return
+        }
+
+        if let index = activeVoiceSessions.firstIndex(where: { $0.guildId == payload.guildId && $0.channelId == payload.channelId }) {
+            activeVoiceSessions[index] = payload
+        } else {
+            activeVoiceSessions.append(payload)
+        }
+        activeVoiceSessions.sort { $0.id < $1.id }
     }
 
     private func refreshNodeRegistration(forceHeartbeat: Bool) async {
@@ -611,7 +808,7 @@ final class GatewayService: ObservableObject {
                 guard let self else {
                     throw NSError(domain: "GatewayService", code: 99, userInfo: [NSLocalizedDescriptionKey: "Gateway service unavailable during upload."])
                 }
-                return try await self.uploadImageAttachment(fileURL: fileURL, sessionId: self.normalizeSessionId(sessionId))
+                return try await self.uploadAttachment(fileURL: fileURL, sessionId: self.normalizeSessionId(sessionId))
             }
             send(.nodeInvokeResponse(
                 requestId: payload.requestId,

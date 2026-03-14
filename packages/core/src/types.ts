@@ -1,7 +1,7 @@
 // Core types for Keygate
 
 export type SecurityMode = 'safe' | 'spicy';
-export type ChannelType = 'web' | 'discord' | 'terminal' | 'slack' | 'whatsapp' | 'telegram';
+export type ChannelType = 'web' | 'webchat' | 'discord' | 'terminal' | 'slack' | 'whatsapp' | 'telegram';
 export type LLMProviderName = 'openai' | 'gemini' | 'ollama' | 'openai-codex';
 export type CodexReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 export type BrowserDomainPolicy = 'none' | 'allowlist' | 'blocklist';
@@ -23,6 +23,23 @@ export type SkillEligibilityReason =
 export type SkillCommandDispatch = 'tool';
 export type SkillCommandArgMode = 'raw';
 export type RemoteAuthMode = 'off' | 'token';
+export type AttachmentKind = 'image' | 'audio' | 'video' | 'pdf' | 'document' | 'unknown';
+export type CanvasStateMode = 'replace' | 'patch';
+export type ClientRole = 'operator' | 'macos_operator' | 'webchat_guest' | 'node';
+export type ChannelActionName =
+  | 'send'
+  | 'read'
+  | 'edit'
+  | 'delete'
+  | 'react'
+  | 'reactions'
+  | 'poll'
+  | 'poll-vote'
+  | 'reply'
+  | 'thread-create'
+  | 'thread-list'
+  | 'thread-reply'
+  | 'topic-create';
 
 // ==================== Messages ====================
 
@@ -33,6 +50,15 @@ export interface MessageAttachment {
   sizeBytes: number;
   path: string;
   url: string;
+  kind?: AttachmentKind;
+  sha256?: string;
+  durationMs?: number;
+  width?: number;
+  height?: number;
+  pageCount?: number;
+  derivedFromId?: string;
+  previewText?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface NormalizedMessage {
@@ -43,6 +69,7 @@ export interface NormalizedMessage {
   userId: string;
   content: string;
   attachments?: MessageAttachment[];
+  metadata?: Record<string, unknown>;
   timestamp: Date;
 }
 
@@ -50,6 +77,7 @@ export interface Message {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
   attachments?: MessageAttachment[];
+  metadata?: Record<string, unknown>;
   toolCallId?: string;
   toolCalls?: ToolCall[];
 }
@@ -227,6 +255,111 @@ export interface Session {
 
 // ==================== Config ====================
 
+export interface WebChatCapabilityConfig {
+  canCancelRun: boolean;
+  canUploadAttachments: boolean;
+  canVotePolls: boolean;
+}
+
+export interface WebChatConfig {
+  enabled: boolean;
+  tokenSecret: string;
+  guestPath: string;
+  websocketPath: string;
+  defaultExpiryMinutes: number;
+  maxExpiryMinutes: number;
+  maxConnectionsPerLink: number;
+  maxMessagesPerMinute: number;
+  maxUploadsPerLink: number;
+  capabilities: WebChatCapabilityConfig;
+}
+
+export interface CanvasConfig {
+  enabled: boolean;
+  rootDir: string;
+  basePath: string;
+  a2uiPath: string;
+  websocketPath: string;
+  liveReload: boolean;
+}
+
+export interface MediaOpenAiConfig {
+  transcriptionModel: string;
+  imageModel: string;
+  ttsModel: string;
+  ttsVoice: string;
+}
+
+export interface MediaFallbackConfig {
+  ffmpegBinary?: string;
+  ffprobeBinary?: string;
+  whisperBinary?: string;
+  whisperCliBinary?: string;
+}
+
+export interface MediaConfig {
+  enabled: boolean;
+  cacheDir: string;
+  openai: MediaOpenAiConfig;
+  fallbacks: MediaFallbackConfig;
+  maxAttachmentBytes: number;
+  maxPdfPages: number;
+  maxImageDescriptionTokens: number;
+}
+
+export interface DiscordVoiceConfig {
+  enabled: boolean;
+  silenceDurationMs: number;
+  minSegmentMs: number;
+  playbackVolume: number;
+  ttsEnabled: boolean;
+  controlChannelMode: 'reply' | 'thread';
+}
+
+export interface ChannelActionGate {
+  send?: boolean;
+  read?: boolean;
+  edit?: boolean;
+  delete?: boolean;
+  react?: boolean;
+  reactions?: boolean;
+  poll?: boolean;
+  reply?: boolean;
+  threadCreate?: boolean;
+  threadList?: boolean;
+  threadReply?: boolean;
+  topicCreate?: boolean;
+}
+
+export interface ChannelActionsConfig {
+  webchat: ChannelActionGate;
+  discord: ChannelActionGate;
+  slack: ChannelActionGate;
+  telegram: ChannelActionGate;
+  whatsapp: ChannelActionGate;
+}
+
+export interface MemoryBatchConfig {
+  enabled: boolean;
+  provider: 'openai';
+  waitForCompletion: boolean;
+  pollIntervalMs: number;
+  timeoutMs: number;
+  minBatchSize: number;
+}
+
+export interface MemoryBackendConfig {
+  active: 'sqlite-vec' | 'lancedb';
+  lancedbPath: string;
+  enableSqliteFallback: boolean;
+}
+
+export interface MemoryMultimodalConfig {
+  enabled: boolean;
+  modalities: Array<'image' | 'audio' | 'pdf'>;
+  maxFileBytes: number;
+}
+
 export interface KeygateConfig {
   llm: {
     provider: LLMProviderName;
@@ -274,6 +407,9 @@ export interface KeygateConfig {
     mcpPlaywrightVersion: string;
     artifactsPath: string;
   };
+  webchat?: WebChatConfig;
+  canvas?: CanvasConfig;
+  media?: MediaConfig;
   skills?: {
     load: {
       watch: boolean;
@@ -303,6 +439,7 @@ export interface KeygateConfig {
     prefix: string;
     dmPolicy?: DmPolicy;
     allowFrom?: string[];
+    voice?: DiscordVoiceConfig;
   };
   slack?: {
     botToken: string;
@@ -326,7 +463,11 @@ export interface KeygateConfig {
     temporalDecay: boolean;
     temporalHalfLifeDays: number;
     mmr: boolean;
+    backend?: MemoryBackendConfig;
+    batch?: MemoryBatchConfig;
+    multimodal?: MemoryMultimodalConfig;
   };
+  actions?: ChannelActionsConfig;
 }
 
 export interface GmailDefaultsConfig {
@@ -473,6 +614,40 @@ export interface KeygateEvents {
   'message:start': { sessionId: string; messageId: string };
   'message:chunk': { sessionId: string; content: string };
   'message:end': { sessionId: string; content: string };
+  'canvas:state': {
+    sessionId: string;
+    surfaceId: string;
+    path: string;
+    mode: CanvasStateMode;
+    state?: Record<string, unknown>;
+    statusText?: string;
+  };
+  'canvas:close': {
+    sessionId: string;
+    surfaceId: string;
+  };
+  'channel:action': {
+    sessionId: string;
+    actionId: string;
+    channel: ChannelType | 'webchat';
+    action: ChannelActionName;
+    ok: boolean;
+    payload?: Record<string, unknown>;
+    error?: string;
+  };
+  'memory:migration': {
+    migrationId: string;
+    backend: 'sqlite-vec' | 'lancedb';
+    phase: string;
+    progress: number;
+  };
+  'voice:session': {
+    sessionId: string;
+    guildId: string;
+    channelId: string;
+    status: 'joined' | 'left' | 'speaking' | 'idle' | 'error';
+    error?: string;
+  };
   'tool:start': { sessionId: string; tool: string; args: Record<string, unknown> };
   'tool:end': { sessionId: string; tool: string; result: ToolResult };
   'provider:event': { sessionId: string; event: ProviderEvent };

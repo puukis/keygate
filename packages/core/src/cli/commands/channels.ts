@@ -997,6 +997,9 @@ async function printWhatsAppChannelConfig(deps: ChannelCommandDeps): Promise<voi
   deps.log(`Linked phone: ${view.linkedPhone ?? 'unknown'}`);
   deps.log(`Auth directory: ${view.authDir}`);
   deps.log(`DM policy: ${view.dmPolicy}`);
+  if (view.dmPolicy === 'pairing') {
+    deps.log('Pairing delivery: silent manual approval via `keygate pairing pending whatsapp`');
+  }
   deps.log(`Allow-from: ${view.allowFrom.length > 0 ? view.allowFrom.join(', ') : '(empty)'}`);
   deps.log(`Group mode: ${view.groupMode}`);
   deps.log(`Explicit groups: ${Object.keys(view.groups).length > 0 ? Object.keys(view.groups).join(', ') : '(none)'}`);

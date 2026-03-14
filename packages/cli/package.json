@@ -16,7 +16,11 @@
     "build": "pnpm --filter @puukis/web build && tsc && node ./scripts/copyWebAssets.mjs"
   },
   "dependencies": {
-    "@puukis/core": "workspace:*"
+    "@puukis/core": "workspace:*",
+    "@puukis/discord": "workspace:*",
+    "@puukis/slack": "workspace:*",
+    "@puukis/telegram": "workspace:*",
+    "@puukis/whatsapp": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

@@ -8,13 +8,14 @@ import {
 } from 'discord.js';
 import {
   Gateway,
-  IMAGE_UPLOAD_ALLOWED_MIME_TYPES,
-  IMAGE_UPLOAD_MAX_BYTES,
+  ATTACHMENT_UPLOAD_ALLOWED_MIME_TYPES,
+  ATTACHMENT_UPLOAD_MAX_BYTES,
   MAX_MESSAGE_ATTACHMENTS,
   normalizeDiscordMessage,
   normalizeUploadMimeType,
-  persistUploadedImage,
+  persistUploadedAttachment,
   BaseChannel,
+  getChannelActionRegistry,
   getBrowserScreenshotAllowedRoots,
   isPathWithinRoot,
   loadConfigFromEnv,
@@ -23,6 +24,7 @@ import {
   sanitizeBrowserScreenshotFilename,
   type ConfirmationDetails,
   type ConfirmationDecision,
+  type ChannelActionName,
   type KeygateConfig,
   type MessageAttachment,
   createOrGetPairingCode,
@@ -31,6 +33,7 @@ import {
   RoutingRuleStore,
   RoutingService,
 } from '@puukis/core';
+import { DiscordVoiceManager } from './voiceManager.js';
 
 loadEnvironment();
 
@@ -340,6 +343,7 @@ export async function startDiscordBot(config: KeygateConfig): Promise<Client> {
     intents: [
       GatewayIntentBits.Guilds,
       GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.GuildVoiceStates,
       GatewayIntentBits.MessageContent,
       GatewayIntentBits.GuildMessageReactions,
       GatewayIntentBits.DirectMessages,
@@ -351,6 +355,9 @@ export async function startDiscordBot(config: KeygateConfig): Promise<Client> {
   const gateway = Gateway.getInstance(config);
   const router = new RoutingService(new RoutingRuleStore(), config.security.workspacePath);
   const prefixes = resolveDiscordPrefixes(config.discord?.prefix ?? process.env['DISCORD_PREFIX']);
+  const voiceManager = new DiscordVoiceManager(client, config);
+
+  registerDiscordActionAdapter(client, config);
 
   client.once(Events.ClientReady, (c) => {
     console.log(`🤖 Discord bot ready! Logged in as ${c.user.tag}`);
@@ -413,7 +420,7 @@ export async function startDiscordBot(config: KeygateConfig): Promise<Client> {
       const sessionId = route.sessionId;
       await gateway.prepareSessionWorkspace(sessionId, route.workspacePath);
 
-      const attachments = await ingestDiscordImageAttachments(
+      const attachments = await ingestDiscordAttachments(
         route.workspacePath,
         sessionId,
         message,
@@ -442,6 +449,10 @@ export async function startDiscordBot(config: KeygateConfig): Promise<Client> {
 
   client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isChatInputCommand()) {
+      return;
+    }
+
+    if (await voiceManager.handleCommand(interaction)) {
       return;
     }
 
@@ -511,7 +522,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   startDiscordBot(config).catch(console.error);
 }
 
-async function ingestDiscordImageAttachments(
+async function ingestDiscordAttachments(
   workspacePath: string,
   sessionId: string,
   message: DiscordMessage
@@ -523,19 +534,19 @@ async function ingestDiscordImageAttachments(
   const attachments: MessageAttachment[] = [];
   for (const candidate of message.attachments.values()) {
     if (attachments.length >= MAX_MESSAGE_ATTACHMENTS) {
-      console.warn(`Ignoring extra Discord attachments for ${sessionId}: exceeded ${MAX_MESSAGE_ATTACHMENTS} images.`);
+      console.warn(`Ignoring extra Discord attachments for ${sessionId}: exceeded ${MAX_MESSAGE_ATTACHMENTS} files.`);
       break;
     }
 
     const contentType = normalizeUploadMimeType(candidate.contentType ?? undefined);
-    if (!IMAGE_UPLOAD_ALLOWED_MIME_TYPES.has(contentType)) {
+    if (!ATTACHMENT_UPLOAD_ALLOWED_MIME_TYPES.has(contentType)) {
       if (contentType) {
         console.info(`Ignoring Discord attachment with unsupported type ${contentType} in ${sessionId}.`);
       }
       continue;
     }
 
-    if (candidate.size > IMAGE_UPLOAD_MAX_BYTES) {
+    if (candidate.size > ATTACHMENT_UPLOAD_MAX_BYTES) {
       console.warn(`Ignoring oversized Discord attachment (${candidate.size} bytes) in ${sessionId}.`);
       continue;
     }
@@ -547,12 +558,12 @@ async function ingestDiscordImageAttachments(
     }
 
     const bytes = Buffer.from(await response.arrayBuffer());
-    if (bytes.length > IMAGE_UPLOAD_MAX_BYTES) {
+    if (bytes.length > ATTACHMENT_UPLOAD_MAX_BYTES) {
       console.warn(`Ignoring oversized Discord attachment payload (${bytes.length} bytes) in ${sessionId}.`);
       continue;
     }
 
-    const persisted = await persistUploadedImage(workspacePath, sessionId, {
+    const persisted = await persistUploadedAttachment(workspacePath, sessionId, {
       bytes,
       contentType,
       filename: candidate.name ?? undefined,
@@ -680,6 +691,27 @@ async function registerDiscordSlashCommands(client: Client<true> | Client): Prom
       name: 'reset',
       description: 'Reset the session history and local overrides.',
     },
+    {
+      name: 'voice',
+      description: 'Join, leave, or inspect the Discord voice runtime.',
+      options: [
+        {
+          name: 'join',
+          description: 'Join the caller’s current voice channel.',
+          type: 1,
+        },
+        {
+          name: 'leave',
+          description: 'Leave the active voice channel for this guild.',
+          type: 1,
+        },
+        {
+          name: 'status',
+          description: 'Show the active voice session status.',
+          type: 1,
+        },
+      ],
+    },
   ]);
 }
 
@@ -715,6 +747,246 @@ function buildDiscordSlashCommand(interaction: ChatInputCommandInteraction): str
     default:
       return null;
   }
+}
+
+function registerDiscordActionAdapter(client: Client, config: KeygateConfig): void {
+  const gate = config.actions?.discord ?? {
+    send: true,
+    read: true,
+    edit: true,
+    delete: true,
+    react: true,
+    reactions: true,
+    poll: true,
+    threadCreate: true,
+    threadList: true,
+    threadReply: true,
+  };
+
+  const actions: ChannelActionName[] = [];
+  if (gate.send !== false) actions.push('send');
+  if (gate.read !== false) actions.push('read');
+  if (gate.edit !== false) actions.push('edit');
+  if (gate.delete !== false) actions.push('delete');
+  if (gate.react !== false) actions.push('react');
+  if (gate.reactions !== false) actions.push('reactions');
+  if (gate.poll !== false) actions.push('poll');
+  if (gate.threadCreate !== false) actions.push('thread-create');
+  if (gate.threadList !== false) actions.push('thread-list');
+  if (gate.threadReply !== false) actions.push('thread-reply');
+
+  getChannelActionRegistry().register({
+    channel: 'discord',
+    actions,
+    handle: async (ctx) => {
+      const channelId = firstStringParam(ctx.params['threadId'], ctx.params['channelId']);
+      const messageId = firstStringParam(ctx.params['messageId']);
+      const content = firstStringParam(ctx.params['content']) ?? '';
+
+      if (ctx.action === 'thread-reply') {
+        const thread = await fetchDiscordTextChannel(client, channelId);
+        if (!thread) {
+          return { ok: false, channel: 'discord', error: 'Discord threadId or channelId is required.' };
+        }
+        const sent = await thread.send(content || '(No response)');
+        return {
+          ok: true,
+          channel: 'discord',
+          externalMessageId: sent.id,
+          threadId: sent.channelId,
+          payload: { content, threadId: sent.channelId },
+        };
+      }
+
+      const targetChannel = await fetchDiscordTextChannel(client, channelId);
+      if (!targetChannel) {
+        return {
+          ok: false,
+          channel: 'discord',
+          error: 'Discord actions require channelId or threadId.',
+        };
+      }
+
+      if (ctx.action === 'send') {
+        const sent = await targetChannel!.send(content || '(No response)');
+        return {
+          ok: true,
+          channel: 'discord',
+          externalMessageId: sent.id,
+          threadId: sent.channelId !== targetChannel!.id ? sent.channelId : undefined,
+          payload: { content },
+        };
+      }
+
+      if (ctx.action === 'read') {
+        const limit = typeof ctx.params['limit'] === 'number' ? Math.max(1, Math.min(20, Math.floor(ctx.params['limit']))) : 10;
+        const messages = await targetChannel!.messages.fetch({ limit });
+        return {
+          ok: true,
+          channel: 'discord',
+          payload: {
+            messages: Array.from(messages.values() as Iterable<any>).map((message: any) => ({
+              id: message.id,
+              author: message.author?.tag ?? message.author?.username ?? message.author?.id,
+              content: message.content,
+              createdAt: message.createdAt.toISOString(),
+            })),
+          },
+        };
+      }
+
+      if (!messageId) {
+        return {
+          ok: false,
+          channel: 'discord',
+          error: `${ctx.action} requires messageId.`,
+        };
+      }
+
+      const message = await targetChannel!.messages.fetch(messageId);
+
+      if (ctx.action === 'edit') {
+        const edited = await message.edit(content || message.content || '(No response)');
+        return {
+          ok: true,
+          channel: 'discord',
+          externalMessageId: edited.id,
+          payload: { content: edited.content },
+        };
+      }
+
+      if (ctx.action === 'delete') {
+        await message.delete();
+        return {
+          ok: true,
+          channel: 'discord',
+          externalMessageId: message.id,
+          payload: { deleted: true },
+        };
+      }
+
+      if (ctx.action === 'react') {
+        const emoji = firstStringParam(ctx.params['emoji']);
+        if (!emoji) {
+          return { ok: false, channel: 'discord', error: 'Discord react requires emoji.' };
+        }
+        const reaction = await message.react(emoji);
+        return {
+          ok: true,
+          channel: 'discord',
+          externalMessageId: message.id,
+          payload: {
+            emoji,
+            count: reaction.count,
+          },
+        };
+      }
+
+      if (ctx.action === 'reactions') {
+        return {
+          ok: true,
+          channel: 'discord',
+          externalMessageId: message.id,
+          payload: {
+            reactions: message.reactions.cache.map((reaction: any) => ({
+              emoji: reaction.emoji.toString(),
+              count: reaction.count,
+            })),
+          },
+        };
+      }
+
+      if (ctx.action === 'poll') {
+        const question = firstStringParam(ctx.params['question']);
+        const options = Array.isArray(ctx.params['options'])
+          ? ctx.params['options'].filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+          : [];
+        if (!question || options.length < 2) {
+          return {
+            ok: false,
+            channel: 'discord',
+            error: 'Discord poll requires a question and at least two options.',
+          };
+        }
+        const sent = await targetChannel!.send({
+          poll: {
+            question: { text: question },
+            answers: options.map((option) => ({ poll_media: { text: option } })),
+            allowMultiselect: ctx.params['multiple'] === true,
+            duration: 24,
+          },
+        } as any);
+        return {
+          ok: true,
+          channel: 'discord',
+          externalMessageId: sent.id,
+          pollId: sent.id,
+          payload: {
+            question,
+            options,
+            multiple: ctx.params['multiple'] === true,
+          },
+        };
+      }
+
+      if (ctx.action === 'thread-create') {
+        const name = firstStringParam(ctx.params['name']) ?? `Thread ${new Date().toLocaleString()}`;
+        const thread = await (targetChannel as any).threads.create({
+          name,
+          ...(messageId ? { startMessage: messageId } : {}),
+          autoArchiveDuration: 60,
+        });
+        return {
+          ok: true,
+          channel: 'discord',
+          threadId: thread.id,
+          payload: { name, threadId: thread.id },
+        };
+      }
+
+      if (ctx.action === 'thread-list') {
+        const listing = await (targetChannel as any).threads.fetchActive();
+        return {
+          ok: true,
+          channel: 'discord',
+          payload: {
+            threads: Array.from(listing.threads.values()).map((thread: any) => ({
+              id: thread.id,
+              name: thread.name,
+              archived: thread.archived,
+            })),
+          },
+        };
+      }
+
+      return {
+        ok: false,
+        channel: 'discord',
+        error: `${ctx.action} is not supported for Discord.`,
+      };
+    },
+  });
+}
+
+async function fetchDiscordTextChannel(client: Client, channelId: string | undefined): Promise<any | null> {
+  if (!channelId) {
+    return null;
+  }
+
+  const channel = await client.channels.fetch(channelId);
+  if (!channel || typeof (channel as { send?: unknown }).send !== 'function') {
+    return null;
+  }
+  return channel as any;
+}
+
+function firstStringParam(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return undefined;
 }
 
 function splitDiscordMessage(content: string, maxLength = 1900): string[] {

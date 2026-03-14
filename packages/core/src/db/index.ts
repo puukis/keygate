@@ -3,6 +3,8 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import type {
+  ChannelActionName,
+  ChannelType,
   CodexReasoningEffort,
   LLMUsageSnapshot,
   Message,
@@ -58,6 +60,8 @@ export class KeygateDatabase {
         session_id TEXT NOT NULL,
         role TEXT NOT NULL,
         content TEXT NOT NULL,
+        metadata TEXT,
+        attachments TEXT,
         tool_call_id TEXT,
         tool_calls TEXT,
         created_at TEXT NOT NULL,
@@ -103,14 +107,98 @@ export class KeygateDatabase {
         FOREIGN KEY (session_id) REFERENCES sessions(id)
       );
 
+      CREATE TABLE IF NOT EXISTS webchat_links (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        token_hash TEXT NOT NULL,
+        capabilities TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        revoked_at TEXT,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS channel_actions (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        action TEXT NOT NULL,
+        account_id TEXT,
+        external_message_id TEXT,
+        thread_id TEXT,
+        poll_id TEXT,
+        ok INTEGER NOT NULL,
+        payload TEXT,
+        error TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS channel_polls (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        external_message_id TEXT,
+        question TEXT NOT NULL,
+        options TEXT NOT NULL,
+        multiple INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'open',
+        metadata TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS channel_poll_votes (
+        id TEXT PRIMARY KEY,
+        poll_id TEXT NOT NULL,
+        voter_id TEXT NOT NULL,
+        option_ids TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (poll_id) REFERENCES channel_polls(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS canvas_surfaces (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        surface_id TEXT NOT NULL,
+        path TEXT NOT NULL,
+        state TEXT,
+        status_text TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS memory_migrations (
+        id TEXT PRIMARY KEY,
+        backend TEXT NOT NULL,
+        phase TEXT NOT NULL,
+        progress REAL NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending',
+        details TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
       CREATE INDEX IF NOT EXISTS idx_tool_logs_session ON tool_logs(session_id);
       CREATE INDEX IF NOT EXISTS idx_message_usage_session ON message_usage(session_id);
       CREATE INDEX IF NOT EXISTS idx_message_usage_created_at ON message_usage(created_at);
       CREATE INDEX IF NOT EXISTS idx_session_compactions_session ON session_compactions(session_id);
+      CREATE INDEX IF NOT EXISTS idx_webchat_links_session ON webchat_links(session_id);
+      CREATE INDEX IF NOT EXISTS idx_channel_actions_session ON channel_actions(session_id);
+      CREATE INDEX IF NOT EXISTS idx_channel_polls_session ON channel_polls(session_id);
+      CREATE INDEX IF NOT EXISTS idx_channel_poll_votes_poll ON channel_poll_votes(poll_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_canvas_surfaces_session_surface ON canvas_surfaces(session_id, surface_id);
+      CREATE INDEX IF NOT EXISTS idx_memory_migrations_updated ON memory_migrations(updated_at);
     `);
 
     this.ensureMessagesAttachmentsColumn();
+    this.ensureMessagesMetadataColumn();
     this.ensureSessionsColumns();
   }
 
@@ -126,6 +214,20 @@ export class KeygateDatabase {
     }
 
     this.db.exec('ALTER TABLE messages ADD COLUMN attachments TEXT');
+  }
+
+  private ensureMessagesMetadataColumn(): void {
+    type ColumnInfo = {
+      name: string;
+    };
+
+    const columns = this.db.prepare('PRAGMA table_info(messages)').all() as ColumnInfo[];
+    const hasMetadataColumn = columns.some((column) => column.name === 'metadata');
+    if (hasMetadataColumn) {
+      return;
+    }
+
+    this.db.exec('ALTER TABLE messages ADD COLUMN metadata TEXT');
   }
 
   private ensureSessionsColumns(): void {
@@ -255,7 +357,7 @@ export class KeygateDatabase {
   getSession(sessionId: string): Session | null {
     type SessionRow = {
       id: string;
-      channel_type: 'web' | 'discord' | 'terminal';
+      channel_type: ChannelType;
       title: string | null;
       model_override_provider: string | null;
       model_override_model: string | null;
@@ -300,7 +402,7 @@ export class KeygateDatabase {
   listSessions(limit = 200): Session[] {
     type SessionRow = {
       id: string;
-      channel_type: 'web' | 'discord' | 'terminal';
+      channel_type: ChannelType;
       title: string | null;
       model_override_provider: string | null;
       model_override_model: string | null;
@@ -362,13 +464,14 @@ export class KeygateDatabase {
    */
   saveMessage(sessionId: string, message: Message): void {
     const stmt = this.db.prepare(`
-      INSERT INTO messages (session_id, role, content, attachments, tool_call_id, tool_calls, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO messages (session_id, role, content, metadata, attachments, tool_call_id, tool_calls, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       sessionId,
       message.role,
       message.content,
+      message.metadata ? JSON.stringify(message.metadata) : null,
       message.attachments ? JSON.stringify(message.attachments) : null,
       message.toolCallId ?? null,
       message.toolCalls ? JSON.stringify(message.toolCalls) : null,
@@ -383,6 +486,7 @@ export class KeygateDatabase {
     type MessageRow = {
       role: 'system' | 'user' | 'assistant' | 'tool';
       content: string;
+      metadata: string | null;
       attachments: string | null;
       tool_call_id: string | null;
       tool_calls: string | null;
@@ -394,6 +498,7 @@ export class KeygateDatabase {
     return rows.map(row => ({
       role: row.role,
       content: row.content,
+      metadata: parseJsonRecord(row.metadata),
       attachments: parseMessageAttachments(row.attachments),
       toolCallId: row.tool_call_id ?? undefined,
       toolCalls: row.tool_calls ? JSON.parse(row.tool_calls) : undefined,
@@ -748,6 +853,571 @@ export class KeygateDatabase {
     };
   }
 
+  createWebChatLink(params: {
+    id?: string;
+    sessionId: string;
+    displayName: string;
+    tokenHash: string;
+    capabilities: Record<string, unknown>;
+    expiresAt: string;
+    createdBy?: string;
+  }): {
+    id: string;
+    sessionId: string;
+    displayName: string;
+    tokenHash: string;
+    capabilities: Record<string, unknown>;
+    expiresAt: string;
+    revokedAt?: string;
+    createdBy: string;
+    createdAt: string;
+  } {
+    const id = params.id ?? randomUUID();
+    const createdAt = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO webchat_links (
+        id, session_id, display_name, token_hash, capabilities, expires_at, revoked_at, created_by, created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+    `).run(
+      id,
+      params.sessionId,
+      params.displayName,
+      params.tokenHash,
+      JSON.stringify(params.capabilities ?? {}),
+      params.expiresAt,
+      params.createdBy ?? 'operator',
+      createdAt,
+    );
+
+    return {
+      id,
+      sessionId: params.sessionId,
+      displayName: params.displayName,
+      tokenHash: params.tokenHash,
+      capabilities: params.capabilities ?? {},
+      expiresAt: params.expiresAt,
+      createdBy: params.createdBy ?? 'operator',
+      createdAt,
+    };
+  }
+
+  listWebChatLinks(sessionId?: string): Array<{
+    id: string;
+    sessionId: string;
+    displayName: string;
+    tokenHash: string;
+    capabilities: Record<string, unknown>;
+    expiresAt: string;
+    revokedAt?: string;
+    createdBy: string;
+    createdAt: string;
+  }> {
+    const rows = (sessionId
+      ? this.db.prepare(`
+          SELECT id, session_id, display_name, token_hash, capabilities, expires_at, revoked_at, created_by, created_at
+          FROM webchat_links
+          WHERE session_id = ?
+          ORDER BY created_at DESC
+        `).all(sessionId)
+      : this.db.prepare(`
+          SELECT id, session_id, display_name, token_hash, capabilities, expires_at, revoked_at, created_by, created_at
+          FROM webchat_links
+          ORDER BY created_at DESC
+        `).all()) as Array<{
+      id: string;
+      session_id: string;
+      display_name: string;
+      token_hash: string;
+      capabilities: string;
+      expires_at: string;
+      revoked_at: string | null;
+      created_by: string;
+      created_at: string;
+    }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      sessionId: row.session_id,
+      displayName: row.display_name,
+      tokenHash: row.token_hash,
+      capabilities: parseJsonRecord(row.capabilities) ?? {},
+      expiresAt: row.expires_at,
+      revokedAt: row.revoked_at ?? undefined,
+      createdBy: row.created_by,
+      createdAt: row.created_at,
+    }));
+  }
+
+  getWebChatLink(linkId: string): {
+    id: string;
+    sessionId: string;
+    displayName: string;
+    tokenHash: string;
+    capabilities: Record<string, unknown>;
+    expiresAt: string;
+    revokedAt?: string;
+    createdBy: string;
+    createdAt: string;
+  } | null {
+    const row = this.db.prepare(`
+      SELECT id, session_id, display_name, token_hash, capabilities, expires_at, revoked_at, created_by, created_at
+      FROM webchat_links
+      WHERE id = ?
+    `).get(linkId) as {
+      id: string;
+      session_id: string;
+      display_name: string;
+      token_hash: string;
+      capabilities: string;
+      expires_at: string;
+      revoked_at: string | null;
+      created_by: string;
+      created_at: string;
+    } | undefined;
+
+    if (!row) {
+      return null;
+    }
+
+    return {
+      id: row.id,
+      sessionId: row.session_id,
+      displayName: row.display_name,
+      tokenHash: row.token_hash,
+      capabilities: parseJsonRecord(row.capabilities) ?? {},
+      expiresAt: row.expires_at,
+      revokedAt: row.revoked_at ?? undefined,
+      createdBy: row.created_by,
+      createdAt: row.created_at,
+    };
+  }
+
+  revokeWebChatLink(linkId: string): boolean {
+    const result = this.db.prepare(`
+      UPDATE webchat_links
+      SET revoked_at = COALESCE(revoked_at, ?)
+      WHERE id = ?
+    `).run(new Date().toISOString(), linkId);
+    return result.changes > 0;
+  }
+
+  saveChannelAction(params: {
+    sessionId: string;
+    channel: ChannelType | 'webchat';
+    action: ChannelActionName;
+    accountId?: string | null;
+    externalMessageId?: string | null;
+    threadId?: string | null;
+    pollId?: string | null;
+    ok: boolean;
+    payload?: Record<string, unknown>;
+    error?: string | null;
+  }): {
+    id: string;
+    createdAt: string;
+  } {
+    const id = randomUUID();
+    const createdAt = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO channel_actions (
+        id, session_id, channel, action, account_id, external_message_id, thread_id, poll_id, ok, payload, error, created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      params.sessionId,
+      params.channel,
+      params.action,
+      params.accountId ?? null,
+      params.externalMessageId ?? null,
+      params.threadId ?? null,
+      params.pollId ?? null,
+      params.ok ? 1 : 0,
+      params.payload ? JSON.stringify(params.payload) : null,
+      params.error ?? null,
+      createdAt,
+    );
+    return { id, createdAt };
+  }
+
+  listChannelActions(sessionId: string, limit = 100): Array<{
+    id: string;
+    sessionId: string;
+    channel: string;
+    action: string;
+    accountId?: string;
+    externalMessageId?: string;
+    threadId?: string;
+    pollId?: string;
+    ok: boolean;
+    payload?: Record<string, unknown>;
+    error?: string;
+    createdAt: string;
+  }> {
+    const rows = this.db.prepare(`
+      SELECT id, session_id, channel, action, account_id, external_message_id, thread_id, poll_id, ok, payload, error, created_at
+      FROM channel_actions
+      WHERE session_id = ?
+      ORDER BY created_at DESC
+      LIMIT ?
+    `).all(sessionId, limit) as Array<{
+      id: string;
+      session_id: string;
+      channel: string;
+      action: string;
+      account_id: string | null;
+      external_message_id: string | null;
+      thread_id: string | null;
+      poll_id: string | null;
+      ok: number;
+      payload: string | null;
+      error: string | null;
+      created_at: string;
+    }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      sessionId: row.session_id,
+      channel: row.channel,
+      action: row.action,
+      accountId: row.account_id ?? undefined,
+      externalMessageId: row.external_message_id ?? undefined,
+      threadId: row.thread_id ?? undefined,
+      pollId: row.poll_id ?? undefined,
+      ok: row.ok === 1,
+      payload: parseJsonRecord(row.payload),
+      error: row.error ?? undefined,
+      createdAt: row.created_at,
+    }));
+  }
+
+  createChannelPoll(params: {
+    sessionId: string;
+    channel: ChannelType | 'webchat';
+    externalMessageId?: string | null;
+    question: string;
+    options: string[];
+    multiple?: boolean;
+    metadata?: Record<string, unknown>;
+  }): {
+    id: string;
+    createdAt: string;
+    updatedAt: string;
+  } {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO channel_polls (
+        id, session_id, channel, external_message_id, question, options, multiple, status, metadata, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)
+    `).run(
+      id,
+      params.sessionId,
+      params.channel,
+      params.externalMessageId ?? null,
+      params.question,
+      JSON.stringify(params.options),
+      params.multiple === true ? 1 : 0,
+      params.metadata ? JSON.stringify(params.metadata) : null,
+      now,
+      now,
+    );
+    return { id, createdAt: now, updatedAt: now };
+  }
+
+  voteChannelPoll(params: {
+    pollId: string;
+    voterId: string;
+    optionIds: string[];
+  }): { voterId: string; optionIds: string[] } {
+    const existing = this.db.prepare(`
+      SELECT id FROM channel_poll_votes WHERE poll_id = ? AND voter_id = ?
+    `).get(params.pollId, params.voterId) as { id: string } | undefined;
+    const now = new Date().toISOString();
+    if (existing) {
+      this.db.prepare(`
+        UPDATE channel_poll_votes
+        SET option_ids = ?, updated_at = ?
+        WHERE id = ?
+      `).run(JSON.stringify(params.optionIds), now, existing.id);
+      return {
+        voterId: params.voterId,
+        optionIds: [...params.optionIds],
+      };
+    }
+
+    this.db.prepare(`
+      INSERT INTO channel_poll_votes (id, poll_id, voter_id, option_ids, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(randomUUID(), params.pollId, params.voterId, JSON.stringify(params.optionIds), now, now);
+    return {
+      voterId: params.voterId,
+      optionIds: [...params.optionIds],
+    };
+  }
+
+  listChannelPolls(sessionId: string): Array<{
+    id: string;
+    sessionId: string;
+    channel: string;
+    externalMessageId?: string;
+    question: string;
+    options: string[];
+    multiple: boolean;
+    status: string;
+    metadata?: Record<string, unknown>;
+    votes: Array<{ voterId: string; optionIds: string[] }>;
+    createdAt: string;
+    updatedAt: string;
+  }> {
+    const rows = this.db.prepare(`
+      SELECT id, session_id, channel, external_message_id, question, options, multiple, status, metadata, created_at, updated_at
+      FROM channel_polls
+      WHERE session_id = ?
+      ORDER BY created_at DESC
+    `).all(sessionId) as Array<{
+      id: string;
+      session_id: string;
+      channel: string;
+      external_message_id: string | null;
+      question: string;
+      options: string;
+      multiple: number;
+      status: string;
+      metadata: string | null;
+      created_at: string;
+      updated_at: string;
+    }>;
+
+    const voteRows = this.db.prepare(`
+      SELECT poll_id, voter_id, option_ids
+      FROM channel_poll_votes
+      WHERE poll_id IN (SELECT id FROM channel_polls WHERE session_id = ?)
+    `).all(sessionId) as Array<{
+      poll_id: string;
+      voter_id: string;
+      option_ids: string;
+    }>;
+    const votesByPoll = new Map<string, Array<{ voterId: string; optionIds: string[] }>>();
+    for (const vote of voteRows) {
+      const bucket = votesByPoll.get(vote.poll_id) ?? [];
+      bucket.push({
+        voterId: vote.voter_id,
+        optionIds: parseJsonArray(vote.option_ids).flatMap((entry) => typeof entry === 'string' ? [entry] : []),
+      });
+      votesByPoll.set(vote.poll_id, bucket);
+    }
+
+    return rows.map((row) => ({
+      id: row.id,
+      sessionId: row.session_id,
+      channel: row.channel,
+      externalMessageId: row.external_message_id ?? undefined,
+      question: row.question,
+      options: parseJsonArray(row.options).flatMap((entry) => typeof entry === 'string' ? [entry] : []),
+      multiple: row.multiple === 1,
+      status: row.status,
+      metadata: parseJsonRecord(row.metadata),
+      votes: votesByPoll.get(row.id) ?? [],
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+  }
+
+  upsertCanvasSurface(params: {
+    sessionId: string;
+    surfaceId: string;
+    path: string;
+    state?: Record<string, unknown>;
+    statusText?: string;
+  }): {
+    id: string;
+    createdAt: string;
+    updatedAt: string;
+  } {
+    const existing = this.db.prepare(`
+      SELECT id, created_at FROM canvas_surfaces WHERE session_id = ? AND surface_id = ?
+    `).get(params.sessionId, params.surfaceId) as { id: string; created_at: string } | undefined;
+    const id = existing?.id ?? randomUUID();
+    const createdAt = existing?.created_at ?? new Date().toISOString();
+    const updatedAt = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO canvas_surfaces (id, session_id, surface_id, path, state, status_text, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(session_id, surface_id) DO UPDATE SET
+        path = excluded.path,
+        state = excluded.state,
+        status_text = excluded.status_text,
+        updated_at = excluded.updated_at
+    `).run(
+      id,
+      params.sessionId,
+      params.surfaceId,
+      params.path,
+      params.state ? JSON.stringify(params.state) : null,
+      params.statusText ?? null,
+      createdAt,
+      updatedAt,
+    );
+    return { id, createdAt, updatedAt };
+  }
+
+  getCanvasSurface(sessionId: string, surfaceId: string): {
+    id: string;
+    sessionId: string;
+    surfaceId: string;
+    path: string;
+    state?: Record<string, unknown>;
+    statusText?: string;
+    createdAt: string;
+    updatedAt: string;
+  } | null {
+    const row = this.db.prepare(`
+      SELECT id, session_id, surface_id, path, state, status_text, created_at, updated_at
+      FROM canvas_surfaces
+      WHERE session_id = ? AND surface_id = ?
+    `).get(sessionId, surfaceId) as {
+      id: string;
+      session_id: string;
+      surface_id: string;
+      path: string;
+      state: string | null;
+      status_text: string | null;
+      created_at: string;
+      updated_at: string;
+    } | undefined;
+
+    if (!row) {
+      return null;
+    }
+
+    return {
+      id: row.id,
+      sessionId: row.session_id,
+      surfaceId: row.surface_id,
+      path: row.path,
+      state: parseJsonRecord(row.state),
+      statusText: row.status_text ?? undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  deleteCanvasSurface(sessionId: string, surfaceId: string): boolean {
+    return this.db.prepare(`
+      DELETE FROM canvas_surfaces WHERE session_id = ? AND surface_id = ?
+    `).run(sessionId, surfaceId).changes > 0;
+  }
+
+  createMemoryMigration(params: {
+    backend: 'sqlite-vec' | 'lancedb';
+    phase: string;
+    progress?: number;
+    status?: string;
+    details?: Record<string, unknown>;
+  }): {
+    id: string;
+    createdAt: string;
+    updatedAt: string;
+  } {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO memory_migrations (id, backend, phase, progress, status, details, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      params.backend,
+      params.phase,
+      params.progress ?? 0,
+      params.status ?? 'pending',
+      params.details ? JSON.stringify(params.details) : null,
+      now,
+      now,
+    );
+    return { id, createdAt: now, updatedAt: now };
+  }
+
+  updateMemoryMigration(id: string, patch: {
+    phase?: string;
+    progress?: number;
+    status?: string;
+    details?: Record<string, unknown>;
+  }): boolean {
+    const row = this.db.prepare(`
+      SELECT phase, progress, status, details
+      FROM memory_migrations
+      WHERE id = ?
+    `).get(id) as {
+      phase: string;
+      progress: number;
+      status: string;
+      details: string | null;
+    } | undefined;
+    if (!row) {
+      return false;
+    }
+
+    const updatedAt = new Date().toISOString();
+    this.db.prepare(`
+      UPDATE memory_migrations
+      SET phase = ?, progress = ?, status = ?, details = ?, updated_at = ?
+      WHERE id = ?
+    `).run(
+      patch.phase ?? row.phase,
+      patch.progress ?? row.progress,
+      patch.status ?? row.status,
+      patch.details ? JSON.stringify(patch.details) : row.details,
+      updatedAt,
+      id,
+    );
+    return true;
+  }
+
+  getLatestMemoryMigration(): {
+    id: string;
+    backend: 'sqlite-vec' | 'lancedb';
+    phase: string;
+    progress: number;
+    status: string;
+    details?: Record<string, unknown>;
+    createdAt: string;
+    updatedAt: string;
+  } | null {
+    const row = this.db.prepare(`
+      SELECT id, backend, phase, progress, status, details, created_at, updated_at
+      FROM memory_migrations
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `).get() as {
+      id: string;
+      backend: 'sqlite-vec' | 'lancedb';
+      phase: string;
+      progress: number;
+      status: string;
+      details: string | null;
+      created_at: string;
+      updated_at: string;
+    } | undefined;
+
+    if (!row) {
+      return null;
+    }
+
+    return {
+      id: row.id,
+      backend: row.backend,
+      phase: row.phase,
+      progress: row.progress,
+      status: row.status,
+      details: parseJsonRecord(row.details),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
   /**
    * Clear all messages for a session
    */
@@ -755,6 +1425,11 @@ export class KeygateDatabase {
     this.db.prepare('DELETE FROM messages WHERE session_id = ?').run(sessionId);
     this.db.prepare('DELETE FROM message_usage WHERE session_id = ?').run(sessionId);
     this.db.prepare('DELETE FROM session_compactions WHERE session_id = ?').run(sessionId);
+    this.db.prepare('DELETE FROM channel_actions WHERE session_id = ?').run(sessionId);
+    this.db.prepare('DELETE FROM channel_poll_votes WHERE poll_id IN (SELECT id FROM channel_polls WHERE session_id = ?)').run(sessionId);
+    this.db.prepare('DELETE FROM channel_polls WHERE session_id = ?').run(sessionId);
+    this.db.prepare('DELETE FROM canvas_surfaces WHERE session_id = ?').run(sessionId);
+    this.db.prepare('DELETE FROM webchat_links WHERE session_id = ?').run(sessionId);
     this.db.prepare(`
       UPDATE sessions
       SET
@@ -778,6 +1453,11 @@ export class KeygateDatabase {
     this.db.prepare('DELETE FROM tool_logs WHERE session_id = ?').run(sessionId);
     this.db.prepare('DELETE FROM message_usage WHERE session_id = ?').run(sessionId);
     this.db.prepare('DELETE FROM session_compactions WHERE session_id = ?').run(sessionId);
+    this.db.prepare('DELETE FROM channel_actions WHERE session_id = ?').run(sessionId);
+    this.db.prepare('DELETE FROM channel_poll_votes WHERE poll_id IN (SELECT id FROM channel_polls WHERE session_id = ?)').run(sessionId);
+    this.db.prepare('DELETE FROM channel_polls WHERE session_id = ?').run(sessionId);
+    this.db.prepare('DELETE FROM canvas_surfaces WHERE session_id = ?').run(sessionId);
+    this.db.prepare('DELETE FROM webchat_links WHERE session_id = ?').run(sessionId);
     this.db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
   }
 
@@ -815,6 +1495,17 @@ function parseMessageAttachments(value: string | null): MessageAttachment[] | un
       const sizeBytes = Number.parseInt(String(record['sizeBytes'] ?? ''), 10);
       const filePath = typeof record['path'] === 'string' ? record['path'].trim() : '';
       const url = typeof record['url'] === 'string' ? record['url'].trim() : '';
+      const kind = typeof record['kind'] === 'string' ? record['kind'].trim() : undefined;
+      const sha256 = typeof record['sha256'] === 'string' ? record['sha256'].trim() : undefined;
+      const durationMs = parseNumberField(record['durationMs']);
+      const width = parseNumberField(record['width']);
+      const height = parseNumberField(record['height']);
+      const pageCount = parseNumberField(record['pageCount']);
+      const derivedFromId = typeof record['derivedFromId'] === 'string' ? record['derivedFromId'].trim() : undefined;
+      const previewText = typeof record['previewText'] === 'string' ? record['previewText'] : undefined;
+      const metadata = record['metadata'] && typeof record['metadata'] === 'object' && !Array.isArray(record['metadata'])
+        ? record['metadata'] as Record<string, unknown>
+        : undefined;
 
       if (!id || !filename || !contentType || !Number.isFinite(sizeBytes) || sizeBytes < 0 || !filePath || !url) {
         return [];
@@ -827,6 +1518,15 @@ function parseMessageAttachments(value: string | null): MessageAttachment[] | un
         sizeBytes,
         path: filePath,
         url,
+        kind: kind as MessageAttachment['kind'],
+        sha256,
+        durationMs,
+        width,
+        height,
+        pageCount,
+        derivedFromId,
+        previewText,
+        metadata,
       } satisfies MessageAttachment];
     });
 
@@ -850,4 +1550,26 @@ function parseJsonRecord(value: string | null): Record<string, unknown> | undefi
   } catch {
     return undefined;
   }
+}
+
+function parseJsonArray(value: string | null): unknown[] {
+  if (!value) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseNumberField(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }

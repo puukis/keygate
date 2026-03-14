@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import {
   Gateway,
   BaseChannel,
+  getChannelActionRegistry,
   RoutingRuleStore,
   RoutingService,
   buildWhatsAppDmChatId,
@@ -28,10 +29,12 @@ import {
   readWhatsAppLinkedAccountMeta,
   resolveSessionScreenshotByFilename,
   sanitizeBrowserScreenshotFilename,
+  type ChannelActionName,
   type ConfirmationDecision,
   type ConfirmationDetails,
   type KeygateConfig,
 } from '@puukis/core';
+import { WhatsAppTypingIndicator } from './typing.js';
 
 loadEnvironment();
 
@@ -39,6 +42,8 @@ const SCREENSHOT_FILENAME_GLOBAL_PATTERN = /session-[A-Za-z0-9:_-]+-step-\d+\.pn
 const MAX_SEND_CHARS = 3500;
 const CONFIRMATION_TIMEOUT_MS = 60_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
+const INBOUND_ACK_EMOJI = '👀';
+const SELF_CHAT_APPEND_WINDOW_MS = 2 * 60_000;
 
 type SendMessageResult = { key?: { id?: string } };
 
@@ -52,7 +57,7 @@ type ConfirmationEntry = {
 
 const confirmationBroker = new Map<string, ConfirmationEntry>();
 const recentBotMessageIdsByChat = new Map<string, Set<string>>();
-const closedAccessNoticeSent = new Set<string>();
+const pendingPairingNoticesLogged = new Set<string>();
 
 class WhatsAppChannel extends BaseChannel {
   type = 'whatsapp' as const;
@@ -275,6 +280,64 @@ function shouldIgnoreInboundWhatsAppMessage(options: {
   return !isSelfChatJid(options.chatJid, options.ownPhone);
 }
 
+function parseWhatsAppMessageTimestampMs(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value > 1_000_000_000_000 ? value : value * 1_000;
+  }
+
+  if (typeof value === 'bigint') {
+    const asNumber = Number(value);
+    return Number.isFinite(asNumber)
+      ? (asNumber > 1_000_000_000_000 ? asNumber : asNumber * 1_000)
+      : null;
+  }
+
+  if (value && typeof value === 'object') {
+    const candidate = value as { toNumber?: () => number; toString?: () => string };
+    if (typeof candidate.toNumber === 'function') {
+      const asNumber = candidate.toNumber();
+      return Number.isFinite(asNumber)
+        ? (asNumber > 1_000_000_000_000 ? asNumber : asNumber * 1_000)
+        : null;
+    }
+    if (typeof candidate.toString === 'function') {
+      const asNumber = Number(candidate.toString());
+      return Number.isFinite(asNumber)
+        ? (asNumber > 1_000_000_000_000 ? asNumber : asNumber * 1_000)
+        : null;
+    }
+  }
+
+  return null;
+}
+
+function shouldProcessWhatsAppUpsert(options: {
+  upsertType: unknown;
+  fromMe: boolean;
+  chatJid: string;
+  ownPhone: string | null;
+  messageTimestampMs: number | null;
+  nowMs?: number;
+}): boolean {
+  if (options.upsertType === 'notify') {
+    return true;
+  }
+
+  if (options.upsertType !== 'append') {
+    return false;
+  }
+
+  if (!options.fromMe || !isSelfChatJid(options.chatJid, options.ownPhone)) {
+    return false;
+  }
+
+  if (options.messageTimestampMs === null) {
+    return false;
+  }
+
+  return options.messageTimestampMs >= (options.nowMs ?? Date.now()) - SELF_CHAT_APPEND_WINDOW_MS;
+}
+
 function maybeResolveConfirmation(chatJid: string, userId: string, text: string): boolean {
   const normalized = text.trim().toUpperCase().replace(/\s+/g, ' ');
   for (const [token, entry] of confirmationBroker.entries()) {
@@ -383,6 +446,7 @@ async function runWhatsAppRuntime(config: KeygateConfig): Promise<void> {
         }
       },
     });
+    registerWhatsAppActionAdapter(session.sock, config);
 
     try {
       const outcome = await new Promise<'reconnect' | 'fatal' | 'shutdown'>((resolve) => {
@@ -393,6 +457,9 @@ async function runWhatsAppRuntime(config: KeygateConfig): Promise<void> {
             gateway,
             router,
             sock: session.sock,
+            upsertType: typeof (event as { type?: unknown }).type === 'string'
+              ? (event as { type?: string }).type
+              : undefined,
             messages: (event.messages ?? []) as unknown as Array<Record<string, unknown>>,
           });
         });
@@ -441,6 +508,7 @@ async function handleMessages(options: {
   gateway: Gateway;
   router: RoutingService;
   sock: Awaited<ReturnType<typeof createWhatsAppSocket>>['sock'];
+  upsertType: string | undefined;
   messages: Array<Record<string, unknown>>;
 }): Promise<void> {
   for (const rawMessage of options.messages) {
@@ -452,6 +520,127 @@ async function handleMessages(options: {
   }
 }
 
+function registerWhatsAppActionAdapter(
+  sock: Awaited<ReturnType<typeof createWhatsAppSocket>>['sock'],
+  config: KeygateConfig,
+): void {
+  const gate = config.actions?.whatsapp ?? {
+    send: true,
+    react: true,
+    poll: true,
+    reply: true,
+  };
+  const actions: ChannelActionName[] = [];
+  if (gate.send !== false) actions.push('send');
+  if (gate.react !== false) actions.push('react');
+  if (gate.poll !== false) actions.push('poll');
+  if (gate.reply !== false) actions.push('reply');
+
+  getChannelActionRegistry().register({
+    channel: 'whatsapp',
+    actions,
+    handle: async (ctx) => {
+      const chatJid = firstWhatsAppString(ctx.params['chatJid'], ctx.params['channelId']);
+      const messageId = firstWhatsAppString(ctx.params['messageId']);
+      const participant = firstWhatsAppString(ctx.params['participant']);
+      const content = firstWhatsAppString(ctx.params['content']) ?? '';
+
+      if (!chatJid) {
+        return { ok: false, channel: 'whatsapp', error: 'WhatsApp actions require chatJid.' };
+      }
+
+      if (ctx.action === 'send') {
+        const sent = await sock.sendMessage(chatJid, { text: content || '(No response)' }) as SendMessageResult;
+        return {
+          ok: true,
+          channel: 'whatsapp',
+          externalMessageId: sent?.key?.id,
+          payload: { content },
+        };
+      }
+
+      if (ctx.action === 'poll') {
+        const question = firstWhatsAppString(ctx.params['question']);
+        const options = Array.isArray(ctx.params['options'])
+          ? ctx.params['options'].filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+          : [];
+        if (!question || options.length < 2) {
+          return { ok: false, channel: 'whatsapp', error: 'WhatsApp poll requires a question and at least two options.' };
+        }
+        const sent = await sock.sendMessage(chatJid, {
+          poll: {
+            name: question,
+            values: options,
+            selectableCount: ctx.params['multiple'] === true ? options.length : 1,
+          },
+        } as any) as SendMessageResult;
+        return {
+          ok: true,
+          channel: 'whatsapp',
+          externalMessageId: sent?.key?.id,
+          pollId: sent?.key?.id,
+          payload: { question, options, multiple: ctx.params['multiple'] === true },
+        };
+      }
+
+      if (!messageId) {
+        return { ok: false, channel: 'whatsapp', error: `${ctx.action} requires messageId.` };
+      }
+
+      const messageKey = {
+        remoteJid: chatJid,
+        id: messageId,
+        fromMe: false,
+        ...(participant ? { participant } : {}),
+      };
+
+      if (ctx.action === 'react') {
+        const emoji = firstWhatsAppString(ctx.params['emoji']);
+        if (!emoji) {
+          return { ok: false, channel: 'whatsapp', error: 'WhatsApp react requires emoji.' };
+        }
+        await sock.sendMessage(chatJid, {
+          react: {
+            text: emoji,
+            key: messageKey,
+          },
+        } as any);
+        return {
+          ok: true,
+          channel: 'whatsapp',
+          externalMessageId: messageId,
+          payload: { emoji },
+        };
+      }
+
+      if (ctx.action === 'reply') {
+        const sent = await sock.sendMessage(
+          chatJid,
+          { text: content || '(No response)' },
+          { quoted: { key: messageKey } as any },
+        ) as SendMessageResult;
+        return {
+          ok: true,
+          channel: 'whatsapp',
+          externalMessageId: sent?.key?.id,
+          payload: { content, replyTo: messageId },
+        };
+      }
+
+      return { ok: false, channel: 'whatsapp', error: `${ctx.action} is not supported for WhatsApp.` };
+    },
+  });
+}
+
+function firstWhatsAppString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
 async function handleSingleMessage(
   options: {
     config: KeygateConfig;
@@ -459,6 +648,7 @@ async function handleSingleMessage(
     gateway: Gateway;
     router: RoutingService;
     sock: Awaited<ReturnType<typeof createWhatsAppSocket>>['sock'];
+    upsertType: string | undefined;
   },
   rawMessage: Record<string, unknown>
 ): Promise<void> {
@@ -466,9 +656,21 @@ async function handleSingleMessage(
     ? rawMessage['key'] as Record<string, unknown>
     : undefined;
   const chatJid = typeof key?.['remoteJid'] === 'string' ? key['remoteJid'] : '';
-  const ownPhone = normalizeWhatsAppPhoneNumber(options.sock.user?.id);
   const messageId = typeof key?.['id'] === 'string' ? key['id'] : undefined;
   const fromMe = key?.['fromMe'] === true;
+  const linkedMeta = await readWhatsAppLinkedAccountMeta();
+  const ownPhone = normalizeWhatsAppPhoneNumber(options.sock.user?.id)
+    ?? normalizeWhatsAppPhoneNumber(linkedMeta?.phoneNumber ?? linkedMeta?.jid);
+  const messageTimestampMs = parseWhatsAppMessageTimestampMs(rawMessage['messageTimestamp']);
+  if (!shouldProcessWhatsAppUpsert({
+    upsertType: options.upsertType,
+    fromMe,
+    chatJid,
+    ownPhone,
+    messageTimestampMs,
+  })) {
+    return;
+  }
   if (shouldIgnoreInboundWhatsAppMessage({
     chatJid,
     messageId,
@@ -528,20 +730,19 @@ async function handleSingleMessage(
 
     if (!allowed && options.runtimeConfig.dmPolicy === 'pairing') {
       const request = await createOrGetPairingCode('whatsapp', userId);
-      await options.sock.sendMessage(chatJid, {
-        text: `DM pairing required. Your code: ${request.code}\nAsk the owner to run: keygate pairing approve whatsapp ${request.code}`,
-      });
+      const pendingKey = `${chatJid}:${userId}:${request.code}`;
+      if (!pendingPairingNoticesLogged.has(pendingKey)) {
+        pendingPairingNoticesLogged.add(pendingKey);
+        console.log(
+          `[whatsapp] blocked unpaired DM from ${userId}; pending code ${request.code}. `
+          + `Review with: keygate pairing pending whatsapp | Approve with: keygate pairing approve whatsapp ${request.code}`
+        );
+      }
       return;
     }
 
     if (!allowed) {
-      const accessKey = `${chatJid}:${userId}`;
-      if (!closedAccessNoticeSent.has(accessKey)) {
-        closedAccessNoticeSent.add(accessKey);
-        await options.sock.sendMessage(chatJid, {
-          text: 'DM access is restricted for this Keygate instance.',
-        });
-      }
+      console.log(`[whatsapp] blocked DM from ${userId}; sender is not allowlisted.`);
       return;
     }
   }
@@ -565,6 +766,19 @@ async function handleSingleMessage(
 
   if (!text && !media.attachment) {
     return;
+  }
+
+  if (key) {
+    try {
+      await options.sock.sendMessage(chatJid, {
+        react: {
+          text: INBOUND_ACK_EMOJI,
+          key: key as any,
+        },
+      } as any);
+    } catch {
+      // Ignore reaction failures due to unsupported clients or permissions.
+    }
   }
 
   if (options.runtimeConfig.sendReadReceipts && key) {
@@ -593,7 +807,13 @@ async function handleSingleMessage(
     sessionId,
   );
 
-  await options.gateway.processMessage(normalized);
+  const typing = new WhatsAppTypingIndicator(options.sock, chatJid);
+  typing.start();
+  try {
+    await options.gateway.processMessage(normalized);
+  } finally {
+    typing.stop();
+  }
 }
 
 function sleep(ms: number): Promise<void> {
@@ -610,4 +830,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   });
 }
 
-export { runWhatsAppRuntime, WhatsAppChannel, splitTextChunks, isSelfChatJid, shouldIgnoreInboundWhatsAppMessage };
+export {
+  runWhatsAppRuntime,
+  WhatsAppChannel,
+  WhatsAppTypingIndicator,
+  splitTextChunks,
+  isSelfChatJid,
+  shouldIgnoreInboundWhatsAppMessage,
+  shouldProcessWhatsAppUpsert,
+};

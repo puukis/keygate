@@ -57,3 +57,7 @@ scripts/bump-release.sh
 .github/skills/
 
 .claude/
+
+.superpowers/
+
+output/

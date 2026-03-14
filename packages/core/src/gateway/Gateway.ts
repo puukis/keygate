@@ -27,6 +27,7 @@ import { Database } from '../db/index.js';
 import { AgentMemoryStore } from '../db/agentMemory.js';
 import { MemoryManager } from '../memory/manager.js';
 import type { MemoryConfig } from '../memory/embedding/types.js';
+import { MediaUnderstandingService } from '../media/index.js';
 import { createLLMProvider } from '../llm/index.js';
 import { UsageService } from '../usage/index.js';
 import { SandboxManager } from '../sandbox/index.js';
@@ -89,6 +90,7 @@ export class Gateway extends EventEmitter<KeygateEvents> {
   public readonly schedulerStore: SchedulerStore;
   public readonly schedulerService: SchedulerService;
   public readonly memoryManager: MemoryManager;
+  public readonly mediaUnderstanding: MediaUnderstandingService;
   public readonly git: GitService;
   public readonly usage: UsageService;
   public readonly sandbox: SandboxManager;
@@ -133,6 +135,7 @@ export class Gateway extends EventEmitter<KeygateEvents> {
       mmr: false,
     };
     this.memoryManager = new MemoryManager(config, memoryConfig);
+    this.mediaUnderstanding = new MediaUnderstandingService(config);
 
     // Initialize git service
     this.git = new GitService();
@@ -245,18 +248,23 @@ export class Gateway extends EventEmitter<KeygateEvents> {
           ? incomingHook.attachments as NormalizedMessage['attachments']
           : message.attachments,
       };
+      const preparedAttachments = await this.mediaUnderstanding.prepareAttachments(effectiveMessage.attachments);
+      const messageWithPreparedAttachments: NormalizedMessage = {
+        ...effectiveMessage,
+        attachments: preparedAttachments,
+      };
 
       // Get or create session
-      const session = this.getOrCreateSession(effectiveMessage);
-      if (await this.commandRouter.maybeHandle(session, effectiveMessage.channel, effectiveMessage.content)) {
-        this.appendDebugEvent(effectiveMessage.sessionId, 'command.handled', 'Handled operator command.', {
-          content: effectiveMessage.content,
+      const session = this.getOrCreateSession(messageWithPreparedAttachments);
+      if (await this.commandRouter.maybeHandle(session, messageWithPreparedAttachments.channel, messageWithPreparedAttachments.content)) {
+        this.appendDebugEvent(messageWithPreparedAttachments.sessionId, 'command.handled', 'Handled operator command.', {
+          content: messageWithPreparedAttachments.content,
         });
         return;
       }
-      const slashResolution = isReservedTerminalSlashCommand(effectiveMessage.content, effectiveMessage.channelType)
+      const slashResolution = isReservedTerminalSlashCommand(messageWithPreparedAttachments.content, messageWithPreparedAttachments.channelType)
         ? { kind: 'none' as const }
-        : await this.skills.resolveSlashCommand(effectiveMessage.sessionId, effectiveMessage.content);
+        : await this.skills.resolveSlashCommand(messageWithPreparedAttachments.sessionId, messageWithPreparedAttachments.content);
       const explicitSkillInvocation = slashResolution.kind === 'prompt'
         ? slashResolution.invocation
         : undefined;
@@ -264,27 +272,29 @@ export class Gateway extends EventEmitter<KeygateEvents> {
       // Add user message to history
       session.messages.push({
         role: 'user',
-        content: effectiveMessage.content,
-        attachments: effectiveMessage.attachments,
+        content: messageWithPreparedAttachments.content,
+        attachments: messageWithPreparedAttachments.attachments,
+        metadata: messageWithPreparedAttachments.metadata,
       });
       session.updatedAt = new Date();
       this.emit('message:user', {
-        sessionId: effectiveMessage.sessionId,
-        channelType: effectiveMessage.channelType,
-        content: effectiveMessage.content,
-        attachments: effectiveMessage.attachments,
+        sessionId: messageWithPreparedAttachments.sessionId,
+        channelType: messageWithPreparedAttachments.channelType,
+        content: messageWithPreparedAttachments.content,
+        attachments: messageWithPreparedAttachments.attachments,
       });
-      this.appendDebugEvent(effectiveMessage.sessionId, 'message.user', 'Queued user message.', {
-        channelType: effectiveMessage.channelType,
-        contentLength: effectiveMessage.content.length,
+      this.appendDebugEvent(messageWithPreparedAttachments.sessionId, 'message.user', 'Queued user message.', {
+        channelType: messageWithPreparedAttachments.channelType,
+        contentLength: messageWithPreparedAttachments.content.length,
       });
       this.persistSessionSnapshot(session, {
         role: 'user',
-        content: effectiveMessage.content,
-        attachments: effectiveMessage.attachments,
+        content: messageWithPreparedAttachments.content,
+        attachments: messageWithPreparedAttachments.attachments,
+        metadata: messageWithPreparedAttachments.metadata,
       });
 
-      const run = this.startSessionRun(effectiveMessage.sessionId);
+      const run = this.startSessionRun(messageWithPreparedAttachments.sessionId);
       const runContext: ToolExecutionContext = {
         signal: run.controller.signal,
         registerAbortCleanup: (cleanup) => {
@@ -299,20 +309,20 @@ export class Gateway extends EventEmitter<KeygateEvents> {
 
       // Emit start event
       this.emit('message:start', {
-        sessionId: effectiveMessage.sessionId,
-        messageId: effectiveMessage.id,
+        sessionId: messageWithPreparedAttachments.sessionId,
+        messageId: messageWithPreparedAttachments.id,
       });
-      this.appendDebugEvent(effectiveMessage.sessionId, 'message.start', 'Started assistant turn.');
+      this.appendDebugEvent(messageWithPreparedAttachments.sessionId, 'message.start', 'Started assistant turn.');
 
       try {
         if (slashResolution.kind === 'dispatch') {
-          await this.handleSlashToolDispatch(effectiveMessage, session, slashResolution, runContext);
+          await this.handleSlashToolDispatch(messageWithPreparedAttachments, session, slashResolution, runContext);
           return;
         }
 
         // Stream response back to the channel while accumulating final text.
         let response = '';
-        const stream = this.brain.runStream(session, effectiveMessage.channel, {
+        const stream = this.brain.runStream(session, messageWithPreparedAttachments.channel, {
           explicitSkillInvocation,
           runContext,
         });
@@ -322,14 +332,14 @@ export class Gateway extends EventEmitter<KeygateEvents> {
           for await (const chunk of stream) {
             response += chunk;
             gateway.emit('message:chunk', {
-              sessionId: effectiveMessage.sessionId,
+              sessionId: messageWithPreparedAttachments.sessionId,
               content: chunk,
             });
             yield chunk;
           }
         };
 
-        await effectiveMessage.channel.sendStream(captureStream());
+        await messageWithPreparedAttachments.channel.sendStream(captureStream());
         if (runContext.signal.aborted) {
           return;
         }
@@ -348,15 +358,15 @@ export class Gateway extends EventEmitter<KeygateEvents> {
 
         // Emit end event
         this.emit('message:end', {
-          sessionId: effectiveMessage.sessionId,
+          sessionId: messageWithPreparedAttachments.sessionId,
           content: finalResponse,
         });
-        this.appendDebugEvent(effectiveMessage.sessionId, 'message.end', 'Assistant turn completed.', {
+        this.appendDebugEvent(messageWithPreparedAttachments.sessionId, 'message.end', 'Assistant turn completed.', {
           contentLength: finalResponse.length,
         });
         await this.plugins.runHook('message_sent', {
-          sessionId: effectiveMessage.sessionId,
-          channelType: effectiveMessage.channelType,
+          sessionId: messageWithPreparedAttachments.sessionId,
+          channelType: messageWithPreparedAttachments.channelType,
           content: finalResponse,
         });
       } catch (error) {
@@ -367,7 +377,7 @@ export class Gateway extends EventEmitter<KeygateEvents> {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         const errorResponse = `Error: ${errorMessage}`;
 
-        await effectiveMessage.channel.send(errorResponse);
+        await messageWithPreparedAttachments.channel.send(errorResponse);
 
         session.messages.push({
           role: 'assistant',
@@ -380,14 +390,14 @@ export class Gateway extends EventEmitter<KeygateEvents> {
         });
 
         this.emit('message:end', {
-          sessionId: effectiveMessage.sessionId,
+          sessionId: messageWithPreparedAttachments.sessionId,
           content: errorResponse,
         });
-        this.appendDebugEvent(effectiveMessage.sessionId, 'message.error', 'Assistant turn failed.', {
+        this.appendDebugEvent(messageWithPreparedAttachments.sessionId, 'message.error', 'Assistant turn failed.', {
           error: errorMessage,
         });
       } finally {
-        this.finishSessionRun(effectiveMessage.sessionId, run);
+        this.finishSessionRun(messageWithPreparedAttachments.sessionId, run);
       }
     });
   }
@@ -419,16 +429,19 @@ export class Gateway extends EventEmitter<KeygateEvents> {
       debugType?: string;
       debugMessage?: string;
       debugData?: Record<string, unknown>;
+      metadata?: Record<string, unknown>;
     } = {},
   ): Promise<void> {
     session.messages.push({
       role: 'assistant',
       content,
+      metadata: options.metadata,
     });
     session.updatedAt = new Date();
     this.persistSessionSnapshot(session, {
       role: 'assistant',
       content,
+      metadata: options.metadata,
     });
 
     this.emit('message:end', {
@@ -721,10 +734,19 @@ export class Gateway extends EventEmitter<KeygateEvents> {
   /**
    * Create a new web session
    */
-  createWebSession(): Session {
+  createWebSession(sessionId?: string): Session {
+    const id = typeof sessionId === 'string' && sessionId.trim().length > 0
+      ? sessionId.trim()
+      : `web:${randomUUID()}`;
+    const channelType = inferSessionChannelType(id);
+    const existing = this.getSession(id);
+    if (existing) {
+      return existing;
+    }
+
     const session: Session = {
-      id: `web:${randomUUID()}`,
-      channelType: 'web',
+      id,
+      channelType,
       messages: [],
       debugMode: false,
       usage: {
@@ -743,7 +765,7 @@ export class Gateway extends EventEmitter<KeygateEvents> {
     this.persistSessionSnapshot(session);
     void this.plugins.runHook('session_start', {
       sessionId: session.id,
-      channelType: session.channelType,
+      channelType,
       delegated: false,
     });
     return session;
@@ -928,6 +950,39 @@ export class Gateway extends EventEmitter<KeygateEvents> {
       channel,
       userId,
       content,
+      timestamp: new Date(),
+    });
+
+    if (record) {
+      record.updatedAt = new Date().toISOString();
+      if (record.status !== 'cancelled') {
+        record.status = 'idle';
+      }
+    }
+  }
+
+  async sendStructuredUserMessageToSession(
+    sessionId: string,
+    content: string,
+    metadata: Record<string, unknown>,
+    userId = 'delegate:system',
+  ): Promise<void> {
+    const session = this.getSession(sessionId);
+    const channelType = session?.channelType ?? inferSessionChannelType(sessionId);
+    const record = this.delegatedSessions.get(sessionId);
+    if (record) {
+      record.updatedAt = new Date().toISOString();
+      record.status = 'running';
+    }
+
+    await this.processMessage({
+      id: randomUUID(),
+      sessionId,
+      channelType,
+      channel: createInternalDelegationChannel(channelType),
+      userId,
+      content,
+      metadata,
       timestamp: new Date(),
     });
 
@@ -1223,7 +1278,7 @@ export class Gateway extends EventEmitter<KeygateEvents> {
 
   private persistSessionSnapshot(
     session: Session,
-    message?: Pick<Session['messages'][number], 'role' | 'content' | 'attachments'>
+    message?: Pick<Session['messages'][number], 'role' | 'content' | 'attachments' | 'metadata'>
   ): void {
     try {
       this.db.saveSession(session);
@@ -1232,6 +1287,7 @@ export class Gateway extends EventEmitter<KeygateEvents> {
           role: message.role,
           content: message.content,
           attachments: message.attachments,
+          metadata: message.metadata,
         });
       }
     } catch (error) {
@@ -1308,6 +1364,28 @@ function createInternalDelegationChannel(type: Session['channelType']): Channel 
       return 'allow_once' as const;
     },
   };
+}
+
+function inferSessionChannelType(sessionId: string): Session['channelType'] {
+  if (sessionId.startsWith('webchat:')) {
+    return 'webchat';
+  }
+  if (sessionId.startsWith('discord:')) {
+    return 'discord';
+  }
+  if (sessionId.startsWith('terminal:')) {
+    return 'terminal';
+  }
+  if (sessionId.startsWith('slack:')) {
+    return 'slack';
+  }
+  if (sessionId.startsWith('whatsapp:')) {
+    return 'whatsapp';
+  }
+  if (sessionId.startsWith('telegram:')) {
+    return 'telegram';
+  }
+  return 'web';
 }
 
 function getDefaultModelForProvider(provider: KeygateConfig['llm']['provider']): string {

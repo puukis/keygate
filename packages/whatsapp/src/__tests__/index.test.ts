@@ -1,11 +1,17 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   isSelfChatJid,
   shouldIgnoreInboundWhatsAppMessage,
+  shouldProcessWhatsAppUpsert,
   splitTextChunks,
+  WhatsAppTypingIndicator,
 } from '../index.js';
 
 describe('whatsapp runtime helpers', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('splits long outbound messages into stable chunks', () => {
     const input = `hello ${'word '.repeat(1200)}`;
     const chunks = splitTextChunks(input);
@@ -34,5 +40,63 @@ describe('whatsapp runtime helpers', () => {
       fromMe: false,
       ownPhone: '+4917634521729',
     })).toBe(true);
+  });
+
+  it('only processes live notify upserts from whatsapp', () => {
+    expect(shouldProcessWhatsAppUpsert({
+      upsertType: 'notify',
+      fromMe: false,
+      chatJid: '4917634521729@s.whatsapp.net',
+      ownPhone: '+4917634521729',
+      messageTimestampMs: null,
+    })).toBe(true);
+
+    expect(shouldProcessWhatsAppUpsert({
+      upsertType: 'append',
+      fromMe: false,
+      chatJid: '4917634521729@s.whatsapp.net',
+      ownPhone: '+4917634521729',
+      messageTimestampMs: Date.now(),
+    })).toBe(false);
+
+    expect(shouldProcessWhatsAppUpsert({
+      upsertType: 'append',
+      fromMe: true,
+      chatJid: '4917634521729@s.whatsapp.net',
+      ownPhone: '+4917634521729',
+      messageTimestampMs: 1_700_000_000_000,
+      nowMs: 1_700_000_060_000,
+    })).toBe(true);
+
+    expect(shouldProcessWhatsAppUpsert({
+      upsertType: 'append',
+      fromMe: true,
+      chatJid: '4917634521729@s.whatsapp.net',
+      ownPhone: '+4917634521729',
+      messageTimestampMs: 1_700_000_000_000,
+      nowMs: 1_700_000_200_001,
+    })).toBe(false);
+  });
+
+  it('sends composing presence while work is in progress', async () => {
+    vi.useFakeTimers();
+    const sendPresenceUpdate = vi.fn(async () => undefined);
+    const indicator = new WhatsAppTypingIndicator(
+      { sendPresenceUpdate } as unknown as ConstructorParameters<typeof WhatsAppTypingIndicator>[0],
+      '4917634521729@s.whatsapp.net',
+    );
+
+    indicator.start();
+    await Promise.resolve();
+
+    await vi.advanceTimersByTimeAsync(4_000);
+    indicator.stop();
+    await Promise.resolve();
+
+    expect(sendPresenceUpdate.mock.calls).toEqual([
+      ['composing', '4917634521729@s.whatsapp.net'],
+      ['composing', '4917634521729@s.whatsapp.net'],
+      ['paused', '4917634521729@s.whatsapp.net'],
+    ]);
   });
 });

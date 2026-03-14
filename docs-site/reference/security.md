@@ -82,6 +82,8 @@ Discord, Slack, and WhatsApp DMs can be gated by pairing:
 
 Pairing is the safest default for external inbound traffic. Use allowlists when you need a smaller trusted set.
 
+WhatsApp uses a stricter delivery model than Slack or Discord: pending pairing requests are stored locally for operator review instead of sending the pairing code back into the DM automatically.
+
 ## Operator auth and remote surfaces
 
 Remote Gateway Access v1 assumes a local-only default:

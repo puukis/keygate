@@ -186,6 +186,84 @@ interface NodeRecordView {
   lastInvocationAt?: string;
 }
 
+interface WebChatLinkView {
+  linkId: string;
+  sessionId: string;
+  displayName: string;
+  expiresAt: string;
+  createdAt: string;
+  revokedAt?: string;
+  guestPath?: string;
+  url?: string;
+}
+
+interface ChannelActionHistoryView {
+  id: string;
+  sessionId: string;
+  channel: SessionChannelType | 'webchat';
+  action: string;
+  accountId?: string;
+  externalMessageId?: string;
+  threadId?: string;
+  pollId?: string;
+  ok: boolean;
+  payload?: Record<string, unknown>;
+  error?: string;
+  createdAt: string;
+}
+
+interface ChannelPollVoteView {
+  voterId: string;
+  optionIds: string[];
+}
+
+interface ChannelPollView {
+  id: string;
+  sessionId: string;
+  channel: SessionChannelType | 'webchat';
+  externalMessageId?: string;
+  question: string;
+  options: string[];
+  multiple: boolean;
+  status: string;
+  votes: ChannelPollVoteView[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface OverviewStatusView {
+  webchat?: {
+    enabled: boolean;
+    activeLinks: number;
+    guestPath: string;
+  };
+  canvas?: {
+    enabled: boolean;
+    basePath: string;
+    a2uiPath: string;
+  };
+  media?: {
+    enabled: boolean;
+    providerAvailability?: Record<string, unknown>;
+  };
+  memory?: {
+    backend?: string;
+    targetBackend?: string;
+    migrationPhase?: string;
+    batchMode?: string;
+  };
+  voice?: {
+    activeSessions: number;
+    sessions: Array<{
+      sessionId: string;
+      guildId: string;
+      channelId: string;
+      status: string;
+      error?: string;
+    }>;
+  };
+}
+
 type UsageWindow = '24h' | '7d' | '30d' | 'all';
 
 interface UsageBucketView {
@@ -473,6 +551,19 @@ function firstRawString(...values: unknown[]): string | undefined {
     if (typeof value === 'string') {
       return value;
     }
+  }
+
+  return undefined;
+}
+
+function numberOrUndefined(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === 'string' && value.trim().length > 0) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
   }
 
   return undefined;
@@ -1140,6 +1231,10 @@ function isImportantProviderEvent(method: string, params?: Record<string, unknow
 }
 
 function getChannelTypeForSession(sessionId: string): SessionChannelType {
+  if (sessionId.startsWith('webchat:')) {
+    return 'webchat';
+  }
+
   if (sessionId.startsWith('discord:')) {
     return 'discord';
   }
@@ -1156,11 +1251,19 @@ function getChannelTypeForSession(sessionId: string): SessionChannelType {
     return 'terminal';
   }
 
+  if (sessionId.startsWith('telegram:')) {
+    return 'telegram';
+  }
+
   return 'web';
 }
 
 function normalizeWebSessionId(value: string): string {
-  return value.startsWith('web:') ? value : `web:${value}`;
+  return value.includes(':') ? value : `web:${value}`;
+}
+
+function resolveWebChatSessionId(value: string): string {
+  return value.startsWith('webchat:') ? value : `webchat:${value}`;
 }
 
 function parseSessionAttachments(value: unknown): SessionAttachment[] | undefined {
@@ -1189,6 +1292,12 @@ function parseSessionAttachments(value: unknown): SessionAttachment[] | undefine
       contentType,
       sizeBytes: sizeBytesRaw,
       url,
+      kind: firstString(record['kind']) as SessionAttachment['kind'] | undefined,
+      previewText: firstRawString(record['previewText']) ?? undefined,
+      durationMs: numberOrUndefined(record['durationMs']),
+      width: numberOrUndefined(record['width']),
+      height: numberOrUndefined(record['height']),
+      pageCount: numberOrUndefined(record['pageCount']),
     } satisfies SessionAttachment];
   });
 
@@ -1214,10 +1323,12 @@ function parseSessionSnapshotEntries(value: unknown): SessionSnapshotEntry[] {
     if (
       !sessionId ||
       (channelTypeRaw !== 'web' &&
+        channelTypeRaw !== 'webchat' &&
         channelTypeRaw !== 'discord' &&
         channelTypeRaw !== 'terminal' &&
         channelTypeRaw !== 'slack' &&
-        channelTypeRaw !== 'whatsapp')
+        channelTypeRaw !== 'whatsapp' &&
+        channelTypeRaw !== 'telegram')
     ) {
       return [];
     }
@@ -1253,6 +1364,138 @@ function parseSessionSnapshotEntries(value: unknown): SessionSnapshotEntry[] {
       messages,
     } satisfies SessionSnapshotEntry];
   });
+}
+
+function parseWebChatLinks(value: unknown): WebChatLinkView[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item) => {
+    const record = asRecord(item);
+    if (!record) {
+      return [];
+    }
+    const linkId = firstString(record['linkId']);
+    const sessionId = firstString(record['sessionId']);
+    const displayName = firstString(record['displayName']);
+    const expiresAt = firstString(record['expiresAt']);
+    const createdAt = firstString(record['createdAt']);
+    if (!linkId || !sessionId || !displayName || !expiresAt || !createdAt) {
+      return [];
+    }
+    return [{
+      linkId,
+      sessionId,
+      displayName,
+      expiresAt,
+      createdAt,
+      revokedAt: firstString(record['revokedAt']),
+      guestPath: firstString(record['guestPath']),
+      url: firstString(record['url']),
+    }];
+  });
+}
+
+function parseChannelActions(value: unknown): ChannelActionHistoryView[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item) => {
+    const record = asRecord(item);
+    if (!record) {
+      return [];
+    }
+    const id = firstString(record['id']);
+    const sessionId = firstString(record['sessionId']);
+    const channel = firstString(record['channel']);
+    const action = firstString(record['action']);
+    const createdAt = firstString(record['createdAt']);
+    if (!id || !sessionId || !channel || !action || !createdAt) {
+      return [];
+    }
+    return [{
+      id,
+      sessionId,
+      channel: channel as ChannelActionHistoryView['channel'],
+      action,
+      accountId: firstString(record['accountId']),
+      externalMessageId: firstString(record['externalMessageId']),
+      threadId: firstString(record['threadId']),
+      pollId: firstString(record['pollId']),
+      ok: record['ok'] === true,
+      payload: asRecord(record['payload']) ?? undefined,
+      error: firstString(record['error']),
+      createdAt,
+    }];
+  });
+}
+
+function parseChannelPolls(value: unknown): ChannelPollView[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item) => {
+    const record = asRecord(item);
+    if (!record) {
+      return [];
+    }
+    const id = firstString(record['id']);
+    const sessionId = firstString(record['sessionId']);
+    const channel = firstString(record['channel']);
+    const question = firstRawString(record['question']) ?? '';
+    const createdAt = firstString(record['createdAt']);
+    const updatedAt = firstString(record['updatedAt']);
+    const options = Array.isArray(record['options'])
+      ? record['options'].filter((entry): entry is string => typeof entry === 'string')
+      : [];
+    const votes = Array.isArray(record['votes'])
+      ? record['votes'].flatMap((vote) => {
+        const voteRecord = asRecord(vote);
+        if (!voteRecord) {
+          return [];
+        }
+        const voterId = firstString(voteRecord['voterId']);
+        const optionIds = Array.isArray(voteRecord['optionIds'])
+          ? voteRecord['optionIds'].filter((entry): entry is string => typeof entry === 'string')
+          : [];
+        return voterId ? [{ voterId, optionIds }] : [];
+      })
+      : [];
+    if (!id || !sessionId || !channel || !question || !createdAt || !updatedAt || options.length < 2) {
+      return [];
+    }
+    return [{
+      id,
+      sessionId,
+      channel: channel as ChannelPollView['channel'],
+      externalMessageId: firstString(record['externalMessageId']),
+      question,
+      options,
+      multiple: record['multiple'] === true,
+      status: firstString(record['status']) ?? 'open',
+      votes,
+      createdAt,
+      updatedAt,
+    }];
+  });
+}
+
+function parseOverviewStatus(value: unknown): OverviewStatusView | null {
+  const record = asRecord(value);
+  if (!record) {
+    return null;
+  }
+
+  return {
+    webchat: asRecord(record['webchat']) as OverviewStatusView['webchat'],
+    canvas: asRecord(record['canvas']) as OverviewStatusView['canvas'],
+    media: asRecord(record['media']) as OverviewStatusView['media'],
+    memory: asRecord(record['memory']) as OverviewStatusView['memory'],
+    voice: asRecord(record['voice']) as OverviewStatusView['voice'],
+  };
 }
 
 function upsertPluginListEntry(
@@ -1406,6 +1649,11 @@ function App() {
   const [debugEventsBySession, setDebugEventsBySession] = useState<Record<string, DebugEventView[]>>({});
   const [sandboxRuntimes, setSandboxRuntimes] = useState<SandboxRuntimeView[]>([]);
   const [knownNodes, setKnownNodes] = useState<NodeRecordView[]>([]);
+  const [overviewStatus, setOverviewStatus] = useState<OverviewStatusView | null>(null);
+  const [webChatLinks, setWebChatLinks] = useState<WebChatLinkView[]>([]);
+  const [channelActionHistory, setChannelActionHistory] = useState<ChannelActionHistoryView[]>([]);
+  const [channelPolls, setChannelPolls] = useState<ChannelPollView[]>([]);
+  const [channelPollSelections, setChannelPollSelections] = useState<Record<string, string[]>>({});
 
   const [latestScreenshot, setLatestScreenshot] = useState<LatestScreenshotPreview | null>(null);
 
@@ -1424,6 +1672,12 @@ function App() {
     ? latestScreenshot
     : null;
   const activeDebugEvents = activeSessionId ? debugEventsBySession[activeSessionId] ?? [] : [];
+  const activeSessionLinks = activeSessionId
+    ? webChatLinks.filter((link) => link.sessionId === activeSessionId)
+    : [];
+  const activeSessionPolls = activeSessionId
+    ? channelPolls.filter((poll) => poll.sessionId === activeSessionId)
+    : [];
 
   const sessionOptions = useMemo(
     () => buildSessionOptions(mainSessionId, sessionState.metaBySession),
@@ -1633,7 +1887,15 @@ function App() {
         if (
           !sessionId
           || (content.trim().length === 0 && (!attachments || attachments.length === 0))
-          || (channelType !== 'web' && channelType !== 'discord' && channelType !== 'terminal' && channelType !== 'slack')
+          || (
+            channelType !== 'web'
+            && channelType !== 'webchat'
+            && channelType !== 'discord'
+            && channelType !== 'terminal'
+            && channelType !== 'slack'
+            && channelType !== 'telegram'
+            && channelType !== 'whatsapp'
+          )
         ) {
           break;
         }
@@ -1729,7 +1991,7 @@ function App() {
         setSessionState((prev) => reduceSessionChatState(prev, {
           type: 'session_stream_start',
           sessionId,
-          channelType: 'web',
+          channelType: getChannelTypeForSession(sessionId),
           timestamp,
         }));
 
@@ -2615,6 +2877,69 @@ function App() {
     }
   }, []);
 
+  const refreshOverviewStatus = useCallback(async () => {
+    try {
+      const response = await fetch('/api/status', {
+        credentials: 'same-origin',
+        cache: 'no-store',
+      });
+      if (!response.ok) {
+        return;
+      }
+      const payload = await response.json() as Record<string, unknown>;
+      setOverviewStatus(parseOverviewStatus(payload));
+    } catch {
+      // Ignore background overview polling failures.
+    }
+  }, []);
+
+  const refreshWebChatLinks = useCallback(async () => {
+    try {
+      const response = await fetch('/api/webchat/links', {
+        credentials: 'same-origin',
+        cache: 'no-store',
+      });
+      if (!response.ok) {
+        return;
+      }
+      const payload = await response.json() as { links?: unknown };
+      setWebChatLinks(parseWebChatLinks(payload.links));
+    } catch {
+      // Ignore background refresh failures.
+    }
+  }, []);
+
+  const refreshSessionChannelState = useCallback(async (sessionId: string | null) => {
+    if (!sessionId) {
+      setChannelActionHistory([]);
+      setChannelPolls([]);
+      return;
+    }
+
+    try {
+      const [actionsResponse, pollsResponse] = await Promise.all([
+        fetch(`/api/channel-actions?sessionId=${encodeURIComponent(sessionId)}`, {
+          credentials: 'same-origin',
+          cache: 'no-store',
+        }),
+        fetch(`/api/channel-polls?sessionId=${encodeURIComponent(sessionId)}`, {
+          credentials: 'same-origin',
+          cache: 'no-store',
+        }),
+      ]);
+      if (actionsResponse.ok) {
+        const payload = await actionsResponse.json() as { actions?: unknown };
+        setChannelActionHistory(parseChannelActions(payload.actions));
+      }
+      if (pollsResponse.ok) {
+        const payload = await pollsResponse.json() as { polls?: unknown };
+        setChannelPolls(parseChannelPolls(payload.polls));
+      }
+    } catch {
+      // Ignore background refresh failures.
+    }
+  }, []);
+
   useEffect(() => {
     if (authState !== 'checking') {
       return;
@@ -2670,6 +2995,51 @@ function App() {
     send({ type: 'sandbox_list' });
     send({ type: 'node_list' });
   }, [activeScreen, connected, send]);
+
+  useEffect(() => {
+    if (!connected) {
+      return undefined;
+    }
+
+    void refreshOverviewStatus();
+    const intervalId = window.setInterval(() => {
+      void refreshOverviewStatus();
+    }, 8000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [connected, refreshOverviewStatus]);
+
+  useEffect(() => {
+    if (!connected) {
+      return undefined;
+    }
+
+    void refreshWebChatLinks();
+    const intervalId = window.setInterval(() => {
+      void refreshWebChatLinks();
+    }, 10000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [connected, refreshWebChatLinks]);
+
+  useEffect(() => {
+    if (!connected) {
+      return undefined;
+    }
+
+    void refreshSessionChannelState(activeSessionId);
+    const intervalId = window.setInterval(() => {
+      void refreshSessionChannelState(activeSessionId);
+    }, 6000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [activeSessionId, connected, refreshSessionChannelState]);
 
   useEffect(() => {
     if (!connected || activeScreen !== 'debug' || !activeSessionId) {
@@ -2790,7 +3160,7 @@ function App() {
           cache: 'no-store',
         });
 
-        if (response.status === 404) {
+        if (response.status === 404 || response.status === 204) {
           if (!cancelled) {
             clearPreview();
           }
@@ -3286,6 +3656,91 @@ function App() {
     browserVersionDraft,
     send,
   ]);
+
+  const handleCreateWebChatLink = useCallback(async (sessionId: string) => {
+    const displayName = window.prompt('Guest display name', 'Guest')?.trim() ?? '';
+    if (!displayName) {
+      return;
+    }
+    const expiryMinutesInput = window.prompt('Link lifetime in minutes', '60')?.trim() ?? '60';
+    const expiryMinutes = Number.parseInt(expiryMinutesInput, 10);
+    const response = await fetch('/api/webchat/links', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({
+        sessionId,
+        displayName,
+        expiryMinutes: Number.isFinite(expiryMinutes) && expiryMinutes > 0 ? expiryMinutes : 60,
+      }),
+    });
+    if (!response.ok) {
+      window.alert('Failed to create WebChat link.');
+      return;
+    }
+    const payload = await response.json() as { link?: { url?: string } };
+    const url = payload.link?.url;
+    await refreshWebChatLinks();
+    await refreshOverviewStatus();
+    if (url) {
+      await navigator.clipboard.writeText(url).catch(() => {});
+      window.prompt('Guest link created. URL:', url);
+    }
+  }, [refreshOverviewStatus, refreshWebChatLinks]);
+
+  const handleRevokeWebChatLink = useCallback(async (linkId: string) => {
+    const response = await fetch(`/api/webchat/links/${encodeURIComponent(linkId)}`, {
+      method: 'DELETE',
+      credentials: 'same-origin',
+    });
+    if (!response.ok) {
+      window.alert('Failed to revoke WebChat link.');
+      return;
+    }
+    await refreshWebChatLinks();
+    await refreshOverviewStatus();
+  }, [refreshOverviewStatus, refreshWebChatLinks]);
+
+  const handleVoteOnChannelPoll = useCallback(async (poll: ChannelPollView, option: string) => {
+    if (!activeSessionId || poll.channel !== 'webchat') {
+      return;
+    }
+
+    const current = new Set(channelPollSelections[poll.id] ?? []);
+    const next = poll.multiple
+      ? current.has(option)
+        ? Array.from(current).filter((entry) => entry !== option)
+        : [...Array.from(current), option]
+      : [option];
+
+    setChannelPollSelections((previous) => ({
+      ...previous,
+      [poll.id]: next,
+    }));
+
+    const response = await fetch('/api/channel-actions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({
+        sessionId: activeSessionId,
+        channel: poll.channel,
+        action: 'poll-vote',
+        params: {
+          pollId: poll.id,
+          optionIds: next,
+          voterId: 'operator',
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      window.alert('Failed to submit poll vote.');
+      return;
+    }
+
+    await refreshSessionChannelState(activeSessionId);
+  }, [activeSessionId, channelPollSelections, refreshSessionChannelState]);
 
   const handleSchedulerCreateOrUpdate = useCallback(() => {
     const cronExpression = schedulerCronDraft.trim();
@@ -3864,7 +4319,102 @@ function App() {
                 <div className="scheduler-job-item"><strong>Provider / Model</strong><div className="config-note">{llm.provider} · {llm.model}</div></div>
                 <div className="scheduler-job-item"><strong>Sessions</strong><div className="config-note">{sessionOptions.length} known sessions</div></div>
                 <div className="scheduler-job-item"><strong>MCP Browser</strong><div className="config-note">{browserConfig.installed ? `Installed (${browserConfig.desiredVersion})` : 'Not installed'}</div></div>
+                <div className="scheduler-job-item"><strong>WebChat</strong><div className="config-note">{overviewStatus?.webchat?.enabled ? `${overviewStatus.webchat.activeLinks} live guest links` : 'Disabled'}</div></div>
+                <div className="scheduler-job-item"><strong>Canvas</strong><div className="config-note">{overviewStatus?.canvas?.enabled ? overviewStatus.canvas.a2uiPath : 'Disabled'}</div></div>
+                <div className="scheduler-job-item"><strong>Memory Backend</strong><div className="config-note">{overviewStatus?.memory?.backend ?? 'Unknown'}{overviewStatus?.memory?.migrationPhase ? ` · ${overviewStatus.memory.migrationPhase}` : ''}</div></div>
+                <div className="scheduler-job-item"><strong>Voice Sessions</strong><div className="config-note">{overviewStatus?.voice?.activeSessions ?? 0} active</div></div>
               </div>
+
+              <h3>WebChat Links</h3>
+              <div className="scheduler-actions">
+                {activeSessionId && (
+                  <button className="btn-secondary" onClick={() => handleCreateWebChatLink(activeSessionId)}>Create guest link for active session</button>
+                )}
+              </div>
+              <div className="scheduler-list" role="region" aria-label="WebChat links">
+                {webChatLinks.length === 0 ? (
+                  <p className="config-note">No active or historical guest links.</p>
+                ) : (
+                  <ul className="scheduler-job-list">
+                    {webChatLinks.slice(0, 8).map((link) => (
+                      <li key={link.linkId} className="scheduler-job-item">
+                        <div>
+                          <strong>{link.displayName}</strong>
+                          <div className="config-note">Session: {link.sessionId}</div>
+                          <div className="config-note">Expires: {formatMaybeTimestamp(link.expiresAt)}</div>
+                          <div className="config-note">{link.revokedAt ? `Revoked ${formatMaybeTimestamp(link.revokedAt)}` : 'Active'}</div>
+                        </div>
+                        {!link.revokedAt && (
+                          <div className="scheduler-job-actions">
+                            <button className="btn-secondary" onClick={() => handleRevokeWebChatLink(link.linkId)}>Revoke</button>
+                          </div>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              {activeSessionId && (
+                <>
+                  <h3>Session Polls</h3>
+                  <div className="scheduler-list" role="region" aria-label="Session polls">
+                    {activeSessionPolls.length === 0 ? (
+                      <p className="config-note">No stored polls for {activeSessionId}.</p>
+                    ) : (
+                      <ul className="scheduler-job-list">
+                        {activeSessionPolls.map((poll) => {
+                          const selected = new Set(channelPollSelections[poll.id] ?? []);
+                          return (
+                            <li key={poll.id} className="scheduler-job-item">
+                              <div>
+                                <strong>{poll.question}</strong>
+                                <div className="config-note">{poll.channel} · {poll.multiple ? 'Multiple choice' : 'Single choice'} · {poll.votes.length} votes</div>
+                                <div className="scheduler-actions">
+                                  {poll.options.map((option) => {
+                                    const count = poll.votes.filter((vote) => vote.optionIds.includes(option)).length;
+                                    return (
+                                      <button
+                                        key={option}
+                                        className="btn-secondary"
+                                        onClick={() => handleVoteOnChannelPoll(poll, option)}
+                                        disabled={poll.channel !== 'webchat'}
+                                      >
+                                        {selected.has(option) ? 'Selected' : option} ({count})
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </div>
+
+                  <h3>Channel Actions</h3>
+                  <div className="scheduler-list" role="region" aria-label="Channel action history">
+                    {channelActionHistory.length === 0 ? (
+                      <p className="config-note">No channel actions recorded for {activeSessionId}.</p>
+                    ) : (
+                      <ul className="scheduler-job-list">
+                        {channelActionHistory.slice(0, 12).map((entry) => (
+                          <li key={entry.id} className="scheduler-job-item">
+                            <div>
+                              <strong>{entry.ok ? 'OK' : 'Failed'} · {entry.channel} · {entry.action}</strong>
+                              <div className="config-note">{formatMaybeTimestamp(entry.createdAt)}</div>
+                              {entry.externalMessageId && <div className="config-note">Message: {entry.externalMessageId}</div>}
+                              {entry.threadId && <div className="config-note">Thread: {entry.threadId}</div>}
+                              {entry.error && <div className="config-note">Error: {entry.error}</div>}
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </>
+              )}
             </div>
           )}
 
@@ -3965,9 +4515,11 @@ function App() {
                           <strong>{session.label}</strong>
                           <div className="config-note">ID: {session.sessionId}</div>
                           <div className="config-note">Channel: {session.channelType}</div>
+                          <div className="config-note">Guest links: {webChatLinks.filter((link) => link.sessionId === resolveWebChatSessionId(session.sessionId) && !link.revokedAt).length}</div>
                         </div>
                         <div className="scheduler-job-actions">
                           <button className="btn-secondary" onClick={() => handleSwitchSession(session.sessionId)} disabled={!connected}>Open</button>
+                          <button className="btn-secondary" onClick={() => handleCreateWebChatLink(session.sessionId)}>Guest link</button>
                           {session.channelType === 'web' && (
                             <>
                               <button

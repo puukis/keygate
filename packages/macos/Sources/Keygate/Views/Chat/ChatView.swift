@@ -7,7 +7,7 @@ struct ChatView: View {
     @EnvironmentObject var gateway: GatewayService
     @EnvironmentObject var store: SessionStore
     @State private var input = ""
-    @State private var pendingAttachments: [PendingImageAttachment] = []
+    @State private var pendingAttachments: [PendingAttachment] = []
     @State private var isUploadingAttachments = false
     @State private var composerError: String?
 
@@ -70,6 +70,18 @@ struct ChatView: View {
 
             if let usage = gateway.contextUsage {
                 ContextBadge(usage: usage)
+            }
+
+            if let surface = gateway.activeCanvasSurfaces(for: session?.sessionId).first {
+                Button {
+                    gateway.openCanvasSurface(surface)
+                } label: {
+                    Label("Canvas", systemImage: "rectangle.on.rectangle")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .tint(.indigo)
             }
         }
         .padding(.horizontal, 20)
@@ -187,7 +199,7 @@ struct ChatView: View {
 
             HStack(alignment: .bottom, spacing: 10) {
                 Button {
-                    pickImageAttachments()
+                    pickAttachments()
                 } label: {
                     Image(systemName: "paperclip")
                         .font(.system(size: 14))
@@ -292,7 +304,7 @@ struct ChatView: View {
     }
 
     @MainActor
-    private func sendMessageWithAttachments(content: String, pending: [PendingImageAttachment]) async {
+    private func sendMessageWithAttachments(content: String, pending: [PendingAttachment]) async {
         if isUploadingAttachments {
             return
         }
@@ -309,7 +321,7 @@ struct ChatView: View {
                 }
 
                 for attachment in pending {
-                    let result = try await gateway.uploadImageAttachment(fileURL: attachment.url, sessionId: uploadSessionId)
+                    let result = try await gateway.uploadAttachment(fileURL: attachment.url, sessionId: uploadSessionId)
                     uploaded.append(result)
                 }
             }
@@ -324,7 +336,7 @@ struct ChatView: View {
         isUploadingAttachments = false
     }
 
-    private func pickImageAttachments() {
+    private func pickAttachments() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
@@ -342,7 +354,7 @@ struct ChatView: View {
 
         for url in urls {
             if next.count >= 5 {
-                firstError = "You can attach up to 5 images per message."
+                firstError = "You can attach up to 5 files per message."
                 break
             }
 
@@ -359,18 +371,18 @@ struct ChatView: View {
                 continue
             }
 
-            if sizeBytes > 10 * 1024 * 1024 {
-                firstError = "Each image must be 10MB or smaller."
+            if sizeBytes > 25 * 1024 * 1024 {
+                firstError = "Each attachment must be 25MB or smaller."
                 continue
             }
 
             let mime = mimeType(for: url)
-            if !["image/png", "image/jpeg", "image/webp", "image/gif"].contains(mime) {
-                firstError = "Only PNG, JPEG, WEBP, and GIF images are supported."
+            if !supportedAttachmentMimeTypes().contains(mime) {
+                firstError = "Supported attachments are images, audio, video, and PDF files."
                 continue
             }
 
-            next.append(PendingImageAttachment(url: url, mimeType: mime, sizeBytes: sizeBytes))
+            next.append(PendingAttachment(url: url, mimeType: mime, sizeBytes: sizeBytes))
         }
 
         pendingAttachments = next
@@ -382,11 +394,35 @@ struct ChatView: View {
     }
 
     private func allowedAttachmentTypes() -> [UTType] {
-        var types: [UTType] = [.png, .jpeg, .gif]
+        var types: [UTType] = [.png, .jpeg, .gif, .pdf, .mp3, .mpeg4Movie, .wav, .quickTimeMovie, .movie, .audio]
         if let webp = UTType(filenameExtension: "webp") {
             types.append(webp)
         }
+        if let ogg = UTType(filenameExtension: "ogg") {
+            types.append(ogg)
+        }
+        if let webm = UTType(filenameExtension: "webm") {
+            types.append(webm)
+        }
         return types
+    }
+
+    private func supportedAttachmentMimeTypes() -> Set<String> {
+        [
+            "image/png",
+            "image/jpeg",
+            "image/webp",
+            "image/gif",
+            "audio/mpeg",
+            "audio/mp3",
+            "audio/wav",
+            "audio/x-wav",
+            "audio/ogg",
+            "video/mp4",
+            "video/quicktime",
+            "video/webm",
+            "application/pdf",
+        ]
     }
 
     private func mimeType(for url: URL) -> String {
@@ -400,7 +436,7 @@ struct ChatView: View {
     }
 }
 
-private struct PendingImageAttachment: Identifiable {
+private struct PendingAttachment: Identifiable {
     let id = UUID()
     let url: URL
     let mimeType: String

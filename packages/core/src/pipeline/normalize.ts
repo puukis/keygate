@@ -1,6 +1,14 @@
 import type { Channel, ChannelType, MessageAttachment, NormalizedMessage } from '../types.js';
 import { randomUUID } from 'node:crypto';
 
+export function resolveWebChatSessionId(sessionId: string): string {
+  const trimmed = sessionId.trim();
+  if (!trimmed) {
+    return `webchat:${randomUUID()}`;
+  }
+  return trimmed.startsWith('webchat:') ? trimmed : `webchat:${trimmed}`;
+}
+
 /**
  * Create a normalized message from Discord
  */
@@ -39,6 +47,28 @@ export function normalizeWebMessage(
     id: randomUUID(),
     sessionId: `web:${sessionId}`,
     channelType: 'web',
+    channel,
+    userId,
+    content,
+    attachments,
+    timestamp: new Date(),
+  };
+}
+
+/**
+ * Create a normalized message from WebChat guest clients
+ */
+export function normalizeWebChatMessage(
+  sessionId: string,
+  userId: string,
+  content: string,
+  channel: Channel,
+  attachments?: MessageAttachment[]
+): NormalizedMessage {
+  return {
+    id: randomUUID(),
+    sessionId: resolveWebChatSessionId(sessionId),
+    channelType: 'webchat',
     channel,
     userId,
     content,

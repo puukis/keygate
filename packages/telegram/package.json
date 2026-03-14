@@ -5,6 +5,7 @@
   "description": "Keygate Telegram bot adapter",
   "type": "module",
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",

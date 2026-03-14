@@ -8,6 +8,17 @@ export { marketplaceTools } from './marketplace.js';
 export { memoryTools, memorySearchTool, memoryGetTool } from './memory.js';
 export { gitTools } from './git.js';
 export { gmailTools, gmailSendEmailTool } from './gmail.js';
+export { canvasTools, canvasOpenTool, canvasUpdateTool, canvasCloseTool } from './canvas.js';
+export {
+  channelActionTools,
+  channelActionTool,
+  channelPollTool,
+  channelReactTool,
+  channelEditTool,
+  channelDeleteTool,
+  channelThreadCreateTool,
+  channelThreadReplyTool,
+} from './channelActions.js';
 
 import { filesystemTools } from './filesystem.js';
 import { editTools } from './edit.js';
@@ -19,6 +30,8 @@ import { marketplaceTools } from './marketplace.js';
 import { memoryTools } from './memory.js';
 import { gitTools } from './git.js';
 import { gmailTools } from './gmail.js';
+import { canvasTools } from './canvas.js';
+import { channelActionTools } from './channelActions.js';
 
 /**
  * All built-in tools combined
@@ -34,4 +47,6 @@ export const allBuiltinTools = [
   ...memoryTools,
   ...gitTools,
   ...gmailTools,
+  ...canvasTools,
+  ...channelActionTools,
 ];

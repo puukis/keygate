@@ -271,27 +271,36 @@ struct ChannelBadge: View {
     private var backgroundColor: Color {
         switch channel {
         case .web:      .purple.opacity(0.1)
+        case .webchat:  .pink.opacity(0.12)
         case .discord:  .blue.opacity(0.1)
         case .terminal: .green.opacity(0.1)
         case .slack:    .orange.opacity(0.1)
+        case .telegram: .cyan.opacity(0.12)
+        case .whatsapp: .green.opacity(0.14)
         }
     }
 
     private var foregroundColor: Color {
         switch channel {
         case .web:      .purple
+        case .webchat:  .pink
         case .discord:  .blue
         case .terminal: .green
         case .slack:    .orange
+        case .telegram: .cyan
+        case .whatsapp: .green
         }
     }
 
     private var borderColor: Color {
         switch channel {
         case .web:      .purple.opacity(0.08)
+        case .webchat:  .pink.opacity(0.12)
         case .discord:  .blue.opacity(0.08)
         case .terminal: .green.opacity(0.08)
         case .slack:    .orange.opacity(0.08)
+        case .telegram: .cyan.opacity(0.12)
+        case .whatsapp: .green.opacity(0.12)
         }
     }
 }

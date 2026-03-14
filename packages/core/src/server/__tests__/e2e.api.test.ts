@@ -45,7 +45,10 @@ import type { KeygateConfig } from '../../types.js';
 function createConfig(workspacePath: string, port: number): KeygateConfig {
   return {
     llm: { provider: 'ollama', model: 'llama3', apiKey: '', ollama: { host: 'http://127.0.0.1:11434' } },
-    security: { mode: 'safe', spicyModeEnabled: false, workspacePath, allowedBinaries: ['node'] },
+    security: {
+      mode: 'safe', spicyModeEnabled: false, workspacePath, allowedBinaries: ['node'],
+      sandbox: { backend: 'docker', scope: 'session', image: 'node:20-slim', networkAccess: false, degradeWithoutDocker: true },
+    },
     server: { host: '127.0.0.1', port, apiToken: '' },
     remote: {
       authMode: 'off',

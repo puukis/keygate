@@ -46,7 +46,7 @@ export async function indexWorkspaceFiles(
     }
 
     // File is new or changed — re-chunk + re-embed
-    store.deleteByPath(relativePath);
+    await store.deleteByPath(relativePath);
 
     const chunks = chunkText(relativePath, content);
     if (chunks.length === 0) {
@@ -64,7 +64,7 @@ export async function indexWorkspaceFiles(
       source: 'memory' as const,
     }));
 
-    store.upsertChunks(storedChunks);
+    await store.upsertChunks(storedChunks);
     store.upsertFile(relativePath, hash, Math.floor(stat.mtimeMs), stat.size, 'memory');
     indexed++;
   }
@@ -72,7 +72,7 @@ export async function indexWorkspaceFiles(
   // Remove chunks for deleted files
   for (const existing of existingPaths) {
     if (!existing.startsWith('session:') && !currentPaths.has(existing)) {
-      store.deleteByPath(existing);
+      await store.deleteByPath(existing);
       removed++;
     }
   }
@@ -112,7 +112,7 @@ export async function indexSessionTranscripts(
       continue;
     }
 
-    store.deleteByPath(sessionPath);
+    await store.deleteByPath(sessionPath);
 
     const chunks = chunkSessionMessages(session.id, relevantMessages);
     if (chunks.length === 0) {
@@ -130,7 +130,7 @@ export async function indexSessionTranscripts(
       source: 'session' as const,
     }));
 
-    store.upsertChunks(storedChunks);
+    await store.upsertChunks(storedChunks);
     store.upsertFile(sessionPath, hash, Date.now(), contentForHash.length, 'session');
     indexed++;
   }

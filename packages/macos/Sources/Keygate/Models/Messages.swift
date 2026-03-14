@@ -28,6 +28,12 @@ enum ServerMessage: Decodable {
     case nodeRegisterResult(NodeRegisterResultPayload)
     case nodeInvokeRequest(NodeInvokeRequestPayload)
     case nodeStatusChanged(NodeStatusChangedPayload)
+    case canvasState(CanvasStatePayload)
+    case canvasClose(CanvasClosePayload)
+    case channelAction(ChannelActionPayload)
+    case channelPoll(ChannelPollPayload)
+    case channelPollVote(ChannelPollVotePayload)
+    case voiceSession(VoiceSessionPayload)
     case debugEvents(DebugEventsPayload)
     case debugEvent(DebugEventEnvelopePayload)
     case error(ErrorPayload)
@@ -67,6 +73,12 @@ enum ServerMessage: Decodable {
         case "node_register_result": self = .nodeRegisterResult(try single.decode(NodeRegisterResultPayload.self))
         case "node_invoke_request": self = .nodeInvokeRequest(try single.decode(NodeInvokeRequestPayload.self))
         case "node_status_changed": self = .nodeStatusChanged(try single.decode(NodeStatusChangedPayload.self))
+        case "canvas:state":         self = .canvasState(try single.decode(CanvasStatePayload.self))
+        case "canvas:close":         self = .canvasClose(try single.decode(CanvasClosePayload.self))
+        case "channel:action":       self = .channelAction(try single.decode(ChannelActionPayload.self))
+        case "channel:poll":         self = .channelPoll(try single.decode(ChannelPollPayload.self))
+        case "channel:poll_vote":    self = .channelPollVote(try single.decode(ChannelPollVotePayload.self))
+        case "voice:session":        self = .voiceSession(try single.decode(VoiceSessionPayload.self))
         case "debug_events_result": self = .debugEvents(try single.decode(DebugEventsPayload.self))
         case "debug_event": self = .debugEvent(try single.decode(DebugEventEnvelopePayload.self))
         case "error":               self = .error(try single.decode(ErrorPayload.self))
@@ -223,6 +235,192 @@ struct NodeStatusChangedPayload: Decodable {
     let lastSeenAt: String
 }
 
+struct CanvasStatePayload: Decodable, Identifiable {
+    let sessionId: String
+    let surfaceId: String
+    let path: String
+    let mode: String
+    let state: AnyCodable?
+    let statusText: String?
+
+    var id: String { "\(sessionId):\(surfaceId)" }
+}
+
+struct CanvasClosePayload: Decodable {
+    let sessionId: String
+    let surfaceId: String
+}
+
+struct ChannelActionPayload: Decodable, Identifiable {
+    let id: String
+    let sessionId: String
+    let channel: String
+    let action: String
+    let ok: Bool
+    let actionId: String?
+    let accountId: String?
+    let externalMessageId: String?
+    let threadId: String?
+    let pollId: String?
+    let error: String?
+    let payload: [String: AnyCodable]?
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionId
+        case channel
+        case action
+        case ok
+        case actionId
+        case accountId
+        case externalMessageId
+        case threadId
+        case pollId
+        case error
+        case payload
+    }
+
+    init(
+        id: String? = nil,
+        sessionId: String,
+        channel: String,
+        action: String,
+        ok: Bool,
+        actionId: String?,
+        accountId: String?,
+        externalMessageId: String?,
+        threadId: String?,
+        pollId: String?,
+        error: String?,
+        payload: [String: AnyCodable]?
+    ) {
+        self.sessionId = sessionId
+        self.channel = channel
+        self.action = action
+        self.ok = ok
+        self.actionId = actionId
+        self.accountId = accountId
+        self.externalMessageId = externalMessageId
+        self.threadId = threadId
+        self.pollId = pollId
+        self.error = error
+        self.payload = payload
+        self.id = id ?? actionId ?? [sessionId, channel, action, externalMessageId ?? threadId ?? pollId ?? "na"].joined(separator: "|")
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let sessionId = try container.decode(String.self, forKey: .sessionId)
+        let channel = try container.decode(String.self, forKey: .channel)
+        let action = try container.decode(String.self, forKey: .action)
+        let ok = try container.decode(Bool.self, forKey: .ok)
+        let actionId = try container.decodeIfPresent(String.self, forKey: .actionId)
+        let accountId = try container.decodeIfPresent(String.self, forKey: .accountId)
+        let externalMessageId = try container.decodeIfPresent(String.self, forKey: .externalMessageId)
+        let threadId = try container.decodeIfPresent(String.self, forKey: .threadId)
+        let pollId = try container.decodeIfPresent(String.self, forKey: .pollId)
+        let error = try container.decodeIfPresent(String.self, forKey: .error)
+        let payload = try container.decodeIfPresent([String: AnyCodable].self, forKey: .payload)
+
+        self.init(
+            sessionId: sessionId,
+            channel: channel,
+            action: action,
+            ok: ok,
+            actionId: actionId,
+            accountId: accountId,
+            externalMessageId: externalMessageId,
+            threadId: threadId,
+            pollId: pollId,
+            error: error,
+            payload: payload
+        )
+    }
+}
+
+struct ChannelPollVoteEntry: Codable, Identifiable {
+    let voterId: String
+    let optionIds: [String]
+
+    var id: String { voterId }
+}
+
+struct ChannelPollPayload: Decodable, Identifiable {
+    let id: String
+    let sessionId: String
+    let channel: String
+    let externalMessageId: String?
+    let question: String
+    let options: [String]
+    let multiple: Bool
+    let status: String
+    let metadata: [String: AnyCodable]?
+    let votes: [ChannelPollVoteEntry]
+    let createdAt: String
+    let updatedAt: String
+}
+
+struct ChannelPollVotePayload: Decodable {
+    let sessionId: String
+    let pollId: String
+    let voterId: String
+    let optionIds: [String]
+}
+
+struct VoiceSessionPayload: Decodable, Identifiable {
+    let sessionId: String
+    let guildId: String
+    let channelId: String
+    let status: String
+    let error: String?
+
+    var id: String { "\(guildId):\(channelId)" }
+}
+
+struct RuntimeStatusPayload: Decodable {
+    let webchat: WebChatStatusSummary?
+    let canvas: CanvasStatusSummary?
+    let media: MediaStatusSummary?
+    let memory: MemoryStatusSummary?
+    let voice: VoiceStatusSummary?
+}
+
+struct WebChatStatusSummary: Decodable {
+    let enabled: Bool?
+    let activeLinks: Int?
+    let guestPath: String?
+}
+
+struct CanvasStatusSummary: Decodable {
+    let enabled: Bool?
+    let basePath: String?
+    let a2uiPath: String?
+}
+
+struct MediaStatusSummary: Decodable {
+    let enabled: Bool?
+    let cacheDir: String?
+    let providerAvailability: [String: AnyCodable]?
+}
+
+struct MemoryStatusSummary: Decodable {
+    let provider: String?
+    let model: String?
+    let dimensions: Int?
+    let totalChunks: Int?
+    let indexedFiles: [String]?
+    let lastIndexed: String?
+    let backend: String?
+    let targetBackend: String?
+    let migrationPhase: String?
+    let batchMode: String?
+    let multimodal: [String]?
+}
+
+struct VoiceStatusSummary: Decodable {
+    let activeSessions: Int?
+    let sessions: [VoiceSessionPayload]?
+}
+
 struct DebugEventsPayload: Decodable {
     let sessionId: String
     let events: [DebugEvent]
@@ -284,6 +482,15 @@ struct Attachment: Codable, Identifiable {
     let contentType: String
     let sizeBytes: Int
     let url: String
+    let kind: String?
+    let sha256: String?
+    let durationMs: Int?
+    let width: Int?
+    let height: Int?
+    let pageCount: Int?
+    let derivedFromId: String?
+    let previewText: String?
+    let metadata: [String: AnyCodable]?
 }
 
 enum NodeCapability: String, Codable, CaseIterable, Identifiable {
@@ -354,7 +561,7 @@ struct SessionInfo: Codable, Identifiable {
 }
 
 enum ChannelType: String, Codable {
-    case web, discord, terminal, slack
+    case web, webchat, discord, terminal, slack, telegram, whatsapp
 }
 
 struct ChatMessage: Codable, Identifiable {

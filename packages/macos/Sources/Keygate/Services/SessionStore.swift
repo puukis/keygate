@@ -92,6 +92,9 @@ final class SessionStore: ObservableObject {
         if sessionId.hasPrefix("discord:") { return .discord }
         if sessionId.hasPrefix("terminal:") { return .terminal }
         if sessionId.hasPrefix("slack:") { return .slack }
+        if sessionId.hasPrefix("telegram:") { return .telegram }
+        if sessionId.hasPrefix("whatsapp:") { return .whatsapp }
+        if sessionId.hasPrefix("webchat:") { return .webchat }
         return .web
     }
 

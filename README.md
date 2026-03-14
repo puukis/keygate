@@ -35,8 +35,8 @@ When GitHub Pages is enabled for this repository, `.github/workflows/deploy-docs
 - **Multi-Channel**: Connect via Web UI (`127.0.0.1:18790`), Discord, Slack, or WhatsApp
 - **Built-in Remote Gateway Access**: Managed Tailscale tailnet exposure and managed SSH local-forward tunnels, both secured with token-gated operator auth
 - **Shared Operator Commands**: `/help`, `/status`, `/model`, `/compact`, `/debug`, `/stop`, `/new`, and `/reset` across chat surfaces, with native Discord slash commands and Slack `/agent*` commands
-- **WhatsApp Linked-Device Channel**: QR-based login, DM pairing, group allowlists, mention gating, and screenshot follow-up delivery
-- **DM Pairing Trust Model**: Unknown Slack/Discord/WhatsApp DMs are gated by pairing codes (configurable open/closed/pairing)
+- **WhatsApp Linked-Device Channel**: QR-based login, DM controls, group allowlists, `👀` acknowledgements, composing presence, and screenshot follow-up delivery
+- **DM Pairing Trust Model**: Unknown Slack/Discord/WhatsApp DMs are gated by pairing approvals (configurable open/closed/pairing), with WhatsApp pending requests reviewed locally instead of auto-DMing codes
 - **Long-term File Memory Recall**: `memory_search` + `memory_get` tools over `MEMORY.md` and `memory/*.md` with path+line snippets
 - **Usage, Token, and Cost Accounting**: turn-level usage persisted in SQLite and exposed through `/status`, the web app, REST, websocket, and CLI
 - **ReAct Agent Loop**: Iterative reasoning with tool calling
@@ -247,6 +247,8 @@ WhatsApp operational notes:
 
 - `keygate channels whatsapp login` opens a linked-device QR flow. No new `.env` entry is required.
 - Direct messages follow the same trust model as other external channels: `pairing`, `open`, or `closed`.
+- WhatsApp `pairing` is silent by design: review blocked DMs with `keygate pairing pending whatsapp`, then approve explicitly.
+- WhatsApp `closed` is allowlist-only: numbers outside `allowFrom` are ignored silently.
 - Group chats are controlled separately through `groupMode` (`closed`, `selected`, `open`) plus mention requirements.
 - After changing WhatsApp config in the web app, restart the WhatsApp runtime so the new policy is applied.
 

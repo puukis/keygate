@@ -5,9 +5,13 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { Gateway } from '../gateway/index.js';
 import type { UsageWindow } from '../usage/index.js';
-import { normalizeWebMessage, BaseChannel } from '../pipeline/index.js';
+import { normalizeWebMessage, normalizeWebChatMessage, resolveWebChatSessionId, BaseChannel } from '../pipeline/index.js';
 import { updateKeygateFile } from '../config/env.js';
 import { MCPBrowserManager, type MCPBrowserStatus } from '../codex/mcpBrowserManager.js';
+import { createCanvasHostHandler, getCanvasRuntime } from '../canvas/index.js';
+import { WebChatService, type WebChatGuestTokenPayload } from '../webchat/index.js';
+import { ConnectionRegistry } from './connectionRegistry.js';
+import { getChannelActionRegistry } from '../channels/actions.js';
 import {
   buildWhatsAppConfigViewSync,
   cancelActiveWhatsAppLogin,
@@ -32,6 +36,7 @@ import { RoutingRuleStore, RoutingService } from '../routing/index.js';
 import { NodeService, type NodeCapability } from '../nodes/index.js';
 import type { NodeInvokeResult } from '../nodes/index.js';
 import type {
+  ChannelActionName,
   BrowserDomainPolicy,
   ChannelType,
   CodexReasoningEffort,
@@ -48,6 +53,7 @@ import {
   getUploadContentType,
   isUploadPathAllowedForSession,
   normalizeUploadMimeType,
+  persistUploadedAttachment,
   persistUploadedImage,
   resolveMessageAttachmentRefs,
   resolveUploadPathByAttachmentId as resolveUploadPathByAttachmentIdFromStore,
@@ -65,6 +71,8 @@ interface WSMessage {
     | 'cancel_session'
     | 'get_session_snapshot'
     | 'confirm_response'
+    | 'channel_action'
+    | 'poll-vote'
     | 'set_mode'
     | 'enable_spicy_mode'
     | 'set_spicy_obedience'
@@ -246,6 +254,8 @@ interface WSMessage {
   path?: string;
   staged?: boolean;
   commitMessage?: string;
+  pollId?: string;
+  optionIds?: string[];
 }
 
 interface StartWebServerOptions {
@@ -305,6 +315,15 @@ interface SessionAttachmentView {
   contentType: string;
   sizeBytes: number;
   url: string;
+  kind?: MessageAttachment['kind'];
+  sha256?: string;
+  durationMs?: number;
+  width?: number;
+  height?: number;
+  pageCount?: number;
+  derivedFromId?: string;
+  previewText?: string;
+  metadata?: Record<string, unknown>;
 }
 
 interface SessionSnapshotEntryView {
@@ -313,6 +332,10 @@ interface SessionSnapshotEntryView {
   title?: string;
   updatedAt: string;
   messages: SessionSnapshotMessageView[];
+}
+
+interface WebChatGuestUpgradeRequest extends IncomingMessage {
+  webchatGuest?: WebChatGuestTokenPayload;
 }
 
 const DEFAULT_DISCORD_PREFIX = '!keygate ';
@@ -327,7 +350,7 @@ const OPERATOR_SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60;
  * WebSocket Channel adapter
  */
 class WebSocketChannel extends BaseChannel {
-  type = 'web' as const;
+  type: ChannelType;
   private ws: WebSocket;
   private sessionId: string;
   private pendingConfirmation:
@@ -341,10 +364,11 @@ class WebSocketChannel extends BaseChannel {
     resolve: (decision: ConfirmationDecision) => void;
   }> = [];
 
-  constructor(ws: WebSocket, sessionId: string) {
+  constructor(ws: WebSocket, sessionId: string, type: ChannelType = 'web') {
     super();
     this.ws = ws;
     this.sessionId = sessionId;
+    this.type = type;
   }
 
   getSessionId(): string {
@@ -442,10 +466,227 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
   const pluginManager = gateway.plugins;
   const staticAssetsDir = options.staticAssetsDir;
   const mcpBrowserManager = new MCPBrowserManager(config);
+  const canvasHost = createCanvasHostHandler(config);
+  const canvasRuntime = getCanvasRuntime();
+  const webChatService = new WebChatService(gateway.db, config.webchat);
+  const connections = new ConnectionRegistry();
   const browserStatusTracker: BrowserStatusTracker = {
     hasBaseline: false,
     signature: null,
   };
+  const resolvedWebChatConfig = config.webchat ?? {
+    enabled: true,
+    tokenSecret: 'keygate-webchat',
+    guestPath: '/webchat',
+    websocketPath: '/webchat/ws',
+    defaultExpiryMinutes: 60,
+    maxExpiryMinutes: 60 * 24 * 7,
+    maxConnectionsPerLink: 2,
+    maxMessagesPerMinute: 60,
+    maxUploadsPerLink: 25,
+    capabilities: {
+      canCancelRun: true,
+      canUploadAttachments: true,
+      canVotePolls: true,
+    },
+  };
+  const guestConnectionCounts = new Map<string, number>();
+  const guestMessageBuckets = new Map<string, number[]>();
+
+  canvasRuntime.configure({ gateway, host: canvasHost });
+  canvasHost.onUserAction((event) => {
+    gateway.appendDebugEvent(event.sessionId, 'canvas.user_action', 'Canvas user action received.', {
+      surfaceId: event.surfaceId,
+      action: event.action,
+    });
+    const actionName = typeof event.action['name'] === 'string' && event.action['name'].trim().length > 0
+      ? event.action['name'].trim()
+      : 'unknown';
+    const sourceComponentId = typeof event.action['sourceComponentId'] === 'string' && event.action['sourceComponentId'].trim().length > 0
+      ? event.action['sourceComponentId'].trim()
+      : undefined;
+    const content = sourceComponentId
+      ? `Canvas action "${actionName}" from ${sourceComponentId}.`
+      : `Canvas action "${actionName}".`;
+    void gateway.sendStructuredUserMessageToSession(
+      event.sessionId,
+      content,
+      {
+        source: 'canvas',
+        surfaceId: event.surfaceId,
+        userAction: event.action,
+      },
+      'canvas:user',
+    ).catch((error) => {
+      console.warn('Failed to inject canvas user action into session:', error);
+    });
+    connections.broadcast({
+      family: 'canvas',
+      sessionId: event.sessionId,
+      payload: {
+        type: 'canvas:user_action',
+        sessionId: event.sessionId,
+        surfaceId: event.surfaceId,
+        action: event.action,
+      },
+    });
+  });
+  getChannelActionRegistry().setObserver(async ({ channel, context, result }) => {
+    gateway.db.saveChannelAction({
+      sessionId: context.sessionId,
+      channel,
+      action: context.action,
+      accountId: result.accountId,
+      externalMessageId: result.externalMessageId,
+      threadId: result.threadId,
+      pollId: result.pollId,
+      ok: result.ok,
+      payload: result.payload,
+      error: result.error,
+    });
+
+    const payload = result.payload && typeof result.payload['type'] === 'string'
+      ? result.payload
+      : {
+        type: 'channel:action',
+        sessionId: context.sessionId,
+        channel,
+        action: context.action,
+        ok: result.ok,
+        accountId: result.accountId,
+        externalMessageId: result.externalMessageId,
+        threadId: result.threadId,
+        pollId: result.pollId,
+        error: result.error,
+        payload: result.payload,
+      };
+
+    connections.broadcast({
+      family: 'action',
+      sessionId: context.sessionId,
+      payload,
+    });
+  });
+  getChannelActionRegistry().register({
+    channel: 'webchat',
+    actions: ['send', 'edit', 'delete', 'react', 'poll', 'poll-vote'],
+    handle: async (ctx) => {
+      if (ctx.action === 'send') {
+        const content = typeof ctx.params['content'] === 'string' ? ctx.params['content'].trim() : '';
+        const session = gateway.getSession(ctx.sessionId);
+        if (!session || !content) {
+          return {
+            ok: false,
+            channel: 'webchat',
+            error: 'WebChat send requires an existing session and non-empty content.',
+          };
+        }
+        await gateway.publishAssistantMessage(session, content, {
+          debugType: 'channel.action.send',
+          debugMessage: 'WebChat action send delivered.',
+        });
+        return {
+          ok: true,
+          channel: 'webchat',
+          externalMessageId: `webchat:${Date.now()}`,
+          payload: { content },
+        };
+      }
+
+      if (ctx.action === 'poll') {
+        const question = typeof ctx.params['question'] === 'string' ? ctx.params['question'].trim() : '';
+        const options = Array.isArray(ctx.params['options'])
+          ? ctx.params['options'].filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+          : [];
+        if (!question || options.length < 2) {
+          return {
+            ok: false,
+            channel: 'webchat',
+            error: 'WebChat polls require a question and at least two options.',
+          };
+        }
+        const poll = gateway.db.createChannelPoll({
+          sessionId: ctx.sessionId,
+          channel: 'webchat',
+          question,
+          options,
+          multiple: ctx.params['multiple'] === true,
+          metadata: {
+            createdAt: new Date().toISOString(),
+          },
+        });
+        const payload = {
+          type: 'channel:poll',
+          sessionId: ctx.sessionId,
+          pollId: poll.id,
+          question,
+          options,
+          multiple: ctx.params['multiple'] === true,
+          status: 'open',
+        };
+        return {
+          ok: true,
+          channel: 'webchat',
+          pollId: poll.id,
+          payload,
+        };
+      }
+
+      if (ctx.action === 'poll-vote') {
+        const pollId = typeof ctx.params['pollId'] === 'string' ? ctx.params['pollId'].trim() : '';
+        const optionIds = Array.isArray(ctx.params['optionIds'])
+          ? ctx.params['optionIds'].filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+          : [];
+        if (!pollId || optionIds.length === 0) {
+          return {
+            ok: false,
+            channel: 'webchat',
+            error: 'WebChat poll vote requires pollId and optionIds.',
+          };
+        }
+        const vote = gateway.db.voteChannelPoll({
+          pollId,
+          voterId: typeof ctx.params['voterId'] === 'string' ? ctx.params['voterId'] : 'guest',
+          optionIds,
+        });
+        const payload = {
+          type: 'channel:poll_vote',
+          sessionId: ctx.sessionId,
+          pollId,
+          vote,
+        };
+        return {
+          ok: true,
+          channel: 'webchat',
+          pollId,
+          payload,
+        };
+      }
+
+      const externalMessageId = typeof ctx.params['messageId'] === 'string' ? ctx.params['messageId'].trim() : '';
+      if (!externalMessageId) {
+        return {
+          ok: false,
+          channel: 'webchat',
+          error: `${ctx.action} requires messageId.`,
+        };
+      }
+      const payload = {
+        type: 'channel:action',
+        sessionId: ctx.sessionId,
+        action: ctx.action,
+        messageId: externalMessageId,
+        emoji: ctx.params['emoji'],
+        content: ctx.params['content'],
+      };
+      return {
+        ok: true,
+        channel: 'webchat',
+        externalMessageId,
+        payload,
+      };
+    },
+  });
 
   void mcpBrowserManager.cleanupArtifacts().catch((error) => {
     console.warn('Failed initial browser artifact cleanup:', error);
@@ -507,7 +748,8 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
   const nodeService = new NodeService();
   const operatorSessions = new Map<string, { createdAt: number }>();
   const operatorAuthEnabled = config.remote.authMode === 'token';
-  const protectedApiPrefixes = ['/api/browser/', '/api/uploads/'];
+  const protectedApiPrefixes = ['/api/browser/', '/api/uploads/', '/api/webchat/', '/api/channel-actions', '/api/channel-polls'];
+  const activeVoiceSessions = new Map<string, { sessionId: string; guildId: string; channelId: string; status: string; error?: string }>();
 
   const server = createServer((req, res) => {
     // CORS headers
@@ -522,9 +764,34 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
     }
 
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+    if (req.method && ['GET', 'HEAD'].includes(req.method) && isCanvasPath(url.pathname, config.canvas)) {
+      void canvasHost.handleHttpRequest(req, res).catch((error) => {
+        if (!res.writableEnded && !res.destroyed) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            error: error instanceof Error ? error.message : 'Canvas host error',
+          }));
+        }
+      });
+      return;
+    }
+
     const isProtectedApi =
       url.pathname === '/api/status' ||
       protectedApiPrefixes.some((prefix) => url.pathname === prefix.slice(0, -1) || url.pathname.startsWith(prefix));
+    const isPublicUploadRead =
+      (url.pathname === '/api/uploads/image' || url.pathname === '/api/uploads/attachment')
+      && Boolean(req.method && ['GET', 'HEAD'].includes(req.method));
+    const uploadReadGuest = isPublicUploadRead
+      ? (() => {
+        const token = extractWebChatTokenFromRequest(req, url);
+        const guest = token ? webChatService.verifyGuestToken(token) : null;
+        const requestedSessionId = typeof url.searchParams.get('sessionId') === 'string'
+          ? url.searchParams.get('sessionId')?.trim() || ''
+          : '';
+        return guest && requestedSessionId === guest.sessionId ? guest : null;
+      })()
+      : null;
 
     if (url.pathname === '/api/auth/session') {
       if (req.method === 'POST') {
@@ -570,7 +837,12 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
       return;
     }
 
-    if (isProtectedApi && operatorAuthEnabled && !isAuthorizedOperatorRequest(req, config, operatorSessions)) {
+    if (staticAssetsDir && req.method && ['GET', 'HEAD'].includes(req.method) && isWebChatPath(url.pathname, resolvedWebChatConfig.guestPath)) {
+      void serveWebChatAsset(res, staticAssetsDir, url.pathname, resolvedWebChatConfig.guestPath, req.method === 'HEAD');
+      return;
+    }
+
+    if (isProtectedApi && !uploadReadGuest && operatorAuthEnabled && !isAuthorizedOperatorRequest(req, config, operatorSessions)) {
       writeUnauthorizedJson(res);
       return;
     }
@@ -596,6 +868,7 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
             sandboxHealth,
             nodes,
             gmailHealth,
+            voiceSessions: Array.from(activeVoiceSessions.values()),
           })));
         } catch (error) {
           if (res.writableEnded || res.destroyed) {
@@ -632,6 +905,134 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
       return;
     }
 
+    if (url.pathname === `${resolvedWebChatConfig.guestPath}/uploads/attachment` && req.method === 'POST') {
+      const token = extractWebChatTokenFromRequest(req, url);
+      const guest = token ? webChatService.verifyGuestToken(token) : null;
+      if (!guest) {
+        writeUnauthorizedJson(res);
+        return;
+      }
+      void handleWebChatAttachmentUploadRequest(req, res, url, config.security.workspacePath, guest);
+      return;
+    }
+
+    if (url.pathname === '/api/uploads/attachment' && req.method === 'POST') {
+      void handleAttachmentUploadRequest(req, res, url, config.security.workspacePath);
+      return;
+    }
+
+    if (url.pathname === '/api/uploads/attachment') {
+      void serveUploadedAttachmentById(res, req.method, url, config.security.workspacePath);
+      return;
+    }
+
+    if (url.pathname === '/api/webchat/links') {
+      if (req.method === 'GET') {
+        const sessionId = typeof url.searchParams.get('sessionId') === 'string'
+          ? url.searchParams.get('sessionId')?.trim() || undefined
+          : undefined;
+        const links = webChatService.listGuestLinks(sessionId).map((link) => serializeWebChatLink(link, resolvedWebChatConfig.guestPath));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ links }));
+        return;
+      }
+
+      if (req.method === 'POST') {
+        void handleWebChatLinkCreateRequest(req, res, gateway, webChatService, resolvedWebChatConfig.guestPath);
+        return;
+      }
+
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method Not Allowed' }));
+      return;
+    }
+
+    if (url.pathname.startsWith('/api/webchat/links/')) {
+      if (req.method === 'DELETE') {
+        const linkId = url.pathname.slice('/api/webchat/links/'.length).trim();
+        const revoked = linkId ? webChatService.revokeGuestLink(linkId) : false;
+        if (!revoked) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'WebChat link not found' }));
+          return;
+        }
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method Not Allowed' }));
+      return;
+    }
+
+    if (url.pathname === '/api/channel-actions') {
+      if (req.method === 'GET') {
+        const sessionId = typeof url.searchParams.get('sessionId') === 'string'
+          ? url.searchParams.get('sessionId')?.trim() || ''
+          : '';
+        const limit = Number.parseInt(url.searchParams.get('limit') ?? '100', 10);
+        if (!sessionId) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'sessionId is required.' }));
+          return;
+        }
+        const actions = gateway.db.listChannelActions(sessionId, Number.isFinite(limit) ? limit : 100)
+          .map((entry) => serializeChannelAction(entry));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ actions }));
+        return;
+      }
+
+      if (req.method === 'POST') {
+        void handleChannelActionDispatchRequest(req, res);
+        return;
+      }
+
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method Not Allowed' }));
+      return;
+    }
+
+    if (url.pathname === '/api/channel-polls') {
+      if (req.method === 'GET') {
+        const sessionId = typeof url.searchParams.get('sessionId') === 'string'
+          ? url.searchParams.get('sessionId')?.trim() || ''
+          : '';
+        if (!sessionId) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'sessionId is required.' }));
+          return;
+        }
+        const polls = gateway.db.listChannelPolls(sessionId).map((entry) => serializeChannelPoll(entry));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ polls }));
+        return;
+      }
+
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method Not Allowed' }));
+      return;
+    }
+
+    if (url.pathname === `${resolvedWebChatConfig.guestPath}/polls`) {
+      if (req.method !== 'GET') {
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method Not Allowed' }));
+        return;
+      }
+      const token = extractWebChatTokenFromRequest(req, url);
+      const guest = token ? webChatService.verifyGuestToken(token) : null;
+      if (!guest) {
+        writeUnauthorizedJson(res);
+        return;
+      }
+      const polls = gateway.db.listChannelPolls(guest.sessionId).map((entry) => serializeChannelPoll(entry));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ polls }));
+      return;
+    }
+
     if (url.pathname.startsWith('/api/webhooks/')) {
       const webhookId = url.pathname.slice('/api/webhooks/'.length).trim();
       void handleWebhookInboundRequest(req, res, webhookService, webhookId);
@@ -658,11 +1059,40 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
   });
 
   const wss = new WebSocketServer({ noServer: true });
+  const webChatWss = new WebSocketServer({ noServer: true });
   const channels = new Map<string, WebSocketChannel>();
 
   server.on('upgrade', (req, socket, head) => {
     try {
       const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+      if (canvasHost.handleUpgrade(req, socket, head)) {
+        return;
+      }
+
+      if (url.pathname === resolvedWebChatConfig.websocketPath) {
+        const token = extractWebChatTokenFromRequest(req, url);
+        const payload = token ? webChatService.verifyGuestToken(token) : null;
+        if (!payload) {
+          socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+          socket.destroy();
+          return;
+        }
+
+        const openConnections = guestConnectionCounts.get(payload.linkId) ?? 0;
+        if (openConnections >= resolvedWebChatConfig.maxConnectionsPerLink) {
+          socket.write('HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n');
+          socket.destroy();
+          return;
+        }
+
+        const upgradeRequest = req as WebChatGuestUpgradeRequest;
+        upgradeRequest.webchatGuest = payload;
+        webChatWss.handleUpgrade(upgradeRequest, socket, head, (ws) => {
+          webChatWss.emit('connection', ws, upgradeRequest);
+        });
+        return;
+      }
+
       if (url.pathname !== '/ws') {
         socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
         socket.destroy();
@@ -684,12 +1114,22 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
     }
   });
 
-  wss.on('connection', (ws) => {
+  wss.on('connection', (ws, req) => {
     const sessionId = crypto.randomUUID();
-    const channel = new WebSocketChannel(ws, sessionId);
-    channels.set(sessionId, channel);
-    const llmState = gateway.getLLMState();
+    const connectionId = crypto.randomUUID();
+    const operatorRole = isMacOsOperatorRequest(req) ? 'macos_operator' : 'operator';
     let webSessionId = `web:${sessionId}`;
+    const initialSession = gateway.createWebSession(webSessionId);
+    const channel = new WebSocketChannel(ws, initialSession.id);
+    channels.set(sessionId, channel);
+    connections.register({
+      id: connectionId,
+      role: operatorRole,
+      ws,
+      visibleSessions: new Set<string>(),
+      families: new Set(['chat', 'canvas', 'action', 'voice', 'memory', 'status', 'operator']),
+    });
+    const llmState = gateway.getLLMState();
     let connectedNodeId: string | null = null;
     const pendingNodeInvokes = new Map<string, {
       resolve: (result: NodeInvokeResult) => void;
@@ -756,8 +1196,16 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
             }
 
             connectedNodeId = nodeId;
+            connections.update(connectionId, {
+              role: 'node',
+              families: new Set(['status']),
+            });
             ws.send(JSON.stringify({ type: 'node_register_result', node: registered }));
-            broadcast(wss, { type: 'node_status_changed', nodeId, online: true, lastSeenAt: registered.lastSeenAt });
+            connections.broadcast({
+              family: 'status',
+              payload: { type: 'node_status_changed', nodeId, online: true, lastSeenAt: registered.lastSeenAt },
+              includeRoles: ['operator', 'macos_operator'],
+            });
             break;
           }
 
@@ -779,7 +1227,11 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
               break;
             }
 
-            broadcast(wss, { type: 'node_status_changed', nodeId, online: true, lastSeenAt: updated.lastSeenAt });
+            connections.broadcast({
+              family: 'status',
+              payload: { type: 'node_status_changed', nodeId, online: true, lastSeenAt: updated.lastSeenAt },
+              includeRoles: ['operator', 'macos_operator'],
+            });
             break;
           }
 
@@ -2564,11 +3016,15 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
       pendingNodeInvokes.clear();
       if (connectedNodeId) {
         void nodeService.disconnectNode(connectedNodeId).then(() => {
-          broadcast(wss, {
-            type: 'node_status_changed',
-            nodeId: connectedNodeId,
-            online: false,
-            lastSeenAt: new Date().toISOString(),
+          connections.broadcast({
+            family: 'status',
+            includeRoles: ['operator', 'macos_operator'],
+            payload: {
+              type: 'node_status_changed',
+              nodeId: connectedNodeId,
+              online: false,
+              lastSeenAt: new Date().toISOString(),
+            },
           });
         });
       }
@@ -2576,32 +3032,219 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
       channel.handleDisconnect();
       console.log(`Client disconnected: ${sessionId}`);
       channels.delete(sessionId);
+      connections.unregister(connectionId);
+    });
+  });
+
+  webChatWss.on('connection', (ws, req) => {
+    const upgradeRequest = req as WebChatGuestUpgradeRequest;
+    const guest = upgradeRequest.webchatGuest;
+    if (!guest) {
+      ws.close(1008, 'Missing guest auth');
+      return;
+    }
+
+    const connectionId = crypto.randomUUID();
+    const channel = new WebSocketChannel(ws, guest.sessionId, 'webchat');
+    const connectionCount = guestConnectionCounts.get(guest.linkId) ?? 0;
+    guestConnectionCounts.set(guest.linkId, connectionCount + 1);
+    connections.register({
+      id: connectionId,
+      role: 'webchat_guest',
+      ws,
+      visibleSessions: new Set([guest.sessionId]),
+      families: new Set(['chat', 'canvas', 'action']),
+    });
+
+    ws.send(JSON.stringify(buildWebChatConnectedPayload(guest, gateway, config)));
+    ws.send(JSON.stringify(buildWebChatSessionSnapshotPayload(gateway, guest.sessionId)));
+
+    ws.on('message', async (data) => {
+      try {
+        const msg = JSON.parse(data.toString()) as WSMessage;
+
+        switch (msg.type) {
+          case 'message': {
+            if (!consumeGuestMessageQuota(guestMessageBuckets, guest.linkId, resolvedWebChatConfig.maxMessagesPerMinute)) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: 'WebChat rate limit exceeded. Try again in a moment.',
+              }));
+              break;
+            }
+
+            const content = typeof msg.content === 'string' ? msg.content.trim() : '';
+            let attachments: MessageAttachment[] = [];
+            try {
+              attachments = await resolveWebMessageAttachments(
+                config.security.workspacePath,
+                guest.sessionId,
+                msg.attachments
+              );
+            } catch (error) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: error instanceof Error ? error.message : 'Invalid attachments.',
+              }));
+              break;
+            }
+
+            if (!content && attachments.length === 0) {
+              break;
+            }
+
+            await gateway.prepareSessionWorkspace(guest.sessionId, config.security.workspacePath);
+            const normalized = normalizeWebChatMessage(
+              guest.sessionId,
+              guest.linkId,
+              content,
+              channel,
+              attachments.length > 0 ? attachments : undefined
+            );
+            await gateway.processMessage(normalized);
+            break;
+          }
+
+          case 'get_session_snapshot': {
+            ws.send(JSON.stringify(buildWebChatSessionSnapshotPayload(gateway, guest.sessionId)));
+            break;
+          }
+
+          case 'cancel_session': {
+            if (guest.capabilities['canCancelRun'] !== true) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: 'This WebChat link cannot cancel runs.',
+              }));
+              break;
+            }
+
+            const cancelSessionId = typeof msg.sessionId === 'string' && msg.sessionId.trim().length > 0
+              ? msg.sessionId.trim()
+              : guest.sessionId;
+            if (cancelSessionId !== guest.sessionId) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: 'WebChat guests may only cancel their bound session.',
+              }));
+              break;
+            }
+            gateway.cancelSessionRun(cancelSessionId, 'user');
+            break;
+          }
+
+          case 'confirm_response': {
+            channel.handleConfirmResponse(msg.decision ?? (msg.confirmed ? 'allow_once' : 'cancel'));
+            break;
+          }
+
+          case 'channel_action':
+          case 'poll-vote': {
+            if (guest.capabilities['canVotePolls'] !== true) {
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: 'This WebChat link cannot vote in polls.',
+              }));
+              break;
+            }
+
+            const pollId = typeof msg.pollId === 'string' ? msg.pollId.trim() : '';
+            const optionIds = Array.isArray(msg.optionIds)
+              ? msg.optionIds.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+              : [];
+            const result = await getChannelActionRegistry().dispatch('webchat', {
+              sessionId: guest.sessionId,
+              action: 'poll-vote',
+              params: {
+                pollId,
+                optionIds,
+                voterId: guest.linkId,
+              },
+            });
+            ws.send(JSON.stringify({
+              type: 'channel:action_result',
+              result,
+            }));
+            break;
+          }
+
+          default: {
+            ws.send(JSON.stringify({
+              type: 'error',
+              error: `Unsupported WebChat message type: ${msg.type}`,
+            }));
+          }
+        }
+      } catch (error) {
+        console.error('WebChat WebSocket message error:', error);
+        ws.send(JSON.stringify({
+          type: 'error',
+          error: 'Invalid message format',
+        }));
+      }
+    });
+
+    ws.on('close', () => {
+      const nextCount = Math.max(0, (guestConnectionCounts.get(guest.linkId) ?? 1) - 1);
+      if (nextCount === 0) {
+        guestConnectionCounts.delete(guest.linkId);
+      } else {
+        guestConnectionCounts.set(guest.linkId, nextCount);
+      }
+      channel.handleDisconnect();
+      connections.unregister(connectionId);
     });
   });
 
   // Forward gateway events to all connected clients
   gateway.on('message:user', (event) => {
-    broadcast(wss, buildSessionUserMessagePayload(event));
+    connections.broadcast({
+      family: 'chat',
+      sessionId: event.sessionId,
+      payload: buildSessionUserMessagePayload(event),
+    });
   });
 
   gateway.on('message:start', (event) => {
-    broadcast(wss, { type: 'message_received', sessionId: event.sessionId });
+    connections.broadcast({
+      family: 'chat',
+      sessionId: event.sessionId,
+      payload: { type: 'message_received', sessionId: event.sessionId },
+    });
   });
 
   gateway.on('message:chunk', (event) => {
-    broadcast(wss, buildSessionChunkPayload(event));
+    connections.broadcast({
+      family: 'chat',
+      sessionId: event.sessionId,
+      payload: buildSessionChunkPayload(event),
+    });
   });
 
   gateway.on('message:end', (event) => {
-    broadcast(wss, buildSessionMessageEndPayload(event));
+    connections.broadcast({
+      family: 'chat',
+      sessionId: event.sessionId,
+      payload: buildSessionMessageEndPayload(event),
+    });
   });
 
   gateway.on('tool:start', (event) => {
-    broadcast(wss, { type: 'tool_start', ...event });
+    connections.broadcast({
+      family: 'operator',
+      sessionId: event.sessionId,
+      payload: { type: 'tool_start', ...event },
+      includeRoles: ['operator', 'macos_operator'],
+    });
   });
 
   gateway.on('tool:end', (event) => {
-    broadcast(wss, { type: 'tool_end', ...event });
+    connections.broadcast({
+      family: 'operator',
+      sessionId: event.sessionId,
+      payload: { type: 'tool_end', ...event },
+      includeRoles: ['operator', 'macos_operator'],
+    });
 
     // Auto-push git status after filesystem/shell tool completes
     const toolType = (event as Record<string, unknown>)['toolType'] as string | undefined;
@@ -2610,46 +3253,137 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
       const cwd = gateway.getSessionWorkspace(sid) ?? gateway.config.security.workspacePath;
       void gateway.git.getStatus(cwd).then((state) => {
         if (state.isRepo) {
-          broadcast(wss, { type: 'git_status_result', state, sessionId: sid });
+          connections.broadcast({
+            family: 'operator',
+            sessionId: sid,
+            includeRoles: ['operator', 'macos_operator'],
+            payload: { type: 'git_status_result', state, sessionId: sid },
+          });
         }
       }).catch(() => { /* ignore git status errors on auto-push */ });
     }
   });
 
+  gateway.on('canvas:state', (event) => {
+    connections.broadcast({
+      family: 'canvas',
+      sessionId: event.sessionId,
+      payload: {
+        type: 'canvas:state',
+        ...event,
+      },
+    });
+  });
+
+  gateway.on('canvas:close', (event) => {
+    connections.broadcast({
+      family: 'canvas',
+      sessionId: event.sessionId,
+      payload: {
+        type: 'canvas:close',
+        ...event,
+      },
+    });
+  });
+
+  gateway.on('voice:session', (event) => {
+    if (event.status === 'left') {
+      activeVoiceSessions.delete(`${event.guildId}:${event.channelId}`);
+    } else {
+      activeVoiceSessions.set(`${event.guildId}:${event.channelId}`, {
+        sessionId: event.sessionId,
+        guildId: event.guildId,
+        channelId: event.channelId,
+        status: event.status,
+        error: event.error,
+      });
+    }
+    connections.broadcast({
+      family: 'voice',
+      sessionId: event.sessionId,
+      payload: {
+        type: 'voice:session',
+        ...event,
+      },
+    });
+  });
+
   gateway.on('mode:changed', (event) => {
-    broadcast(wss, { type: 'mode_changed', ...event });
+    connections.broadcast({
+      family: 'status',
+      payload: { type: 'mode_changed', ...event },
+      includeRoles: ['operator', 'macos_operator'],
+    });
   });
 
   gateway.on('spicy_enabled:changed', (event) => {
-    broadcast(wss, { type: 'spicy_enabled_changed', ...event });
+    connections.broadcast({
+      family: 'status',
+      payload: { type: 'spicy_enabled_changed', ...event },
+      includeRoles: ['operator', 'macos_operator'],
+    });
   });
 
   gateway.on('spicy_obedience:changed', (event) => {
-    broadcast(wss, { type: 'spicy_obedience_changed', ...event });
+    connections.broadcast({
+      family: 'status',
+      payload: { type: 'spicy_obedience_changed', ...event },
+      includeRoles: ['operator', 'macos_operator'],
+    });
   });
 
   gateway.on('provider:event', (event) => {
-    broadcast(wss, { type: 'provider_event', ...event });
+    connections.broadcast({
+      family: 'operator',
+      sessionId: event.sessionId,
+      payload: { type: 'provider_event', ...event },
+      includeRoles: ['operator', 'macos_operator'],
+    });
   });
 
   gateway.on('context:usage', (event) => {
-    broadcast(wss, { type: 'context_usage', ...event });
+    connections.broadcast({
+      family: 'status',
+      sessionId: event.sessionId,
+      payload: { type: 'context_usage', ...event },
+      includeRoles: ['operator', 'macos_operator'],
+    });
   });
 
   gateway.on('usage:snapshot', (event) => {
-    broadcast(wss, { type: 'usage_snapshot', ...event });
+    connections.broadcast({
+      family: 'status',
+      sessionId: event.sessionId,
+      payload: { type: 'usage_snapshot', ...event },
+      includeRoles: ['operator', 'macos_operator'],
+    });
   });
 
   gateway.on('session:compacted', (event) => {
-    broadcast(wss, { type: 'session_compacted', ...event });
+    connections.broadcast({
+      family: 'status',
+      sessionId: event.sessionId,
+      payload: { type: 'session_compacted', ...event },
+      includeRoles: ['operator', 'macos_operator'],
+    });
   });
 
   gateway.on('session:cancelled', (event) => {
-    broadcast(wss, { type: 'session_cancelled', ...event });
+    connections.broadcast({
+      family: 'status',
+      sessionId: event.sessionId,
+      payload: { type: 'session_cancelled', ...event },
+      includeRoles: ['operator', 'macos_operator', 'webchat_guest'],
+    });
   });
 
   gateway.on('debug:event', (event) => {
-    broadcast(wss, { type: 'debug_event', ...event });
+    connections.broadcast({
+      family: 'operator',
+      sessionId: event.sessionId,
+      payload: { type: 'debug_event', ...event },
+      includeRoles: ['operator', 'macos_operator'],
+    });
   });
 
   server.listen(config.server.port, config.server.host, () => {
@@ -2666,7 +3400,12 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
     clearInterval(browserCleanupInterval);
     clearInterval(uploadCleanupInterval);
     operatorSessions.clear();
+    guestConnectionCounts.clear();
+    guestMessageBuckets.clear();
     gmailService.stop();
+    void canvasHost.close().catch((error) => {
+      console.warn('Failed to close canvas host:', error);
+    });
   });
 
   return {
@@ -2675,11 +3414,16 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
         for (const client of wss.clients) {
           client.close();
         }
+        for (const client of webChatWss.clients) {
+          client.close();
+        }
 
         wss.close(() => {
-          server.close(() => {
-            Gateway.reset();
-            resolve();
+          webChatWss.close(() => {
+            server.close(() => {
+              Gateway.reset();
+              resolve();
+            });
           });
         });
       });
@@ -2819,6 +3563,7 @@ export function buildStatusPayload(
     sandboxHealth?: { available: boolean; detail: string; image: string; scope: string };
     nodes?: Array<{ online?: boolean }>;
     gmailHealth?: GmailHealthSummary;
+    voiceSessions?: Array<{ sessionId: string; guildId: string; channelId: string; status: string; error?: string }>;
   } = {}
 ): Record<string, unknown> {
   const skills = typeof (gateway as Partial<Gateway>).getSkillsStatus === 'function'
@@ -2835,6 +3580,12 @@ export function buildStatusPayload(
       bySession: [],
       byDay: [],
     };
+  const memoryStatus = typeof (gateway as Partial<Gateway>).memoryManager?.status === 'function'
+    ? gateway.memoryManager.status()
+    : {};
+  const activeGuestLinks = typeof (gateway as Partial<Gateway>).db?.listWebChatLinks === 'function'
+    ? gateway.db.listWebChatLinks().filter((link) => !link.revokedAt && new Date(link.expiresAt).getTime() >= Date.now())
+    : [];
   return {
     status: 'ok',
     mode: gateway.getSecurityMode(),
@@ -2849,6 +3600,30 @@ export function buildStatusPayload(
     whatsapp: buildWhatsAppConfigViewSync(config),
     telegram: buildTelegramConfigView(config),
     browser: buildBrowserConfigViewFromConfig(config),
+    webchat: {
+      enabled: config.webchat?.enabled ?? true,
+      activeLinks: activeGuestLinks.length,
+      guestPath: config.webchat?.guestPath ?? '/webchat',
+    },
+    canvas: {
+      enabled: config.canvas?.enabled ?? true,
+      basePath: config.canvas?.basePath ?? '/__keygate__/canvas',
+      a2uiPath: config.canvas?.a2uiPath ?? '/__keygate__/a2ui',
+    },
+    media: {
+      enabled: config.media?.enabled ?? true,
+      cacheDir: config.media?.cacheDir,
+      providerAvailability: {
+        openai: Boolean(process.env['OPENAI_API_KEY']),
+        ffmpeg: config.media?.fallbacks?.ffmpegBinary ?? 'ffmpeg',
+        ffprobe: config.media?.fallbacks?.ffprobeBinary ?? 'ffprobe',
+      },
+    },
+    memory: memoryStatus,
+    voice: {
+      activeSessions: extras.voiceSessions?.length ?? 0,
+      sessions: extras.voiceSessions ?? [],
+    },
     skills,
     usage,
     sandbox: extras.sandboxHealth
@@ -2911,6 +3686,25 @@ export function buildConnectedPayload(
   };
 }
 
+export function buildWebChatConnectedPayload(
+  guest: WebChatGuestTokenPayload,
+  gateway: Gateway,
+  config: KeygateConfig
+): Record<string, unknown> {
+  return {
+    type: 'connected',
+    sessionId: guest.sessionId,
+    channelType: 'webchat',
+    displayName: guest.displayName,
+    expiresAt: guest.expiresAt,
+    capabilities: guest.capabilities,
+    mode: gateway.getSecurityMode(),
+    remote: {
+      authMode: config.remote?.authMode ?? 'off',
+    },
+  };
+}
+
 export function buildSessionSnapshotPayload(
   gateway: Gateway,
   webSessionId: string
@@ -2918,10 +3712,12 @@ export function buildSessionSnapshotPayload(
   const sessions = gateway.listSessions();
   const visibleSessions = sessions.filter((session) => (
     session.channelType === 'web' ||
+    session.channelType === 'webchat' ||
     session.channelType === 'discord' ||
     session.channelType === 'terminal' ||
     session.channelType === 'slack' ||
-    session.channelType === 'whatsapp'
+    session.channelType === 'whatsapp' ||
+    session.channelType === 'telegram'
   ));
 
   if (!visibleSessions.some((session) => session.id === webSessionId)) {
@@ -2949,6 +3745,25 @@ export function buildSessionSnapshotPayload(
   return {
     type: 'session_snapshot',
     sessions: serialized,
+  };
+}
+
+export function buildWebChatSessionSnapshotPayload(
+  gateway: Gateway,
+  sessionId: string
+): Record<string, unknown> {
+  const existing = gateway.getSession(sessionId);
+  const session = existing ?? {
+    id: sessionId,
+    channelType: 'webchat' as const,
+    messages: [],
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+
+  return {
+    type: 'session_snapshot',
+    sessions: [serializeSessionSnapshotEntry(session)],
   };
 }
 
@@ -2988,6 +3803,245 @@ export function buildSessionMessageEndPayload(event: {
     sessionId: event.sessionId,
     content: event.content,
   };
+}
+
+function isWebChatPath(requestPath: string, guestPath: string): boolean {
+  const normalizedGuestPath = guestPath.replace(/\/+$/, '') || '/webchat';
+  const normalizedRequestPath = requestPath.replace(/\/+$/, '') || '/';
+  return normalizedRequestPath === normalizedGuestPath;
+}
+
+function isCanvasPath(requestPath: string, canvasConfig: KeygateConfig['canvas']): boolean {
+  const configValue = canvasConfig ?? {
+    enabled: true,
+    rootDir: '',
+    basePath: '/__keygate__/canvas',
+    a2uiPath: '/__keygate__/a2ui',
+    websocketPath: '/__keygate__/canvas/ws',
+    liveReload: true,
+  };
+  const normalizedRequestPath = requestPath.replace(/\/+$/, '') || '/';
+  const basePath = configValue.basePath.replace(/\/+$/, '') || '/__keygate__/canvas';
+  const a2uiPath = configValue.a2uiPath.replace(/\/+$/, '') || '/__keygate__/a2ui';
+  return normalizedRequestPath === a2uiPath
+    || normalizedRequestPath === basePath
+    || normalizedRequestPath.startsWith(`${basePath}/`);
+}
+
+function isMacOsOperatorRequest(req: IncomingMessage | undefined): boolean {
+  const userAgent = typeof req?.headers['user-agent'] === 'string' ? req.headers['user-agent'].toLowerCase() : '';
+  return userAgent.includes('keygate') && userAgent.includes('macos');
+}
+
+async function serveWebChatAsset(
+  res: ServerResponse,
+  staticAssetsDir: string,
+  requestPath: string,
+  guestPath: string,
+  headOnly: boolean
+): Promise<void> {
+  if (isWebChatPath(requestPath, guestPath)) {
+    await serveStaticAsset(res, staticAssetsDir, '/webchat.html', headOnly);
+    return;
+  }
+
+  await serveStaticAsset(res, staticAssetsDir, requestPath, headOnly);
+}
+
+function serializeWebChatLink(
+  link: {
+    linkId: string;
+    sessionId: string;
+    displayName: string;
+    expiresAt: string;
+    capabilities: Record<string, unknown>;
+    createdAt: string;
+    revokedAt?: string;
+  },
+  guestPath: string
+): Record<string, unknown> {
+  return {
+    ...link,
+    guestPath,
+  };
+}
+
+function serializeChannelAction(
+  action: {
+    id: string;
+    sessionId: string;
+    channel: string;
+    action: string;
+    accountId?: string;
+    externalMessageId?: string;
+    threadId?: string;
+    pollId?: string;
+    ok: boolean;
+    payload?: Record<string, unknown>;
+    error?: string;
+    createdAt: string;
+  }
+): Record<string, unknown> {
+  return {
+    ...action,
+  };
+}
+
+function serializeChannelPoll(
+  poll: {
+    id: string;
+    sessionId: string;
+    channel: string;
+    externalMessageId?: string;
+    question: string;
+    options: string[];
+    multiple: boolean;
+    status: string;
+    metadata?: Record<string, unknown>;
+    votes: Array<{ voterId: string; optionIds: string[] }>;
+    createdAt: string;
+    updatedAt: string;
+  }
+): Record<string, unknown> {
+  return {
+    ...poll,
+  };
+}
+
+async function handleWebChatLinkCreateRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  gateway: Gateway,
+  webChatService: WebChatService,
+  guestPath: string
+): Promise<void> {
+  let body: Record<string, unknown>;
+  try {
+    body = await readJsonRequestBody(req, 128 * 1024);
+  } catch (error) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      error: error instanceof Error ? error.message : 'Invalid JSON body',
+    }));
+    return;
+  }
+
+  const requestedSessionId = typeof body['sessionId'] === 'string' ? body['sessionId'].trim() : '';
+  const sessionId = resolveWebChatSessionId(requestedSessionId);
+  const displayName = typeof body['displayName'] === 'string' && body['displayName'].trim().length > 0
+    ? body['displayName'].trim()
+    : 'Guest';
+  const requestedExpiryMinutes = typeof body['expiryMinutes'] === 'number' && Number.isFinite(body['expiryMinutes'])
+    ? body['expiryMinutes']
+    : 60;
+  const expiresAt = typeof body['expiresAt'] === 'string' && body['expiresAt'].trim().length > 0
+    ? body['expiresAt'].trim()
+    : new Date(Date.now() + Math.max(1, requestedExpiryMinutes) * 60 * 1000).toISOString();
+  const capabilities = (body['capabilities'] && typeof body['capabilities'] === 'object' && !Array.isArray(body['capabilities']))
+    ? body['capabilities'] as Record<string, unknown>
+    : undefined;
+
+  gateway.createWebSession(sessionId);
+  await gateway.prepareSessionWorkspace(sessionId, gateway.config.security.workspacePath);
+  const result = webChatService.createGuestLink({
+    sessionId,
+    displayName,
+    expiresAt,
+    capabilities,
+    createdBy: 'operator',
+  });
+
+  res.writeHead(201, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({
+    token: result.token,
+    link: {
+      ...result.link,
+      url: `${guestPath}?token=${encodeURIComponent(result.token)}`,
+    },
+  }));
+}
+
+async function handleChannelActionDispatchRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  let body: Record<string, unknown>;
+  try {
+    body = await readJsonRequestBody(req, 256 * 1024);
+  } catch (error) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      error: error instanceof Error ? error.message : 'Invalid JSON body',
+    }));
+    return;
+  }
+
+  const rawSessionId = typeof body['sessionId'] === 'string' ? body['sessionId'].trim() : '';
+  const channel = typeof body['channel'] === 'string' ? body['channel'].trim() : '';
+  const action = typeof body['action'] === 'string' ? body['action'].trim() : '';
+  const params = body['params'] && typeof body['params'] === 'object' && !Array.isArray(body['params'])
+    ? body['params'] as Record<string, unknown>
+    : {};
+  const sessionId = channel === 'webchat' ? resolveWebChatSessionId(rawSessionId) : rawSessionId;
+
+  if (!sessionId || !channel || !action) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'sessionId, channel, and action are required.' }));
+    return;
+  }
+
+  const result = await getChannelActionRegistry().dispatch(channel as ChannelType | 'webchat', {
+    sessionId,
+    action: action as ChannelActionName,
+    params,
+  });
+
+  res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ result }));
+}
+
+async function readJsonRequestBody(
+  req: IncomingMessage,
+  maxBytes: number
+): Promise<Record<string, unknown>> {
+  const body = await readRequestBody(req, maxBytes);
+  const parsed = JSON.parse(body.toString('utf8')) as unknown;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Expected a JSON object body.');
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function extractWebChatTokenFromRequest(req: IncomingMessage, url: URL): string | null {
+  const queryToken = url.searchParams.get('token');
+  if (typeof queryToken === 'string' && queryToken.trim().length > 0) {
+    return queryToken.trim();
+  }
+
+  const authHeader = typeof req.headers['authorization'] === 'string' ? req.headers['authorization'] : '';
+  if (authHeader.startsWith('Bearer ')) {
+    const token = authHeader.slice('Bearer '.length).trim();
+    return token.length > 0 ? token : null;
+  }
+
+  return null;
+}
+
+function consumeGuestMessageQuota(
+  buckets: Map<string, number[]>,
+  linkId: string,
+  limit: number
+): boolean {
+  const now = Date.now();
+  const windowStart = now - 60_000;
+  const bucket = (buckets.get(linkId) ?? []).filter((timestamp) => timestamp >= windowStart);
+  if (bucket.length >= limit) {
+    buckets.set(linkId, bucket);
+    return false;
+  }
+  bucket.push(now);
+  buckets.set(linkId, bucket);
+  return true;
 }
 
 export async function applySpicyModeEnable(
@@ -3273,6 +4327,15 @@ function mapAttachmentsForTransport(attachments: MessageAttachment[] | undefined
     contentType: attachment.contentType,
     sizeBytes: attachment.sizeBytes,
     url: attachment.url,
+    ...(attachment.kind ? { kind: attachment.kind } : {}),
+    ...(attachment.sha256 ? { sha256: attachment.sha256 } : {}),
+    ...(typeof attachment.durationMs === 'number' ? { durationMs: attachment.durationMs } : {}),
+    ...(typeof attachment.width === 'number' ? { width: attachment.width } : {}),
+    ...(typeof attachment.height === 'number' ? { height: attachment.height } : {}),
+    ...(typeof attachment.pageCount === 'number' ? { pageCount: attachment.pageCount } : {}),
+    ...(attachment.derivedFromId ? { derivedFromId: attachment.derivedFromId } : {}),
+    ...(attachment.previewText ? { previewText: attachment.previewText } : {}),
+    ...(attachment.metadata ? { metadata: attachment.metadata } : {}),
   }));
 }
 
@@ -3744,6 +4807,15 @@ export async function handleImageUploadRequest(
   url: URL,
   workspacePath: string
 ): Promise<void> {
+  await handleAttachmentUploadRequest(req, res, url, workspacePath);
+}
+
+export async function handleAttachmentUploadRequest(
+  req: import('node:http').IncomingMessage,
+  res: import('node:http').ServerResponse,
+  url: URL,
+  workspacePath: string
+): Promise<void> {
   const sessionId = sanitizeUploadSessionId(url.searchParams.get('sessionId'));
   if (!sessionId) {
     res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -3759,19 +4831,22 @@ export async function handleImageUploadRequest(
   } catch (error) {
     res.writeHead(413, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
-      error: error instanceof Error ? error.message : 'Image payload exceeds the allowed size.',
+      error: error instanceof Error ? error.message : 'Attachment payload exceeds the allowed size.',
     }));
     return;
   }
 
   let attachment: MessageAttachment;
   try {
-    attachment = await persistUploadedImage(workspacePath, sessionId, {
+    attachment = await persistUploadedAttachment(workspacePath, sessionId, {
       bytes: body,
       contentType,
+      filename: typeof url.searchParams.get('filename') === 'string'
+        ? url.searchParams.get('filename') ?? undefined
+        : undefined,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Image upload failed.';
+    const message = error instanceof Error ? error.message : 'Attachment upload failed.';
     const statusCode = message.includes('supported') ? 415 : 400;
     res.writeHead(statusCode, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: message }));
@@ -3782,7 +4857,34 @@ export async function handleImageUploadRequest(
   res.end(JSON.stringify(mapUploadedAttachmentForTransport(attachment)));
 }
 
+export async function handleWebChatAttachmentUploadRequest(
+  req: import('node:http').IncomingMessage,
+  res: import('node:http').ServerResponse,
+  url: URL,
+  workspacePath: string,
+  guest: WebChatGuestTokenPayload
+): Promise<void> {
+  if (guest.capabilities['canUploadAttachments'] !== true) {
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'This WebChat link cannot upload attachments.' }));
+    return;
+  }
+
+  const scopedUrl = new URL(url.toString());
+  scopedUrl.searchParams.set('sessionId', guest.sessionId);
+  await handleAttachmentUploadRequest(req, res, scopedUrl, workspacePath);
+}
+
 export async function serveUploadedImageById(
+  res: import('node:http').ServerResponse,
+  method: string | undefined,
+  url: URL,
+  workspacePath: string
+): Promise<void> {
+  await serveUploadedAttachmentById(res, method, url, workspacePath);
+}
+
+export async function serveUploadedAttachmentById(
   res: import('node:http').ServerResponse,
   method: string | undefined,
   url: URL,
@@ -3805,7 +4907,7 @@ export async function serveUploadedImageById(
   const imagePath = await resolveUploadPathByAttachmentId(workspacePath, sessionId, attachmentId);
   if (!imagePath) {
     res.writeHead(404, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Uploaded image not found.' }));
+    res.end(JSON.stringify({ error: 'Uploaded attachment not found.' }));
     return;
   }
 
@@ -4117,8 +5219,8 @@ async function serveLatestBrowserScreenshot(
 
   const latestScreenshot = await resolveLatestSessionScreenshot(artifactsRoot, sessionId);
   if (!latestScreenshot) {
-    res.writeHead(404, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'No screenshot found for session.' }));
+    res.writeHead(204);
+    res.end();
     return;
   }
 

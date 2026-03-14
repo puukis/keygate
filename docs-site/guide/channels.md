@@ -30,8 +30,9 @@ From the web config drawer you can configure:
 Operational notes:
 
 - keep token secret and never commit it
-- restart channel process after token/prefix changes
+- the managed CLI startup now attempts to launch the Discord runtime automatically when a token is configured
 - native slash commands are registered by the Discord runtime on startup
+- Discord voice uses `/voice join`, `/voice leave`, and `/voice status`; see [Channel Actions & Voice](/guide/channel-actions-and-voice)
 
 ## Slack setup
 
@@ -45,6 +46,7 @@ Operational notes:
 
 - rotate tokens on membership/security events
 - validate event subscriptions and scopes in Slack app config
+- the managed CLI startup attempts to launch Slack automatically when both bot and app tokens are present
 - native operator commands are exposed as `/agenthelp`, `/agentstatus`, `/agentmodel`, `/agentcompact`, `/agentdebug`, `/agentstop`, `/agentnew`, and `/agentreset`
 
 ## WhatsApp setup
@@ -65,13 +67,14 @@ Key settings:
 - `groupMode`: `closed`, `selected`, or `open`
 - `groupRequireMentionDefault`: default group mention gate
 - `groups`: explicit `group:<id>` overrides
+- accepted inbound chats get a best-effort `👀` reaction and typing presence while the assistant works
 
 Operational notes:
 
 - structured config lives in `config.json`
 - auth state lives in `~/.keygate/channels/whatsapp/auth/`
-- restart the WhatsApp runtime after changing policy
-- use `keygate pairing approve whatsapp <code>` for DM pairing approvals
+- the managed CLI startup attempts to launch WhatsApp automatically when the channel config is present
+- use `keygate pairing pending whatsapp` to review blocked DMs, then `keygate pairing approve whatsapp <code>` to allow one
 
 ## Telegram setup
 
@@ -93,7 +96,7 @@ Key settings:
 
 Operational notes:
 
-- restart the Telegram runtime after changing policy
+- the managed CLI startup attempts to launch Telegram automatically when `TELEGRAM_BOT_TOKEN` is present
 - use `keygate pairing approve telegram <code>` for DM pairing approvals
 - forum topics in supergroups each get an isolated session automatically
 - see the [Telegram guide](/guide/telegram) for webhook mode, streaming, and media details
@@ -118,6 +121,8 @@ How those commands arrive depends on the channel:
 - Slack uses native `/agent*` slash commands
 
 The command behavior is shared across channels even when the transport differs.
+
+Channel-native actions such as reactions, polls, edits, and thread replies now use a shared registry instead of one-off runtime code. See [Channel Actions & Voice](/guide/channel-actions-and-voice).
 
 Notes:
 

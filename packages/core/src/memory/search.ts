@@ -54,7 +54,7 @@ export async function searchMemory(
 
   // 1. Vector search
   const queryEmbedding = await provider.embedQuery(query);
-  const vectorResults = store.vectorSearch(queryEmbedding, {
+  const vectorResults = await store.vectorSearch(queryEmbedding, {
     limit: candidateLimit,
     source: sourceFilter,
   });

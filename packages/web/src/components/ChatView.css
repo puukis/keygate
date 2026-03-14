@@ -327,6 +327,20 @@
   border: 0.5px solid var(--border);
 }
 
+.message-upload-fallback {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  border: 0.5px solid var(--border);
+  background: var(--surface-muted);
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
 /* ─── CODE BLOCKS ─────────────────────────────────────────── */
 .code-block {
   background: var(--surface-muted);
@@ -578,6 +592,19 @@
   aspect-ratio: 4 / 3;
   object-fit: cover;
   display: block;
+}
+
+.pending-attachment-fallback {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  display: grid;
+  place-items: center;
+  background: var(--surface-muted);
+  color: var(--text-primary);
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .pending-attachment-meta {

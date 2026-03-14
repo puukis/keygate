@@ -2,7 +2,7 @@
 
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
 import {
   ensureAgentWorkspaceFiles,
@@ -91,6 +91,8 @@ async function main(): Promise<void> {
       console.log(`🧭 Open this chat URL manually: ${chatSiteUrl}`);
     },
   });
+
+  void startEmbeddedChannels(config);
 }
 
 void main();
@@ -170,4 +172,77 @@ async function openExternalUrl(url: string): Promise<boolean> {
       resolve(true);
     });
   });
+}
+
+async function startEmbeddedChannels(config: ReturnType<typeof loadConfigFromEnv>): Promise<void> {
+  const launches: Array<Promise<unknown>> = [];
+  const currentDir = path.dirname(fileURLToPath(import.meta.url));
+
+  if ((config.discord?.token ?? process.env['DISCORD_TOKEN'])?.trim()) {
+    launches.push(
+      loadChannelRuntime<{ startDiscordBot: (cfg: ReturnType<typeof loadConfigFromEnv>) => Promise<unknown> }>(currentDir, '../../discord')
+        .then((mod) => mod.startDiscordBot(config))
+        .catch((error: unknown) => {
+          console.error(`[channels] Discord failed: ${error instanceof Error ? error.message : String(error)}`);
+        }),
+    );
+  }
+
+  if ((config.slack?.botToken ?? process.env['SLACK_BOT_TOKEN'])?.trim() && (config.slack?.appToken ?? process.env['SLACK_APP_TOKEN'])?.trim()) {
+    launches.push(
+      loadChannelRuntime<{ startSlackBot: (cfg: ReturnType<typeof loadConfigFromEnv>) => Promise<unknown> }>(currentDir, '../../slack')
+        .then((mod) => mod.startSlackBot(config))
+        .catch((error: unknown) => {
+          console.error(`[channels] Slack failed: ${error instanceof Error ? error.message : String(error)}`);
+        }),
+    );
+  }
+
+  if ((config.telegram?.token ?? process.env['TELEGRAM_BOT_TOKEN'])?.trim()) {
+    launches.push(
+      loadChannelRuntime<{ startTelegramBot: (cfg: ReturnType<typeof loadConfigFromEnv>) => Promise<unknown> }>(currentDir, '../../telegram')
+        .then((mod) => mod.startTelegramBot(config))
+        .catch((error: unknown) => {
+          console.error(`[channels] Telegram failed: ${error instanceof Error ? error.message : String(error)}`);
+        }),
+    );
+  }
+
+  if (config.whatsapp) {
+    launches.push(
+      loadChannelRuntime<{ runWhatsAppRuntime: (cfg: ReturnType<typeof loadConfigFromEnv>) => Promise<unknown> }>(currentDir, '../../whatsapp')
+        .then((mod) => mod.runWhatsAppRuntime(config))
+        .catch((error: unknown) => {
+          console.error(`[channels] WhatsApp failed: ${error instanceof Error ? error.message : String(error)}`);
+        }),
+    );
+  }
+
+  await Promise.allSettled(launches);
+}
+
+async function loadChannelRuntime<TModule>(currentDir: string, packageRelativePath: string): Promise<TModule> {
+  const packageDir = path.resolve(currentDir, packageRelativePath);
+  const candidates = [
+    path.join(packageDir, 'dist', 'index.js'),
+    path.join(packageDir, 'src', 'index.ts'),
+    path.join(packageDir, 'src', 'index.js'),
+  ];
+
+  for (const candidate of candidates) {
+    if (await isFile(candidate)) {
+      return import(pathToFileURL(candidate).href) as Promise<TModule>;
+    }
+  }
+
+  throw new Error(`No runtime entrypoint found for ${packageRelativePath}. Checked: ${candidates.join(', ')}`);
+}
+
+async function isFile(filePath: string): Promise<boolean> {
+  try {
+    const stats = await fs.stat(filePath);
+    return stats.isFile();
+  } catch {
+    return false;
+  }
 }

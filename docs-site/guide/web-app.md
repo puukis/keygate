@@ -4,6 +4,17 @@ The web app is the primary operator console for a running Keygate gateway.
 
 ## Main areas
 
+### Guest WebChat
+
+The operator app is no longer the only browser surface. Keygate also ships a dedicated guest surface at `/webchat`.
+
+Use it when you want:
+
+- a session-scoped guest chat
+- signed expiring guest links
+- attachment uploads without exposing the full operator console
+- session-bound canvas and poll events
+
 ### Chat
 
 Use **Chat** for:
@@ -23,6 +34,11 @@ The **Overview** tab is the high-level runtime health screen. It summarizes:
 - browser and channel readiness
 - recent usage totals
 - high-level runtime status
+- active WebChat guest-link counts
+- live canvas base-path and A2UI state
+- memory backend and migration phase
+- active voice session count
+- recent WebChat links, polls, and channel actions
 
 ### Instances
 
@@ -49,6 +65,14 @@ The **Sessions** tab manages web sessions:
 - delete
 
 Session compaction and debug mode are session-scoped, so the selected session matters across Chat, Usage, and Debug.
+
+WebChat sessions now appear as their own channel type and stay isolated from the operator session lifecycle.
+
+From the Sessions tab you can also:
+
+- create a guest WebChat link for the session
+- see active guest-link counts per session
+- inspect channel polls and recent channel action history for the selected session
 
 ### Automations
 
@@ -110,6 +134,17 @@ Important behavior:
 - assistant-triggered Git mutations in Safe Mode still go through the normal confirmation flow
 
 For the full repo model, see [Local Git Workspaces](/guide/local-git-workspaces).
+
+## Canvas and A2UI
+
+The web app can now receive session-scoped canvas events from:
+
+- `/__keygate__/canvas/*`
+- `/__keygate__/a2ui`
+
+These surfaces are driven by the `canvas_open`, `canvas_update`, and `canvas_close` tools and are persisted server-side.
+
+The Overview and session detail views also reflect canvas state and user-action events coming back from those surfaces.
 
 ## Configuration surfaces
 

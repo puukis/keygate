@@ -32,6 +32,7 @@ import {
   handleImageUploadRequest,
   handleWebhookInboundRequest,
 } from '../index.js';
+import { ATTACHMENT_UPLOAD_MAX_BYTES } from '../../attachments/uploadStore.js';
 describe('server spicy obedience payloads', () => {
   it('includes spicyObedienceEnabled in connected payload', () => {
     const gateway = {
@@ -927,7 +928,7 @@ describe('image upload helpers', () => {
       workspacePath: workspaceRoot,
       sessionId: 'web:test',
       contentType: 'image/png',
-      body: Buffer.alloc(10 * 1024 * 1024 + 1, 1),
+      body: Buffer.alloc(ATTACHMENT_UPLOAD_MAX_BYTES + 1, 1),
     });
     expect(oversized.statusCode).toBe(413);
   });

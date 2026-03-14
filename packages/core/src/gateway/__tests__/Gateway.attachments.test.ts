@@ -158,24 +158,24 @@ describe('Gateway attachment persistence and cleanup', () => {
 
     const db = mockDbState.instances[0];
     expect(db).toBeDefined();
-    expect(db?.saveMessageCalls[0]?.message['attachments']).toEqual([{
+    expect(db?.saveMessageCalls[0]?.message['attachments']).toEqual([expect.objectContaining({
       id: 'att-1',
       filename: 'photo.png',
       contentType: 'image/png',
       sizeBytes: 3,
       path: attachmentPath,
       url: '/api/uploads/image?sessionId=web%3Atest&id=att-1',
-    }]);
+    })]);
 
     expect(events).toHaveLength(1);
-    expect(events[0]?.['attachments']).toEqual([{
+    expect(events[0]?.['attachments']).toEqual([expect.objectContaining({
       id: 'att-1',
       filename: 'photo.png',
       contentType: 'image/png',
       sizeBytes: 3,
       path: attachmentPath,
       url: '/api/uploads/image?sessionId=web%3Atest&id=att-1',
-    }]);
+    })]);
 
     const persistedSession = gateway.getSession('web:test');
     expect(persistedSession?.messages[0]?.attachments?.[0]?.id).toBe('att-1');

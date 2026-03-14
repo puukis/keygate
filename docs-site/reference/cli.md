@@ -120,7 +120,7 @@ keygate pairing approve <discord|slack|whatsapp|telegram> <code>
 keygate pairing pending [discord|slack|whatsapp|telegram]
 ```
 
-These approve pending DM trust requests for external chat channels.
+These approve pending DM trust requests for external chat channels. On WhatsApp, pairing requests are queued silently, so `keygate pairing pending whatsapp` is the normal way to discover blocked new senders.
 
 ## Gmail automation commands
 

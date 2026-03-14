@@ -1,4 +1,4 @@
-export type SessionChannelType = 'web' | 'discord' | 'terminal' | 'slack' | 'whatsapp';
+export type SessionChannelType = 'web' | 'webchat' | 'discord' | 'terminal' | 'slack' | 'whatsapp' | 'telegram';
 
 export interface SessionAttachment {
   id: string;
@@ -6,6 +6,12 @@ export interface SessionAttachment {
   contentType: string;
   sizeBytes: number;
   url: string;
+  kind?: 'image' | 'audio' | 'video' | 'pdf' | 'document' | 'unknown';
+  previewText?: string;
+  durationMs?: number;
+  width?: number;
+  height?: number;
+  pageCount?: number;
 }
 
 export interface SessionMessage {
@@ -111,6 +117,10 @@ function inferChannelType(sessionId: string): SessionChannelType {
     return 'discord';
   }
 
+  if (sessionId.startsWith('webchat:')) {
+    return 'webchat';
+  }
+
   if (sessionId.startsWith('terminal:')) {
     return 'terminal';
   }
@@ -121,6 +131,10 @@ function inferChannelType(sessionId: string): SessionChannelType {
 
   if (sessionId.startsWith('whatsapp:')) {
     return 'whatsapp';
+  }
+
+  if (sessionId.startsWith('telegram:')) {
+    return 'telegram';
   }
 
   return 'web';

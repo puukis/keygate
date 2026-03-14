@@ -11,6 +11,8 @@ Keygate can run a first-class WhatsApp channel using a linked-device session. Th
 - Group policy controls (`closed`, `selected`, `open`)
 - Mention gating for group traffic
 - Inbound media ingestion for images, audio, documents, and supported videos
+- Inbound `👀` acknowledgement reactions on supported WhatsApp clients
+- `composing` presence while Keygate is processing a message
 - Outbound text replies plus browser screenshot follow-up images
 
 ## Login model
@@ -76,11 +78,15 @@ keygate channels whatsapp logout
 
 `logout` stops the runtime, removes the linked auth state, and clears any active login flow. It does not delete your structured WhatsApp policy settings.
 
+When a WhatsApp message is accepted for processing, Keygate tries to add a `👀` reaction and emits `composing` presence while the assistant works. Both are best-effort and fail silently if the linked device or chat does not support them.
+
+Fresh note-to-self messages from the linked number are supported as a test flow. Keygate still ignores stale replayed history, so reconnects do not reprocess old self-chat traffic.
+
 ## DM policy modes
 
-- `pairing`: unknown senders get a pairing code and stay blocked until approved
+- `pairing`: unknown senders create a pending approval request and stay blocked until approved
 - `open`: any sender can start a DM session
-- `closed`: only explicitly allowed senders can use DMs
+- `closed`: only explicitly allowed senders can use DMs; all other WhatsApp DMs are ignored silently
 
 Allow-from entries use comma-separated E.164 numbers or `*`.
 
@@ -94,17 +100,26 @@ Examples:
 
 ## Pairing approvals
 
-When a sender hits a `pairing` policy, Keygate replies with a code and instructs the operator to run:
+When a sender hits a `pairing` policy on WhatsApp, Keygate does not auto-reply into the chat. Instead it creates a pending request that the operator reviews locally.
+
+List pending requests:
+
+```bash
+keygate pairing pending whatsapp
+```
+
+Approve the specific request you want:
 
 ```bash
 keygate pairing approve whatsapp <code>
 ```
 
-You can list pending requests with:
+Operational notes:
 
-```bash
-keygate pairing pending whatsapp
-```
+- unknown WhatsApp contacts do not receive their pairing code automatically
+- the runtime logs the pending code once so the operator can review it safely
+- if you want zero-friction access for trusted numbers, use `allowFrom` or switch `dmPolicy` to `open`
+- if you want allowlist-only behavior, use `dmPolicy: closed` with `allowFrom`
 
 ## Group policy
 
@@ -170,7 +185,8 @@ keygate channels whatsapp restart
 - Runtime says the channel is not linked: run `keygate channels whatsapp login`
 - Runtime exits after disconnect: inspect logs for a fatal logout and re-link if needed
 - Group traffic is ignored: verify `groupMode`, explicit group keys, and mention rules
-- Pairing never completes: approve the exact channel-specific code with `whatsapp`
+- Pairing seems silent: this is expected on WhatsApp; inspect `keygate pairing pending whatsapp` and approve the exact channel-specific code with `whatsapp`
+- New unknown DMs get no response: this is expected when `dmPolicy` is `closed` and the sender is not in `allowFrom`
 
 ## Privacy and security
 

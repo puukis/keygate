@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { App, type SayFn } from '@slack/bolt';
 import {
   Gateway,
+  getChannelActionRegistry,
   normalizeSlackMessage,
   BaseChannel,
   loadConfigFromEnv,
@@ -13,6 +14,7 @@ import {
   persistUploadedImage,
   type ConfirmationDetails,
   type ConfirmationDecision,
+  type ChannelActionName,
   type KeygateConfig,
   type MessageAttachment,
   createOrGetPairingCode,
@@ -257,6 +259,8 @@ export async function startSlackBot(config: KeygateConfig): Promise<App> {
     socketMode: true,
   });
 
+  registerSlackActionAdapter(app, config);
+
   const gateway = Gateway.getInstance(config);
   const router = new RoutingService(new RoutingRuleStore(), config.security.workspacePath);
   registerConfirmationActionHandler(app);
@@ -431,6 +435,133 @@ export async function startSlackBot(config: KeygateConfig): Promise<App> {
   console.log('🤖 Slack bot ready! Listening via Socket Mode.');
 
   return app;
+}
+
+function registerSlackActionAdapter(app: App, config: KeygateConfig): void {
+  const gate = config.actions?.slack ?? {
+    send: true,
+    react: true,
+    edit: true,
+    delete: true,
+    threadReply: true,
+  };
+  const actions: ChannelActionName[] = [];
+  if (gate.send !== false) actions.push('send');
+  if (gate.react !== false) actions.push('react');
+  if (gate.edit !== false) actions.push('edit');
+  if (gate.delete !== false) actions.push('delete');
+  if (gate.threadReply !== false) actions.push('thread-reply');
+
+  getChannelActionRegistry().register({
+    channel: 'slack',
+    actions,
+    handle: async (ctx) => {
+      const channelId = firstSlackString(ctx.params['channelId']);
+      const messageId = firstSlackString(ctx.params['messageId']);
+      const content = firstSlackString(ctx.params['content']) ?? '';
+
+      if (!channelId) {
+        return { ok: false, channel: 'slack', error: 'Slack actions require channelId.' };
+      }
+
+      if (ctx.action === 'send') {
+        const sent = await app.client.chat.postMessage({
+          channel: channelId,
+          text: content || '(No response)',
+        });
+        return {
+          ok: Boolean(sent.ok),
+          channel: 'slack',
+          externalMessageId: sent.ts,
+          payload: { content },
+          error: sent.ok ? undefined : sent.error,
+        };
+      }
+
+      if (ctx.action === 'thread-reply') {
+        const threadTs = firstSlackString(ctx.params['threadTs'], ctx.params['threadId'], ctx.params['messageId']);
+        if (!threadTs) {
+          return { ok: false, channel: 'slack', error: 'Slack thread-reply requires threadTs or messageId.' };
+        }
+        const sent = await app.client.chat.postMessage({
+          channel: channelId,
+          text: content || '(No response)',
+          thread_ts: threadTs,
+        });
+        return {
+          ok: Boolean(sent.ok),
+          channel: 'slack',
+          externalMessageId: sent.ts,
+          threadId: threadTs,
+          payload: { content, threadTs },
+          error: sent.ok ? undefined : sent.error,
+        };
+      }
+
+      if (!messageId) {
+        return { ok: false, channel: 'slack', error: `${ctx.action} requires messageId.` };
+      }
+
+      if (ctx.action === 'edit') {
+        const result = await app.client.chat.update({
+          channel: channelId,
+          ts: messageId,
+          text: content || '(No response)',
+        });
+        return {
+          ok: Boolean(result.ok),
+          channel: 'slack',
+          externalMessageId: messageId,
+          payload: { content },
+          error: result.ok ? undefined : result.error,
+        };
+      }
+
+      if (ctx.action === 'delete') {
+        const result = await app.client.chat.delete({
+          channel: channelId,
+          ts: messageId,
+        });
+        return {
+          ok: Boolean(result.ok),
+          channel: 'slack',
+          externalMessageId: messageId,
+          payload: { deleted: true },
+          error: result.ok ? undefined : result.error,
+        };
+      }
+
+      if (ctx.action === 'react') {
+        const emoji = firstSlackString(ctx.params['emoji']);
+        if (!emoji) {
+          return { ok: false, channel: 'slack', error: 'Slack react requires emoji.' };
+        }
+        const result = await app.client.reactions.add({
+          channel: channelId,
+          timestamp: messageId,
+          name: emoji.replace(/^:|:$/g, ''),
+        });
+        return {
+          ok: Boolean(result.ok),
+          channel: 'slack',
+          externalMessageId: messageId,
+          payload: { emoji },
+          error: result.ok ? undefined : result.error,
+        };
+      }
+
+      return { ok: false, channel: 'slack', error: `${ctx.action} is not supported for Slack.` };
+    },
+  });
+}
+
+function firstSlackString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return undefined;
 }
 
 // CLI entry point

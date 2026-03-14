@@ -102,6 +102,20 @@ Actions:
 - if approval buttons spin and then appear stuck, update/restart the Telegram runtime and retry; current builds acknowledge the tap and clear the inline keyboard immediately
 - if `/stop` seems delayed, update/restart the Telegram runtime; current builds cancel the active Telegram turn immediately instead of queueing the stop command behind it
 
+## 4c) WhatsApp pairing is silent
+
+Checks:
+
+- is `dmPolicy` set to `pairing`?
+- did the sender come from a number that is not already approved or allowlisted?
+- did you check the local pending list after the inbound DM arrived?
+
+Actions:
+
+- run `keygate pairing pending whatsapp`
+- approve the right request with `keygate pairing approve whatsapp <code>`
+- if you do not want manual review for that number, add it to `allowFrom` or switch `dmPolicy` to `open`
+
 ## 5) Scheduler job not running
 
 Checks:

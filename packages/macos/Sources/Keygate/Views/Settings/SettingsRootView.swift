@@ -20,6 +20,9 @@ struct SettingsRootView: View {
             BrowserSettingsTab()
                 .tabItem { Label("Browser", systemImage: "globe") }
 
+            RuntimeSettingsTab()
+                .tabItem { Label("Runtime", systemImage: "waveform.path.ecg") }
+
             IntegrationsSettingsTab()
                 .tabItem { Label("Integrations", systemImage: "puzzlepiece.extension") }
         }
@@ -404,6 +407,191 @@ struct BrowserSettingsTab: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+// MARK: - Runtime
+
+struct RuntimeSettingsTab: View {
+    @EnvironmentObject var gateway: GatewayService
+
+    private var recentActionItems: [ChannelActionPayload] {
+        Array(gateway.recentChannelActions.prefix(10))
+    }
+
+    var body: some View {
+        Form {
+            Section("Overview") {
+                HStack {
+                    LabeledContent("WebChat Links") {
+                        Text("\(gateway.runtimeStatus?.webchat?.activeLinks ?? 0)")
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    LabeledContent("Voice Sessions") {
+                        Text("\(gateway.activeVoiceSessions.count)")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                HStack {
+                    LabeledContent("Canvas Surfaces") {
+                        Text("\(gateway.canvasSurfaces.count)")
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    LabeledContent("Media") {
+                        Text(gateway.runtimeStatus?.media?.enabled == true ? "Enabled" : "Off")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Button("Refresh Runtime Status") {
+                    gateway.refreshRuntimeStatusNow()
+                }
+                .disabled(!gateway.connectionState.isConnected)
+            }
+
+            Section("WebChat") {
+                LabeledContent("Enabled") {
+                    Text(gateway.runtimeStatus?.webchat?.enabled == true ? "Yes" : "No")
+                        .foregroundStyle(.secondary)
+                }
+                if let guestPath = gateway.runtimeStatus?.webchat?.guestPath {
+                    LabeledContent("Guest Path") {
+                        Text(guestPath)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+
+            Section("Canvas") {
+                if let basePath = gateway.runtimeStatus?.canvas?.basePath {
+                    LabeledContent("Base Path") {
+                        Text(basePath)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+                if let a2uiPath = gateway.runtimeStatus?.canvas?.a2uiPath {
+                    LabeledContent("A2UI Path") {
+                        Text(a2uiPath)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+
+                if gateway.canvasSurfaces.isEmpty {
+                    Text("No live canvas surfaces")
+                        .foregroundStyle(.tertiary)
+                } else {
+                    ForEach(gateway.canvasSurfaces) { surface in
+                        HStack(alignment: .top) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(surface.surfaceId)
+                                    .font(.system(size: 12, weight: .semibold))
+                                Text(surface.sessionId)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                                if let statusText = surface.statusText, !statusText.isEmpty {
+                                    Text(statusText)
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                            Button("Open") {
+                                gateway.openCanvasSurface(surface)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                    }
+                }
+            }
+
+            Section("Memory") {
+                LabeledContent("Backend") {
+                    Text(gateway.runtimeStatus?.memory?.backend ?? "—")
+                        .foregroundStyle(.secondary)
+                }
+                LabeledContent("Target") {
+                    Text(gateway.runtimeStatus?.memory?.targetBackend ?? "—")
+                        .foregroundStyle(.secondary)
+                }
+                LabeledContent("Migration") {
+                    Text(gateway.runtimeStatus?.memory?.migrationPhase ?? "—")
+                        .foregroundStyle(.secondary)
+                }
+                LabeledContent("Batch Mode") {
+                    Text(gateway.runtimeStatus?.memory?.batchMode ?? "—")
+                        .foregroundStyle(.secondary)
+                }
+                if let multimodal = gateway.runtimeStatus?.memory?.multimodal, !multimodal.isEmpty {
+                    LabeledContent("Modalities") {
+                        Text(multimodal.joined(separator: ", "))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            Section("Voice") {
+                if gateway.activeVoiceSessions.isEmpty {
+                    Text("No active voice sessions")
+                        .foregroundStyle(.tertiary)
+                } else {
+                    ForEach(gateway.activeVoiceSessions) { voice in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("\(voice.guildId) · \(voice.channelId)")
+                                .font(.system(size: 12, weight: .semibold))
+                            Text("Session \(voice.sessionId)")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                            Text(voice.status.capitalized)
+                                .font(.system(size: 11))
+                                .foregroundStyle(voice.status == "error" ? .red : .secondary)
+                            if let error = voice.error, !error.isEmpty {
+                                Text(error)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.red)
+                            }
+                        }
+                    }
+                }
+            }
+
+            Section("Recent Channel Actions") {
+                if gateway.recentChannelActions.isEmpty {
+                    Text("No channel actions yet")
+                        .foregroundStyle(.tertiary)
+                } else {
+                    RecentChannelActionsList(actions: recentActionItems)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear {
+            gateway.refreshRuntimeStatusNow()
+        }
+    }
+}
+
+private struct RecentChannelActionsList: View {
+    let actions: [ChannelActionPayload]
+
+    var body: some View {
+        Text(summary)
+            .font(.system(size: 11))
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var summary: String {
+        actions.map { action in
+            let result = action.ok ? "OK" : (action.error ?? "Failed")
+            return "\(action.channel) · \(action.action)\n\(action.sessionId)\n\(result)"
+        }.joined(separator: "\n\n")
     }
 }
 

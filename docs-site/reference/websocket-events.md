@@ -11,6 +11,14 @@ Server push events:
 - `model_changed`: provider/model update confirmation
 - `mcp_browser_status`: browser MCP health snapshot
 
+WebChat guest connections use `/webchat/ws` instead of `/ws` and only receive session-scoped chat, canvas, and action events.
+
+Guest-only requests on `/webchat/ws`:
+
+- `message`
+- `cancel_session`
+- `poll-vote`
+
 ## Session lifecycle
 
 Requests:
@@ -45,6 +53,7 @@ Push events:
 - `message_received`
 - `session_chunk`
 - `session_message_end`
+- `session_user_message`
 
 ## Tool and provider events
 
@@ -53,6 +62,31 @@ Push events:
 - `tool_start`
 - `tool_end`
 - `provider_event`
+- `canvas:state`
+- `canvas:user_action`
+- `canvas:close`
+- `channel:action`
+- `channel:action_result`
+- `channel:poll`
+- `channel:poll_vote`
+- `voice:session`
+
+`canvas:user_action` is emitted to operator and guest clients when a canvas surface sends a structured bridge action back to the gateway.
+
+## WebChat link management
+
+Operator REST surfaces:
+
+- `GET /api/webchat/links`
+- `POST /api/webchat/links`
+- `DELETE /api/webchat/links/:id`
+- `GET /api/channel-actions?sessionId=...`
+- `POST /api/channel-actions`
+- `GET /api/channel-polls?sessionId=...`
+
+Guest upload surface:
+
+- `POST /webchat/uploads/attachment`
 
 ## Usage, debug, and compaction
 
@@ -238,6 +272,9 @@ Results:
 - `memory_get_result`
 - `memory_set_result`
 - `memory_delete_result`
+- `memory_status_result`
+
+`memory_status_result` and `GET /api/status` now both report backend selection, migration phase, batch mode, and enabled multimodal modalities.
 - `memory_search_result`
 - `memory_namespaces_result`
 - `memory_vector_search_result`

@@ -18,6 +18,11 @@ export interface MemoryManagerStatus {
   totalChunks: number;
   indexedFiles: string[];
   lastIndexed: string | null;
+  backend: 'sqlite-vec' | 'lancedb';
+  targetBackend: 'sqlite-vec' | 'lancedb';
+  migrationPhase: 'idle' | 'backfilling' | 'ready';
+  batchMode: 'inline' | 'openai-remote';
+  multimodal: string[];
 }
 
 export class MemoryManager {
@@ -56,10 +61,17 @@ export class MemoryManager {
       this.provider = await createEmbeddingProvider(this.config, this.memoryConfig);
 
       // Create vector store with provider dimensions
-      this.store = new VectorStore(this.provider.dimensions);
+      this.store = new VectorStore(this.provider.dimensions, {
+        backend: this.memoryConfig.backend,
+      });
+      await this.store.prepareTargetBackend();
 
       // Initial index of workspace files
       await indexWorkspaceFiles(this.workspacePath, this.store, this.provider);
+      if (this.memoryConfig.backend?.active === 'lancedb') {
+        await this.store.backfillLanceFromSqlite();
+        await this.store.activateTargetBackend();
+      }
       this.lastIndexed = new Date().toISOString();
 
       // Start file watcher for auto-indexing
@@ -84,7 +96,7 @@ export class MemoryManager {
         void this.reindexFile(relativePath);
       },
       onFileRemove: (relativePath) => {
-        this.store?.deleteByPath(relativePath);
+        void this.store?.deleteByPath(relativePath);
       },
     });
   }
@@ -104,7 +116,7 @@ export class MemoryManager {
     const storedHash = this.store.getFileHash(relativePath);
     if (storedHash === hash) return;
 
-    this.store.deleteByPath(relativePath);
+    await this.store.deleteByPath(relativePath);
 
     const chunks = chunkText(relativePath, content);
     if (chunks.length === 0) return;
@@ -119,7 +131,7 @@ export class MemoryManager {
       source: 'memory' as const,
     }));
 
-    this.store.upsertChunks(storedChunks);
+    await this.store.upsertChunks(storedChunks);
 
     const stat = await fs.stat(absolutePath);
     this.store.upsertFile(relativePath, hash, Math.floor(stat.mtimeMs), stat.size, 'memory');
@@ -168,6 +180,12 @@ export class MemoryManager {
    * Get current status of the memory system.
    */
   status(): MemoryManagerStatus {
+    const backendStatus = this.store?.status() ?? {
+      active: this.memoryConfig.backend?.active ?? 'sqlite-vec',
+      target: this.memoryConfig.backend?.active ?? 'sqlite-vec',
+      migrationPhase: 'idle' as const,
+      lanceRows: 0,
+    };
     return {
       provider: this.provider?.id ?? 'not initialized',
       model: this.provider?.model ?? 'unknown',
@@ -175,6 +193,13 @@ export class MemoryManager {
       totalChunks: this.store?.totalChunks() ?? 0,
       indexedFiles: this.store?.indexedFiles() ?? [],
       lastIndexed: this.lastIndexed,
+      backend: backendStatus.active,
+      targetBackend: backendStatus.target,
+      migrationPhase: backendStatus.migrationPhase,
+      batchMode: this.memoryConfig.batch?.enabled ? 'openai-remote' : 'inline',
+      multimodal: this.memoryConfig.multimodal?.enabled
+        ? [...(this.memoryConfig.multimodal.modalities ?? [])]
+        : [],
     };
   }
 

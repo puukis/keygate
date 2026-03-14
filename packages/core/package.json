@@ -23,6 +23,8 @@
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
+    "@lancedb/lancedb": "^0.26.2",
+    "@napi-rs/canvas": "^0.1.96",
     "@whiskeysockets/baileys": "^6.7.18",
     "ajv": "^8.17.1",
     "better-sqlite3": "^11.7.0",
@@ -32,6 +34,7 @@
     "isolated-vm": "^5.0.0",
     "ollama": "^0.6.3",
     "openai": "^4.77.0",
+    "pdfjs-dist": "^5.5.207",
     "playwright": "^1.49.0",
     "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",

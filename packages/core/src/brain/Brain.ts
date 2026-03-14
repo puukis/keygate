@@ -974,15 +974,16 @@ function getLatestUserMessageContent(messages: Message[]): string {
 }
 
 function prepareMessagesForProvider(messages: Message[], providerName: string): Message[] {
+  const messagesWithAttachmentContext = messages.map((message) => appendAttachmentPreviewContext(message));
   if (providerName === 'openai-codex') {
-    return messages;
+    return messagesWithAttachmentContext;
   }
 
   const userAttachmentTurnIndexes = new Set<number>();
   let remaining = MAX_IMAGE_CONTEXT_USER_TURNS;
 
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
+  for (let index = messagesWithAttachmentContext.length - 1; index >= 0; index -= 1) {
+    const message = messagesWithAttachmentContext[index];
     if (message?.role !== 'user' || !message.attachments || message.attachments.length === 0) {
       continue;
     }
@@ -996,10 +997,10 @@ function prepareMessagesForProvider(messages: Message[], providerName: string): 
   }
 
   if (userAttachmentTurnIndexes.size === 0) {
-    return messages;
+    return messagesWithAttachmentContext;
   }
 
-  return messages.map((message, index) => {
+  return messagesWithAttachmentContext.map((message, index) => {
     if (message.role !== 'user' || !message.attachments || message.attachments.length === 0) {
       return message;
     }
@@ -1013,6 +1014,33 @@ function prepareMessagesForProvider(messages: Message[], providerName: string): 
       attachments: undefined,
     };
   });
+}
+
+function appendAttachmentPreviewContext(message: Message): Message {
+  if (message.role !== 'user' || !message.attachments || message.attachments.length === 0) {
+    return message;
+  }
+
+  const attachmentContext = message.attachments
+    .flatMap((attachment) => {
+      const previewText = typeof attachment.previewText === 'string' ? attachment.previewText.trim() : '';
+      if (!previewText) {
+        return [];
+      }
+      const label = attachment.filename || attachment.id;
+      const kind = attachment.kind ?? 'file';
+      return [`[Attachment ${kind}: ${label}] ${previewText}`];
+    })
+    .join('\n');
+
+  if (!attachmentContext) {
+    return message;
+  }
+
+  return {
+    ...message,
+    content: `${message.content}${message.content.trim().length > 0 ? '\n\n' : ''}${attachmentContext}`,
+  };
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {

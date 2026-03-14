@@ -19,6 +19,8 @@ interface ChatViewProps {
   readOnlyHint?: string;
   slashCommands?: SlashCommand[];
   onRequestSlashCommands?: () => void;
+  uploadEndpoint?: string;
+  uploadHeaders?: Record<string, string>;
 }
 
 interface MessageRowProps {
@@ -60,13 +62,24 @@ const STARTER_PROMPTS = [
 
 const AUTO_SCROLL_THRESHOLD_PX = 80;
 const MAX_ATTACHMENT_COUNT = 5;
-const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const DEFAULT_ASSISTANT_AVATAR = 'K';
-const SUPPORTED_IMAGE_TYPES = new Set([
+const SUPPORTED_ATTACHMENT_TYPES = new Set([
   'image/png',
   'image/jpeg',
   'image/webp',
   'image/gif',
+  'audio/mpeg',
+  'audio/mp3',
+  'audio/wav',
+  'audio/x-wav',
+  'audio/ogg',
+  'audio/webm',
+  'audio/mp4',
+  'video/mp4',
+  'video/webm',
+  'video/quicktime',
+  'application/pdf',
 ]);
 const EMOJI_MATCHER = /(?:\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?(?:\u200D\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?)*)|(?:[\u{1F1E6}-\u{1F1FF}]{2})/u;
 const EMOJI_MATCHER_GLOBAL = /(?:\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?(?:\u200D\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?)*)|(?:[\u{1F1E6}-\u{1F1FF}]{2})/gu;
@@ -101,12 +114,12 @@ export const CHAT_MARKDOWN_COMPONENTS: Components = {
 export function validateComposerAttachmentFile(
   file: Pick<AttachmentFileLike, 'type' | 'size'>
 ): string | null {
-  if (!SUPPORTED_IMAGE_TYPES.has(file.type)) {
-    return 'Only PNG, JPEG, WEBP, and GIF images are supported.';
+  if (!SUPPORTED_ATTACHMENT_TYPES.has(file.type)) {
+    return 'Only image, audio, video, and PDF attachments are supported.';
   }
 
   if (file.size > MAX_ATTACHMENT_BYTES) {
-    return 'Each image must be 10MB or smaller.';
+    return 'Each attachment must be 25MB or smaller.';
   }
 
   return null;
@@ -129,7 +142,7 @@ export function buildNextPendingAttachments<TFile extends AttachmentFileLike>(
 
   for (const file of files) {
     if (next.length >= MAX_ATTACHMENT_COUNT) {
-      error = `You can attach up to ${MAX_ATTACHMENT_COUNT} images per message.`;
+      error = `You can attach up to ${MAX_ATTACHMENT_COUNT} files per message.`;
       break;
     }
 
@@ -263,6 +276,8 @@ export function ChatView({
   readOnlyHint,
   slashCommands = [],
   onRequestSlashCommands,
+  uploadEndpoint = '/api/uploads/attachment',
+  uploadHeaders,
 }: ChatViewProps) {
   const [input, setInput] = useState('');
   const [copiedCodeBlockId, setCopiedCodeBlockId] = useState<string | null>(null);
@@ -385,7 +400,7 @@ export function ChatView({
     }
 
     const files = Array.from(event.clipboardData.items ?? [])
-      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      .filter((item) => item.kind === 'file')
       .map((item) => item.getAsFile())
       .filter((file): file is File => file !== null);
 
@@ -451,10 +466,12 @@ export function ChatView({
         const results: UploadedAttachment[] = [];
 
         for (const attachment of pendingAttachments) {
-          const response = await fetch(`/api/uploads/image?sessionId=${encodeURIComponent(sessionIdForUploads!)}`, {
+          const separator = uploadEndpoint.includes('?') ? '&' : '?';
+          const response = await fetch(`${uploadEndpoint}${separator}sessionId=${encodeURIComponent(sessionIdForUploads!)}&filename=${encodeURIComponent(attachment.file.name)}`, {
             method: 'POST',
             headers: {
               'Content-Type': attachment.file.type,
+              ...uploadHeaders,
             },
             body: attachment.file,
           });
@@ -467,7 +484,7 @@ export function ChatView({
           const payload = await response.json() as unknown;
           const parsed = parseUploadedAttachment(payload);
           if (!parsed) {
-            throw new Error('Image upload response was malformed.');
+            throw new Error('Attachment upload response was malformed.');
           }
 
           results.push(parsed);
@@ -475,7 +492,7 @@ export function ChatView({
 
         uploadedAttachments = results;
       } catch (error) {
-        setComposerError(error instanceof Error ? error.message : 'Image upload failed.');
+        setComposerError(error instanceof Error ? error.message : 'Attachment upload failed.');
         setIsUploading(false);
         return;
       }
@@ -687,14 +704,14 @@ export function ChatView({
               onClick={() => fileInputRef.current?.click()}
               disabled={disabled || isStreaming || isUploading || pendingAttachments.length >= MAX_ATTACHMENT_COUNT}
             >
-              Add image
+              Add file
             </button>
             <p className="composer-tip">Press Enter to send, Shift+Enter for a new line.</p>
           </div>
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/png,image/jpeg,image/webp,image/gif"
+            accept="image/png,image/jpeg,image/webp,image/gif,audio/mpeg,audio/mp3,audio/wav,audio/x-wav,audio/ogg,audio/webm,audio/mp4,video/mp4,video/webm,video/quicktime,application/pdf"
             multiple
             className="composer-file-input"
             onChange={handleFileInputChange}
@@ -704,7 +721,11 @@ export function ChatView({
             <div className="pending-attachments-grid">
               {pendingAttachments.map((attachment) => (
                 <div key={attachment.id} className="pending-attachment-card">
-                  <img src={attachment.previewUrl} alt={attachment.file.name} loading="lazy" />
+                  {attachment.file.type.startsWith('image/') ? (
+                    <img src={attachment.previewUrl} alt={attachment.file.name} loading="lazy" />
+                  ) : (
+                    <div className="pending-attachment-fallback">{attachment.file.type.split('/', 1)[0] || 'file'}</div>
+                  )}
                   <div className="pending-attachment-meta">
                     <span>{attachment.file.name}</span>
                     <button
@@ -783,12 +804,18 @@ function MessageRow({ msg, assistantAvatar, copiedCodeBlockId, onCopyCode }: Mes
                     rel="noreferrer noopener"
                     className="message-upload-item"
                   >
-                    <img
-                      src={attachment.url}
-                      alt={attachment.filename}
-                      className="message-upload-image"
-                      loading="lazy"
-                    />
+                    {attachment.contentType.startsWith('image/') ? (
+                      <img
+                        src={attachment.url}
+                        alt={attachment.filename}
+                        className="message-upload-image"
+                        loading="lazy"
+                      />
+                    ) : (
+                      <span className="message-upload-fallback">
+                        {(attachment.kind ?? attachment.contentType.split('/', 1)[0] ?? 'file').toUpperCase()}
+                      </span>
+                    )}
                     <span>{attachment.filename}</span>
                   </a>
                 ))}
@@ -896,6 +923,8 @@ function parseUploadedAttachment(value: unknown): UploadedAttachment | null {
   const contentType = typeof payload['contentType'] === 'string' ? payload['contentType'].trim() : '';
   const url = typeof payload['url'] === 'string' ? payload['url'].trim() : '';
   const sizeBytes = Number.parseInt(String(payload['sizeBytes'] ?? ''), 10);
+  const kind = typeof payload['kind'] === 'string' ? payload['kind'].trim() : undefined;
+  const previewText = typeof payload['previewText'] === 'string' ? payload['previewText'] : undefined;
 
   if (!id || !filename || !contentType || !url || !Number.isFinite(sizeBytes) || sizeBytes < 0) {
     return null;
@@ -907,6 +936,8 @@ function parseUploadedAttachment(value: unknown): UploadedAttachment | null {
     contentType,
     sizeBytes,
     url,
+    ...(kind ? { kind: kind as UploadedAttachment['kind'] } : {}),
+    ...(previewText ? { previewText } : {}),
   };
 }
 
@@ -920,7 +951,7 @@ async function extractUploadError(response: Response): Promise<string> {
     // Ignore JSON parse errors and fallback below.
   }
 
-  return `Image upload failed (${response.status}).`;
+  return `Attachment upload failed (${response.status}).`;
 }
 
 async function copyTextToClipboard(text: string): Promise<boolean> {
