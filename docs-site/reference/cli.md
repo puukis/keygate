@@ -11,6 +11,7 @@ pnpm test
 pnpm docs:dev
 pnpm docs:build
 pnpm keygate --help
+pnpm keygate -- onboarding
 pnpm onboard
 pnpm auth:login
 pnpm macos:app
@@ -23,7 +24,8 @@ pnpm macos:dmg
 - `pnpm docs:dev`: start the VitePress docs server
 - `pnpm docs:build`: build the docs site
 - `pnpm keygate --help`: run the CLI entrypoint directly from source
-- `pnpm onboard`: shortcut for Codex onboarding
+- `pnpm keygate -- onboarding`: run the full interactive onboarding flow from source
+- `pnpm onboard`: shortcut for the legacy auth-first Codex onboarding path
 - `pnpm auth:login`: shortcut for `keygate auth login --provider openai-codex`
 - `pnpm macos:app`: build `packages/macos/dist/Keygate.app`
 - `pnpm macos:dmg`: build `packages/macos/dist/Keygate-Installer.dmg`
@@ -49,6 +51,8 @@ Use these for first-time setup, auth, the TUI, the background gateway lifecycle,
 
 Notes:
 
+- `keygate onboarding` is the full wizard with interactive provider and model selection.
+- `keygate onboard --auth-choice openai-codex` is the smaller auth-first shortcut that persists the default discovered Codex model.
 - `keygate gateway` manages the Keygate server background process.
 - `keygate remote tailscale` manages tailnet-only HTTPS access to the local gateway.
 - `keygate remote ssh` manages a persisted SSH local-forward tunnel and exposes the remote gateway locally on `http://127.0.0.1:28790` by default.

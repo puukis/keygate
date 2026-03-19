@@ -76,6 +76,8 @@ async function main(): Promise<void> {
   startWebServer(config, {
     staticAssetsDir: staticAssetsDir ?? undefined,
     onListening: async () => {
+      void startEmbeddedChannels(config);
+
       if (!shouldOpenChatSiteOnStart()) {
         return;
       }
@@ -90,9 +92,11 @@ async function main(): Promise<void> {
 
       console.log(`🧭 Open this chat URL manually: ${chatSiteUrl}`);
     },
+    onError: (error) => {
+      console.error(error.message);
+      process.exitCode = 1;
+    },
   });
-
-  void startEmbeddedChannels(config);
 }
 
 void main();

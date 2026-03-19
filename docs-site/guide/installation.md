@@ -43,14 +43,24 @@ cp .keygate.example .keygate
 Run onboarding:
 
 ```bash
-pnpm onboard
+pnpm keygate -- onboarding
 ```
+
+What onboarding does now:
+
+- provider selection is interactive
+- OpenAI, Gemini, and Ollama show curated model menus plus a `Custom model ID` option
+- Codex runs login first, then shows the live Codex model list when available
+- if Codex model discovery fails or returns nothing, onboarding falls back to the built-in Codex model list instead of silently skipping the step
 
 Auth-only flow:
 
 ```bash
+pnpm onboard
 pnpm auth:login
 ```
+
+`pnpm auth:login` logs into Codex and writes the default discovered Codex model. Use full onboarding when you want to choose the model interactively.
 
 ## macOS desktop app and installer
 
@@ -105,3 +115,9 @@ pnpm docs:dev
 
 - Check backend process and port
 - Check browser console websocket errors
+
+### `address already in use` when starting the gateway
+
+- Another process already owns the configured host/port, usually `127.0.0.1:18790`
+- If that is your existing Keygate instance, open the current UI instead of starting a second copy
+- Otherwise stop the process using the port or rerun onboarding with a different server port

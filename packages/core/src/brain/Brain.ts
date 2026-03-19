@@ -16,6 +16,7 @@ import type { Gateway } from '../gateway/Gateway.js';
 import type { AgentMemoryStore } from '../db/agentMemory.js';
 import type { MemoryManager } from '../memory/manager.js';
 import { createLLMProvider } from '../llm/index.js';
+import { getBuiltInModelOptions } from '../llm/modelCatalog.js';
 import { getDefaultWorkspacePath } from '../config/env.js';
 import type { SkillTurnContext } from '../skills/index.js';
 import {
@@ -594,7 +595,7 @@ export class Brain {
       return provider.listModels();
     }
 
-    return getFallbackModels(this.config.llm.provider, this.config.llm.model);
+    return getBuiltInModelOptions(this.config.llm.provider, this.config.llm.model);
   }
 
   private buildProviderOptions(
@@ -862,30 +863,6 @@ function buildSkillPromptSection(skillContext: SkillTurnContext): string {
   }
 
   return `\n\n${blocks.join('\n\n')}`;
-}
-
-function getFallbackModels(
-  provider: KeygateConfig['llm']['provider'],
-  currentModel: string
-): ProviderModelOption[] {
-  const defaults: Record<KeygateConfig['llm']['provider'], string[]> = {
-    openai: ['gpt-4o', 'gpt-4.1', 'o3-mini'],
-    gemini: ['gemini-1.5-pro', 'gemini-1.5-flash'],
-    ollama: ['llama3', 'qwen2.5-coder'],
-    'openai-codex': ['openai-codex/gpt-5.3', 'openai-codex/gpt-5.2'],
-  };
-
-  const candidates = defaults[provider] ?? [currentModel];
-  const unique = provider === 'openai-codex'
-    ? Array.from(new Set(candidates))
-    : Array.from(new Set([currentModel, ...candidates]));
-
-  return unique.map((model, index) => ({
-    id: model,
-    provider,
-    displayName: model,
-    isDefault: index === 0,
-  }));
 }
 
 const REFUSAL_PATTERNS: RegExp[] = [

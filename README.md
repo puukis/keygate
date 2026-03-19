@@ -88,7 +88,9 @@ keygate auth login --provider openai-codex
 ```
 
 The `openai-codex` provider delegates auth/token storage to official Codex tooling. Keygate does not store OpenAI OAuth tokens.
-The installers run `keygate onboarding`, which triggers `keygate auth login --provider openai-codex` immediately when you select the Codex provider.
+`keygate onboarding` now shows an interactive model picker for every provider. OpenAI, Gemini, and Ollama use curated built-in model menus plus a `Custom model ID` option.
+When you pick Codex in onboarding, Keygate runs login first, then shows the live Codex model list when available. If Codex model discovery fails or returns nothing, onboarding falls back to a built-in Codex model list instead of skipping the step.
+`keygate onboard --auth-choice openai-codex` and `keygate auth login --provider openai-codex` remain auth-first shortcuts that persist the default discovered Codex model.
 See smoke test steps in `docs/CODEX_SMOKE_TEST.md`.
 
 ### Terminal Chat (Full-Screen TUI)

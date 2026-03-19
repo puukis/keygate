@@ -29,6 +29,7 @@ import { MemoryManager } from '../memory/manager.js';
 import type { MemoryConfig } from '../memory/embedding/types.js';
 import { MediaUnderstandingService } from '../media/index.js';
 import { createLLMProvider } from '../llm/index.js';
+import { getBuiltInModelOptions, getDefaultModelForProvider } from '../llm/modelCatalog.js';
 import { UsageService } from '../usage/index.js';
 import { SandboxManager } from '../sandbox/index.js';
 import { SkillsManager } from '../skills/index.js';
@@ -1086,12 +1087,7 @@ export class Gateway extends EventEmitter<KeygateEvents> {
         return await providerInstance.listModels();
       }
 
-      return [{
-        id: tempConfig.llm.model,
-        provider,
-        displayName: tempConfig.llm.model,
-        isDefault: true,
-      }];
+      return getBuiltInModelOptions(provider, tempConfig.llm.model);
     } finally {
       if (typeof providerInstance.dispose === 'function') {
         await providerInstance.dispose();
@@ -1386,21 +1382,6 @@ function inferSessionChannelType(sessionId: string): Session['channelType'] {
     return 'telegram';
   }
   return 'web';
-}
-
-function getDefaultModelForProvider(provider: KeygateConfig['llm']['provider']): string {
-  switch (provider) {
-    case 'openai':
-      return 'gpt-4o';
-    case 'gemini':
-      return 'gemini-1.5-pro';
-    case 'ollama':
-      return 'llama3';
-    case 'openai-codex':
-      return 'openai-codex/gpt-5.3';
-    default:
-      return 'gpt-4o';
-  }
 }
 
 function collectAttachmentPaths(messages: Session['messages']): string[] {

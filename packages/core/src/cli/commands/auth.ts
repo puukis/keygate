@@ -3,12 +3,19 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { OpenAICodexProvider } from '../../llm/OpenAICodexProvider.js';
+import { getDefaultModelForProvider } from '../../llm/modelCatalog.js';
 import { ensureCodexInstalled, getCodexInstallHelp } from '../codexInstall.js';
 import { getFlagString, hasFlag, type ParsedArgs } from '../argv.js';
 import { loadConfigFromEnv, updateKeygateFile } from '../../config/env.js';
 import type { ProviderModelOption } from '../../types.js';
 import { readTokens, isTokenExpired, deleteTokens } from '../../auth/index.js';
 import readline from 'node:readline';
+
+export interface CodexLoginSession {
+  initialModel: string;
+  provider: OpenAICodexProvider;
+  dispose(): Promise<void>;
+}
 
 export async function runAuthCommand(args: ParsedArgs): Promise<void> {
   const action = args.positional[1];
@@ -31,38 +38,14 @@ async function runAuthLogin(args: ParsedArgs): Promise<void> {
     throw new Error('Only --provider openai-codex is currently supported for auth login');
   }
 
-  const useDeviceAuth = hasFlag(args.flags, 'device-auth');
-
-  const codexStatus = await ensureCodexInstalled({ autoInstall: false });
-  if (!codexStatus.installed) {
-    throw new Error(`${codexStatus.error ?? 'Codex CLI is not installed'}\n${getCodexInstallHelp()}`);
-  }
-
-  const config = loadConfigFromEnv();
-  const initialModel =
-    config.llm.provider === 'openai-codex'
-      ? config.llm.model
-      : 'openai-codex/gpt-5.3';
-
-  const headless = hasFlag(args.flags, 'headless');
-
-  const codexProvider = new OpenAICodexProvider(initialModel, {
-    cwd: config.security.workspacePath,
-    readCallbackUrl: headless ? readLineFromStdin : undefined,
-  });
+  const session = await openCodexLoginSession(args);
 
   try {
-    if (useDeviceAuth) {
-      await runCodexDeviceAuthLogin();
-    } else {
-      await codexProvider.login({ headless });
-    }
-
-    let selectedModel = initialModel;
+    let selectedModel = session.initialModel;
 
     try {
-      const models = await codexProvider.listModels();
-      selectedModel = pickDefaultProviderModel(models, initialModel);
+      const models = await listCodexSessionModels(session);
+      selectedModel = pickDefaultProviderModel(models, session.initialModel);
     } catch {
       // Keep configured model if model/list is unavailable in this environment.
     }
@@ -76,8 +59,50 @@ async function runAuthLogin(args: ParsedArgs): Promise<void> {
     console.log('OpenAI OAuth login complete.');
     console.log(`Selected model: ${selectedModel}`);
   } finally {
-    await codexProvider.dispose();
+    await session.dispose();
   }
+}
+
+export async function openCodexLoginSession(args: ParsedArgs): Promise<CodexLoginSession> {
+  const useDeviceAuth = hasFlag(args.flags, 'device-auth');
+  const codexStatus = await ensureCodexInstalled({ autoInstall: false });
+  if (!codexStatus.installed) {
+    throw new Error(`${codexStatus.error ?? 'Codex CLI is not installed'}\n${getCodexInstallHelp()}`);
+  }
+
+  const config = loadConfigFromEnv();
+  const initialModel =
+    config.llm.provider === 'openai-codex'
+      ? config.llm.model
+      : getDefaultModelForProvider('openai-codex');
+  const headless = hasFlag(args.flags, 'headless');
+  const provider = new OpenAICodexProvider(initialModel, {
+    cwd: config.security.workspacePath,
+    readCallbackUrl: headless ? readLineFromStdin : undefined,
+  });
+
+  try {
+    if (useDeviceAuth) {
+      await runCodexDeviceAuthLogin();
+    } else {
+      await provider.login({ headless });
+    }
+
+    return {
+      initialModel,
+      provider,
+      dispose: async () => {
+        await provider.dispose();
+      },
+    };
+  } catch (error) {
+    await provider.dispose();
+    throw error;
+  }
+}
+
+export async function listCodexSessionModels(session: Pick<CodexLoginSession, 'provider'>): Promise<ProviderModelOption[]> {
+  return session.provider.listModels();
 }
 
 async function runCodexDeviceAuthLogin(): Promise<void> {
@@ -149,7 +174,7 @@ async function runAuthStatus(): Promise<void> {
     const initialModel =
       config.llm.provider === 'openai-codex'
         ? config.llm.model
-        : 'openai-codex/gpt-5.3';
+        : getDefaultModelForProvider('openai-codex');
 
     const codexProvider = new OpenAICodexProvider(initialModel, {
       cwd: config.security.workspacePath,

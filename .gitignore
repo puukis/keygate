@@ -1,15 +1,22 @@
-# Environment
+# ── OS ────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Environment & secrets ─────────────────────────
 .keygate
 .keygate.local
 *.local
 
-# Dependencies
+# ── Dependencies ──────────────────────────────────
 node_modules/
 
-# Build output
+# ── Build output ──────────────────────────────────
 dist/
 *.tsbuildinfo
 .build/
+output/
+
+# ── macOS app build ───────────────────────────────
 packages/macos/.xcodebuild*/
 packages/macos/.dmg-staging.*/
 packages/macos/.create-dmg.*/
@@ -17,47 +24,35 @@ packages/macos/.swiftpm/
 packages/macos/Keygate/Products/
 packages/macos/Keygate/.build/
 
-# IDE
+# ── Logs ──────────────────────────────────────────
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# ── Testing ───────────────────────────────────────
+coverage/
+playwright-report/
+test-results/
+.playwright-cli/
+.playwright-mcp/
+
+# ── Database ──────────────────────────────────────
+*.db
+*.db-journal
+
+# ── IDE & editors ─────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
 
-# Agent workflows
+# ── AI / agent tooling ───────────────────────────
 .agents/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log
-npm-debug.log*
-pnpm-debug.log*
-
-# Test coverage
-coverage/
-
-# Playwright
-playwright-report/
-test-results/
-
-# SQLite
-*.db
-*.db-journal
-
-# Release scripts
-scripts/bump-release.sh
-
-.playwright-cli/
-.playwright-mcp/
-
-.codex/
-
-.github/skills/
-
 .claude/
-
+.codex/
+.github/skills/
 .superpowers/
+docs/superpowers/
 
-output/
+# ── Scripts ───────────────────────────────────────
+scripts/bump-release.sh

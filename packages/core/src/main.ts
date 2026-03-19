@@ -79,6 +79,10 @@ async function main(): Promise<void> {
 
       console.log(`🧭 Open this chat URL manually: ${chatSiteUrl}`);
     },
+    onError: (error) => {
+      console.error(error.message);
+      process.exitCode = 1;
+    },
   });
 }
 

@@ -192,6 +192,32 @@ describe('server e2e api flows', () => {
     await fs.rm(workspace, { recursive: true, force: true });
   }, 20_000);
 
+  it('reports occupied startup ports through onError without crashing', async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'keygate-e2e-portbusy-'));
+    const port = 19100 + Math.floor(Math.random() * 200);
+
+    let listeningResolve: (() => void) | null = null;
+    const listeningPromise = new Promise<void>((resolve) => { listeningResolve = resolve; });
+
+    const firstHandle = startWebServer(createConfig(workspace, port), { onListening: () => listeningResolve?.() });
+    handles.push(firstHandle);
+    await listeningPromise;
+
+    let errorResolve: ((error: Error) => void) | null = null;
+    const errorPromise = new Promise<Error>((resolve) => { errorResolve = resolve; });
+
+    const secondHandle = startWebServer(createConfig(workspace, port), {
+      onError: (error) => errorResolve?.(error),
+    });
+    handles.push(secondHandle);
+
+    const startupError = await errorPromise;
+    expect(startupError.message).toContain(`127.0.0.1:${port}`);
+    expect(startupError.message).toContain('already in use');
+
+    await fs.rm(workspace, { recursive: true, force: true });
+  });
+
   it('accepts signed webhook over HTTP and routes into session', async () => {
     const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'keygate-e2e-webhook-'));
     const port = 19350 + Math.floor(Math.random() * 200);

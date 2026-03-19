@@ -3,15 +3,28 @@
 ## 1) Install + Onboard
 
 ```bash
-keygate onboard --auth-choice openai-codex
+keygate onboarding
 ```
 
 Expected:
 - Detects `codex` in PATH or auto-installs with `npm i -g @openai/codex` (macOS fallback: `brew install --cask codex`).
 - Runs ChatGPT OAuth login through Codex app-server.
+- After login, shows a visible Codex model picker.
+- Uses the live Codex model catalog when available.
+- If live discovery returns nothing or fails, shows a warning and falls back to the built-in Codex model list.
 - Writes provider config in `~/.keygate/.env`:
   - `LLM_PROVIDER=openai-codex`
-  - `LLM_MODEL=openai-codex/<default-from-model-list>`
+  - `LLM_MODEL=openai-codex/<selected-model>`
+
+Optional legacy auth-first shortcut:
+
+```bash
+keygate onboard --auth-choice openai-codex
+```
+
+Expected:
+- Installs Codex CLI if needed.
+- Runs auth and persists the default discovered Codex model without the full onboarding wizard.
 
 ## 2) Login Only (repeatable)
 

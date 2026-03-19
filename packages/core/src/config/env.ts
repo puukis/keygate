@@ -27,6 +27,7 @@ import type {
   WhatsAppConfig,
   WhatsAppGroupMode,
 } from '../types.js';
+import { getDefaultModelForProvider } from '../llm/modelCatalog.js';
 
 const DEFAULT_ALLOWED_BINARIES = ['git', 'ls', 'npm', 'cat', 'node', 'python3'];
 const DEFAULT_TELEGRAM_GROUP_MODE: TelegramGroupMode = 'closed';
@@ -705,20 +706,7 @@ function normalizeMcpPlaywrightVersion(value: string | undefined): string {
   return normalized;
 }
 
-export function getDefaultModelForProvider(provider: KeygateConfig['llm']['provider']): string {
-  switch (provider) {
-    case 'openai':
-      return 'gpt-4o';
-    case 'gemini':
-      return 'gemini-1.5-pro';
-    case 'ollama':
-      return 'llama3';
-    case 'openai-codex':
-      return 'openai-codex/gpt-5.3';
-    default:
-      return 'gpt-4o';
-  }
-}
+export { getDefaultModelForProvider };
 
 function serializeEnvValue(value: string): string {
   if (/^[A-Za-z0-9_./:\-]*$/.test(value)) {

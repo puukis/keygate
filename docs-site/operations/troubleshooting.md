@@ -24,6 +24,13 @@ Actions:
 - inspect browser devtools network tab
 - inspect server logs around startup
 
+### Startup says the address is already in use
+
+- Keygate now reports this as a friendly startup error instead of crashing with an unhandled `EADDRINUSE` stack trace.
+- If the message points at `127.0.0.1:18790`, another process already owns the default gateway port.
+- If that process is your existing Keygate gateway, open `http://localhost:18790` and keep using it.
+- Otherwise stop the process using that port or change the configured Keygate port before starting again.
+
 ## 2) Model request fails
 
 Checks:
@@ -37,6 +44,21 @@ Actions:
 - re-run auth login
 - switch to known-good model
 - verify provider-side account status
+
+## 2a) Onboarding shows no model options
+
+Checks:
+
+- are you in `keygate onboarding` or the older `keygate onboard` auth shortcut?
+- did Codex login complete successfully before model discovery?
+- did onboarding print a warning that it is falling back to the built-in model list?
+
+Actions:
+
+- use `keygate onboarding` if you want the interactive provider/model picker
+- for Codex, complete login first and watch for the model menu after login finishes
+- if live Codex discovery fails, continue with the built-in fallback list or choose `Custom model ID`
+- if auth-only behavior is enough, run `keygate auth login --provider openai-codex` and let Keygate persist the default discovered Codex model
 
 ## 3) Tool call failed
 

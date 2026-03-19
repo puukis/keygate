@@ -260,6 +260,7 @@ interface WSMessage {
 
 interface StartWebServerOptions {
   onListening?: () => void | Promise<void>;
+  onError?: (error: Error) => void | Promise<void>;
   staticAssetsDir?: string;
 }
 
@@ -750,6 +751,25 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
   const operatorAuthEnabled = config.remote.authMode === 'token';
   const protectedApiPrefixes = ['/api/browser/', '/api/uploads/', '/api/webchat/', '/api/channel-actions', '/api/channel-polls'];
   const activeVoiceSessions = new Map<string, { sessionId: string; guildId: string; channelId: string; status: string; error?: string }>();
+  let cleanedUp = false;
+
+  const cleanupResources = async (): Promise<void> => {
+    if (cleanedUp) {
+      return;
+    }
+
+    cleanedUp = true;
+    clearInterval(browserCleanupInterval);
+    clearInterval(uploadCleanupInterval);
+    operatorSessions.clear();
+    guestConnectionCounts.clear();
+    guestMessageBuckets.clear();
+    gmailService.stop();
+    await canvasHost.close().catch((error) => {
+      console.warn('Failed to close canvas host:', error);
+    });
+    Gateway.reset();
+  };
 
   const server = createServer((req, res) => {
     // CORS headers
@@ -3386,6 +3406,20 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
     });
   });
 
+  server.once('error', (error) => {
+    const startupError = normalizeServerStartupError(config, error);
+    void cleanupResources().finally(() => {
+      if (options.onError) {
+        void Promise.resolve(options.onError(startupError)).catch((callbackError) => {
+          console.error('Startup error hook failed:', callbackError);
+        });
+        return;
+      }
+
+      console.error(startupError.message);
+    });
+  });
+
   server.listen(config.server.port, config.server.host, () => {
     console.log(`🌐 Keygate Web Server running on http://${config.server.host}:${config.server.port}`);
 
@@ -3397,15 +3431,7 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
   });
 
   server.on('close', () => {
-    clearInterval(browserCleanupInterval);
-    clearInterval(uploadCleanupInterval);
-    operatorSessions.clear();
-    guestConnectionCounts.clear();
-    guestMessageBuckets.clear();
-    gmailService.stop();
-    void canvasHost.close().catch((error) => {
-      console.warn('Failed to close canvas host:', error);
-    });
+    void cleanupResources();
   });
 
   return {
@@ -3420,15 +3446,35 @@ export function startWebServer(config: KeygateConfig, options: StartWebServerOpt
 
         wss.close(() => {
           webChatWss.close(() => {
+            if (!server.listening) {
+              resolve();
+              return;
+            }
+
             server.close(() => {
-              Gateway.reset();
               resolve();
             });
           });
         });
       });
+
+      await cleanupResources();
     },
   };
+}
+
+function normalizeServerStartupError(config: KeygateConfig, error: unknown): Error {
+  const startupError = error instanceof Error ? error : new Error(String(error));
+  const withCode = startupError as NodeJS.ErrnoException;
+
+  if (withCode.code === 'EADDRINUSE') {
+    return new Error(
+      `Keygate could not start because ${config.server.host}:${config.server.port} is already in use. ` +
+      `If Keygate is already running, open http://localhost:${config.server.port}. Otherwise stop the process using that port or choose a different server port.`
+    );
+  }
+
+  return startupError;
 }
 
 function isAuthorizedOperatorRequest(
