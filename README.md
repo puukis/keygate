@@ -32,7 +32,7 @@ When GitHub Pages is enabled for this repository, `.github/workflows/deploy-docs
 
 ## Features
 
-- **Multi-Channel**: Connect via Web UI (`127.0.0.1:18790`), Discord, Slack, or WhatsApp
+- **Multi-Channel**: Connect via Web UI (`127.0.0.1:18790`), Discord, Slack, Telegram, or WhatsApp
 - **Built-in Remote Gateway Access**: Managed Tailscale tailnet exposure and managed SSH local-forward tunnels, both secured with token-gated operator auth
 - **Shared Operator Commands**: `/help`, `/status`, `/model`, `/compact`, `/debug`, `/stop`, `/new`, and `/reset` across chat surfaces, with native Discord slash commands and Slack `/agent*` commands
 - **WhatsApp Linked-Device Channel**: QR-based login, DM controls, group allowlists, `👀` acknowledgements, composing presence, and screenshot follow-up delivery
